@@ -54,7 +54,10 @@ Big THANK YOU to those who contributed to the TQVaultAE program. Without it, thi
 * Tries to not allow the user to create items that can't drop naturally in the game, though some cases are very rare such as "of the Tinkerer"
 
 # Main UI
+![Main UI](https://raw.githubusercontent.com/gshearer/tqvaultc/refs/heads/main/screenshots/tqvaultc-main.png)
 
 # Affix Manager
+![Affix_Manager](https://github.com/gshearer/tqvaultc/blob/main/screenshots/tqvaultc-affix-manager.png?raw=true)
 
 # Build View
+![Build_View](https://github.com/gshearer/tqvaultc/blob/main/screenshots/tqvaultc-build-view.png?raw=true)
