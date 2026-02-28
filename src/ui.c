@@ -121,6 +121,17 @@ bool item_is_stackable_type(const TQVaultItem *a) {
     if (strcasestr(b, "\\animalrelic")) return true;
     if (strcasestr(b, "\\oneshot\\"))   return true;
     if (strcasestr(b, "\\scrolls\\"))   return true;
+    /* Fallback: items like HCDungeon potions live outside the above paths
+     * but have Class=OneShot_Scroll or OneShot_Potion in their DBR. */
+    TQArzRecordData *data = asset_get_dbr(b);
+    if (data) {
+        char *cls = arz_record_get_string(data, "Class", NULL);
+        if (cls) {
+            bool is_oneshot = (strcasestr(cls, "OneShot_") != NULL);
+            free(cls);
+            if (is_oneshot) return true;
+        }
+    }
     return false;
 }
 
