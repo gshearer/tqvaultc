@@ -1,0 +1,96 @@
+.bag-button { padding: 0; margin: 0; min-width: 0; min-height: 0; }
+.bag-button-search-match { outline: 2px solid red; outline-offset: -2px; }
+.affix-current { font-weight: bold; }
+.affix-preview { background: #1a1a2e; padding: 16px; }
+
+/* Character stats grid */
+.stats-frame { background: alpha(@theme_fg_color, 0.03);
+  border-radius: 6px; padding: 6px 8px; }
+.stats-grid { }
+.stats-cell-key { font-size: 11px; font-weight: 700; letter-spacing: 0.5px;
+  color: #8890a0; padding: 1px 4px 1px 0; }
+.stats-cell-val { font-size: 12px; font-weight: 600; color: #e0e4ec;
+  padding: 1px 10px 1px 0; }
+.stats-section-hdr { font-size: 10px; font-weight: 700; letter-spacing: 1px;
+  color: #707888; padding: 4px 0 1px 0; }
+
+/* Resistance / Damage tables */
+.resist-frame { background: alpha(@theme_fg_color, 0.03);
+  border-radius: 6px; padding: 6px 8px; }
+.resist-title { font-size: 13px; font-weight: 700; letter-spacing: 1px;
+  color: #a0a8b8; margin-bottom: 4px; }
+.resist-grid { }
+.resist-col-hdr { font-size: 14px; font-weight: 700;
+  padding: 4px 6px; border-radius: 3px; min-width: 40px; }
+.resist-row-hdr { font-size: 13px; color: #9098a8; padding: 2px 8px 2px 4px; }
+.resist-cell { font-size: 14px; font-variant-numeric: tabular-nums;
+  padding: 2px 6px; min-width: 40px; border-radius: 2px; }
+.resist-cell-zero { color: #555a68; }
+.resist-cell-pos  { color: #66dd88; }
+.resist-cell-high { color: #ffcc33; font-weight: 600; }
+.resist-cell-low  { color: #ff6666; }
+.resist-row-alt   { background: alpha(@theme_fg_color, 0.03); }
+.resist-total     { font-weight: 700; font-size: 14px; padding: 3px 6px;
+  border-top: 1px solid alpha(@theme_fg_color, 0.12); }
+.resist-total-label { font-size: 13px; font-weight: 700; color: #b0b8c8;
+  padding: 3px 8px 3px 4px;
+  border-top: 1px solid alpha(@theme_fg_color, 0.12); }
+
+/* Resistance column header colors */
+.resist-hdr-prc { background: alpha(#c8b8ff, 0.15); color: #c8b8ff; }
+.resist-hdr-phy { background: alpha(#d4a06a, 0.15); color: #d4a06a; }
+.resist-hdr-psn { background: alpha(#88dd44, 0.15); color: #88dd44; }
+.resist-hdr-vit { background: alpha(#dd5577, 0.15); color: #dd5577; }
+.resist-hdr-ele { background: alpha(#44ccff, 0.15); color: #44ccff; }
+.resist-hdr-fir { background: alpha(#ff8844, 0.15); color: #ff8844; }
+.resist-hdr-cld { background: alpha(#88ccff, 0.15); color: #88ccff; }
+.resist-hdr-ltn { background: alpha(#dddd44, 0.15); color: #dddd44; }
+.resist-hdr-ble { background: alpha(#ff5555, 0.15); color: #ff5555; }
+
+/* Damage column header colors */
+.dmg-hdr-phy { background: alpha(#d4a06a, 0.15); color: #d4a06a; }
+.dmg-hdr-prc { background: alpha(#c8b8ff, 0.15); color: #c8b8ff; }
+.dmg-hdr-psn { background: alpha(#88dd44, 0.15); color: #88dd44; }
+.dmg-hdr-ble { background: alpha(#ff5555, 0.15); color: #ff5555; }
+.dmg-hdr-vit { background: alpha(#dd5577, 0.15); color: #dd5577; }
+.dmg-hdr-ele { background: alpha(#44ccff, 0.15); color: #44ccff; }
+.dmg-hdr-fir { background: alpha(#ff8844, 0.15); color: #ff8844; }
+.dmg-hdr-cld { background: alpha(#88ccff, 0.15); color: #88ccff; }
+.dmg-hdr-ltn { background: alpha(#dddd44, 0.15); color: #dddd44; }
+.dmg-hdr-tot { background: alpha(#ffffff, 0.10); color: #e0e0e0; }
+.dmg-hdr-oa  { background: alpha(#ffaa44, 0.15); color: #ffaa44; }
+.dmg-hdr-da  { background: alpha(#44aaff, 0.15); color: #44aaff; }
+
+/* Secondary Resistance column header colors */
+.secresist-hdr-slo { background: alpha(#9988cc, 0.15); color: #9988cc; }
+.secresist-hdr-trp { background: alpha(#cc8844, 0.15); color: #cc8844; }
+.secresist-hdr-ene { background: alpha(#44bbdd, 0.15); color: #44bbdd; }
+.secresist-hdr-dis { background: alpha(#cc6688, 0.15); color: #cc6688; }
+.secresist-hdr-stn { background: alpha(#ddaa44, 0.15); color: #ddaa44; }
+.secresist-hdr-frz { background: alpha(#88ccff, 0.15); color: #88ccff; }
+.secresist-hdr-sle { background: alpha(#aa88dd, 0.15); color: #aa88dd; }
+.secresist-hdr-pet { background: alpha(#88aa66, 0.15); color: #88aa66; }
+
+/* DoT column header colors (reuse damage type colors) */
+.dot-hdr-psn { background: alpha(#88dd44, 0.15); color: #88dd44; }
+.dot-hdr-ble { background: alpha(#ff5555, 0.15); color: #ff5555; }
+.dot-hdr-brn { background: alpha(#ff8844, 0.15); color: #ff8844; }
+.dot-hdr-fbrn { background: alpha(#ff8844, 0.15); color: #ff8844; }
+.dot-hdr-ebrn { background: alpha(#dddd44, 0.15); color: #dddd44; }
+.dot-hdr-ll  { background: alpha(#dd5577, 0.15); color: #dd5577; }
+.dot-hdr-el  { background: alpha(#44bbdd, 0.15); color: #44bbdd; }
+
+/* Pet damage header colors */
+.pet-hdr-phy { background: alpha(#d4a06a, 0.15); color: #d4a06a; }
+.pet-hdr-ele { background: alpha(#44ccff, 0.15); color: #44ccff; }
+.pet-hdr-vit { background: alpha(#dd5577, 0.15); color: #dd5577; }
+
+/* Damage cell styles */
+.dmg-cell { font-size: 14px; font-variant-numeric: tabular-nums;
+  padding: 2px 6px; min-width: 40px; border-radius: 2px; color: #d0d4dc; }
+.dmg-total-pos { color: #66dd88; }
+
+/* Instant item tooltip */
+popover.item-tooltip { background: #1a1a2e; }
+popover.item-tooltip > contents { padding: 0; }
+popover.item-tooltip label { color: #e0e4ec; }
