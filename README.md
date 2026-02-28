@@ -25,7 +25,7 @@ AI wrote most of this code. Though I use this tool with my live game files and h
 
 ## BUILD ##
 
-Just clone the repo and run "meson -C build && build/tqvaultc". If you get build errors, you might need to install some packages for tools/libraries the program needs. 
+Just clone the repo and run "ninja -C build && build/tqvaultc". If you get build errors, you might need to install some packages for tools/libraries the program needs. 
 
 Upon invocation, the program will look for it's configuration in $XDG_CONFIG_HOME/.config/tqvaultc -- it will create this folder if it doesn't exist. 
 
