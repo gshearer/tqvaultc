@@ -43,7 +43,7 @@ The settings dialog will pop up on first invocation giving the user a chance to 
 
 Big THANK YOU to those who contributed to the TQVaultAE program. Without it, this project would've taken much longer.
 
-## FEATRUES ##
+## FEATURES ##
 
 * Ability to manage stacks (potions, scrolls, charms, relics, etc)
 * Can apply relics/charms to items using drag/drop
