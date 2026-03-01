@@ -83,6 +83,11 @@ bool item_is_relic_or_charm(const char *base_name) {
         if (strncasecmp(p, "\\relics\\", 8) == 0) return true;
         if (strncasecmp(p, "\\charms\\", 8) == 0) return true;
     }
+    /* Fallback: check DBR Class for items in non-standard directories (e.g. HCDUNGEON) */
+    const char *cls = dbr_get_string(base_name, "Class");
+    if (cls && (strcasecmp(cls, "ItemRelic") == 0 ||
+                strcasecmp(cls, "ItemCharm") == 0))
+        return true;
     return false;
 }
 
@@ -488,7 +493,14 @@ static int confirm_unsaved_character(AppWidgets *widgets) {
 }
 
 /* ── Character combo repopulation helper ──────────────────────────────── */
+static void on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_data);
+
 void repopulate_character_combo(AppWidgets *widgets, const char *select_name) {
+    /* Block the handler while rebuilding — gtk_string_list_append can fire
+     * notify::selected (index goes from INVALID→0 on first item), which
+     * triggers on_character_changed and overwrites last_character_path. */
+    g_signal_handler_block(widgets->character_combo, widgets->char_combo_handler);
+
     GtkStringList *sl = GTK_STRING_LIST(
         gtk_drop_down_get_model(GTK_DROP_DOWN(widgets->character_combo)));
     guint old_n = g_list_model_get_n_items(G_LIST_MODEL(sl));
@@ -497,7 +509,7 @@ void repopulate_character_combo(AppWidgets *widgets, const char *select_name) {
     char main_path[1024];
     snprintf(main_path, sizeof(main_path), "%s/SaveData/Main", global_config.save_folder);
     DIR *d = opendir(main_path);
-    if (!d) return;
+    if (!d) { g_signal_handler_unblock(widgets->character_combo, widgets->char_combo_handler); return; }
 
     struct dirent *dir;
     while ((dir = readdir(d)) != NULL) {
@@ -518,6 +530,10 @@ void repopulate_character_combo(AppWidgets *widgets, const char *select_name) {
         }
     }
     gtk_drop_down_set_selected(GTK_DROP_DOWN(widgets->character_combo), active_idx);
+    g_signal_handler_unblock(widgets->character_combo, widgets->char_combo_handler);
+
+    /* Manually trigger the handler now that the correct selection is set */
+    on_character_changed(G_OBJECT(widgets->character_combo), NULL, widgets);
 }
 
 static int compare_strings(const void *a, const void *b) {
@@ -525,7 +541,11 @@ static int compare_strings(const void *a, const void *b) {
 }
 
 /* ── Vault combo repopulation helper ─────────────────────────────────── */
+static void on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data);
+
 void repopulate_vault_combo(AppWidgets *widgets, const char *select_name) {
+    g_signal_handler_block(widgets->vault_combo, widgets->vault_combo_handler);
+
     GtkStringList *sl = GTK_STRING_LIST(
         gtk_drop_down_get_model(GTK_DROP_DOWN(widgets->vault_combo)));
     guint old_n = g_list_model_get_n_items(G_LIST_MODEL(sl));
@@ -534,7 +554,7 @@ void repopulate_vault_combo(AppWidgets *widgets, const char *select_name) {
     char vault_path[1024];
     snprintf(vault_path, sizeof(vault_path), "%s/TQVaultData", global_config.save_folder);
     DIR *d = opendir(vault_path);
-    if (!d) return;
+    if (!d) { g_signal_handler_unblock(widgets->vault_combo, widgets->vault_combo_handler); return; }
 
     struct dirent *dir;
     char **vault_names = NULL;
@@ -576,6 +596,10 @@ void repopulate_vault_combo(AppWidgets *widgets, const char *select_name) {
         }
     }
     gtk_drop_down_set_selected(GTK_DROP_DOWN(widgets->vault_combo), active_idx);
+    g_signal_handler_unblock(widgets->vault_combo, widgets->vault_combo_handler);
+
+    /* Manually trigger the handler now that the correct selection is set */
+    on_vault_changed(G_OBJECT(widgets->vault_combo), NULL, widgets);
 }
 
 /* ── Load callbacks ──────────────────────────────────────────────────────── */
@@ -717,24 +741,6 @@ static void on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data
     cancel_held_item(widgets);
     save_vault_if_dirty(widgets);
 
-    if (widgets->char_dirty) {
-        int choice = confirm_unsaved_character(widgets);
-        if (choice == 0) {
-            save_character_if_dirty(widgets);
-        } else if (choice == 2) {
-            /* Cancel — revert vault combo to current vault */
-            g_signal_handler_block(combo, widgets->vault_combo_handler);
-            if (widgets->current_vault && widgets->current_vault->vault_name) {
-                dropdown_select_by_name(combo, widgets->current_vault->vault_name);
-            }
-            g_signal_handler_unblock(combo, widgets->vault_combo_handler);
-            return;
-        }
-        /* Discard: reset dirty flag, continue */
-        widgets->char_dirty = false;
-        update_save_button_sensitivity(widgets);
-    }
-
     char *name = dropdown_get_selected_text(combo);
     if (!name) return;
 
@@ -742,6 +748,7 @@ static void on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data
     snprintf(path, sizeof(path), "%s/TQVaultData/%s.vault.json", global_config.save_folder, name);
 
     config_set_last_vault(name);
+    config_set_last_vault_bag(0);
     config_save();
     g_free(name);
 
@@ -749,13 +756,17 @@ static void on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data
     widgets->current_vault = vault_load_json(path);
     if (widgets->current_vault)
         prefetch_for_vault(widgets->current_vault);
-    /* Reset vault bag button visuals: bag 0 selected, rest unselected */
+    /* Restore last viewed bag, or default to bag 0 */
+    int restore_bag = global_config.last_vault_bag;
+    int num_sacks = widgets->current_vault ? widgets->current_vault->num_sacks : 0;
+    if (restore_bag < 0 || restore_bag >= num_sacks)
+        restore_bag = 0;
     for (int i = 0; i < 12; i++) {
         if (widgets->vault_bag_pix[BAG_DOWN][i])
             set_bag_btn_image(widgets->vault_bag_btns[i],
-                              widgets->vault_bag_pix[i == 0 ? BAG_UP : BAG_DOWN][i]);
+                              widgets->vault_bag_pix[i == restore_bag ? BAG_UP : BAG_DOWN][i]);
     }
-    widgets->current_sack = 0;
+    widgets->current_sack = restore_bag;
     gtk_widget_queue_draw(widgets->vault_drawing_area);
     run_search(widgets);
 }
@@ -812,6 +823,8 @@ static void on_bag_clicked(GtkButton *btn, gpointer user_data) {
                           widgets->vault_bag_pix[BAG_UP][bag_idx]);
     }
     widgets->current_sack = bag_idx;
+    config_set_last_vault_bag(bag_idx);
+    config_save();
     gtk_widget_queue_draw(widgets->vault_drawing_area);
 }
 
@@ -829,6 +842,26 @@ static void on_char_bag_clicked(GtkButton *btn, gpointer user_data) {
     }
     widgets->current_char_bag = idx;
     gtk_widget_queue_draw(widgets->bag_drawing_area);
+}
+
+/* ── Bag button right-click callbacks ───────────────────────────────────── */
+
+static void on_vault_bag_right_click(GtkGestureClick *gesture, int n_press,
+                                     double x, double y, gpointer user_data) {
+    (void)n_press; (void)x; (void)y;
+    AppWidgets *widgets = user_data;
+    GtkWidget *btn = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "bag-index"));
+    show_bag_context_menu(widgets, btn, CONTAINER_VAULT, idx);
+}
+
+static void on_char_bag_right_click(GtkGestureClick *gesture, int n_press,
+                                    double x, double y, gpointer user_data) {
+    (void)n_press; (void)x; (void)y;
+    AppWidgets *widgets = user_data;
+    GtkWidget *btn = gtk_event_controller_get_widget(GTK_EVENT_CONTROLLER(gesture));
+    int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "bag-index"));
+    show_bag_context_menu(widgets, btn, CONTAINER_BAG, idx);
 }
 
 /* ── Keyboard shortcuts ──────────────────────────────────────────────────── */
@@ -1018,6 +1051,13 @@ static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
         widgets->context_menu = NULL;
         widgets->context_parent = NULL;
     }
+    if (widgets->bag_menu) {
+        if (widgets->bag_menu_parent)
+            gtk_widget_unparent(widgets->bag_menu);
+        g_object_unref(widgets->bag_menu);
+        widgets->bag_menu = NULL;
+        widgets->bag_menu_parent = NULL;
+    }
     if (widgets->tooltip_popover) {
         if (widgets->tooltip_parent)
             gtk_widget_unparent(widgets->tooltip_popover);
@@ -1025,6 +1065,15 @@ static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
         widgets->tooltip_popover = NULL;
         widgets->tooltip_parent = NULL;
     }
+
+    /* Block combo handlers before window destruction — GTK4 may fire
+     * notify::selected as it tears down the dropdown models, which would
+     * overwrite the saved last_character/last_vault config. */
+    if (widgets->char_combo_handler && widgets->character_combo)
+        g_signal_handler_block(widgets->character_combo, widgets->char_combo_handler);
+    if (widgets->vault_combo_handler && widgets->vault_combo)
+        g_signal_handler_block(widgets->vault_combo, widgets->vault_combo_handler);
+
     return FALSE; /* allow default close behaviour */
 }
 
@@ -1052,6 +1101,14 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     g_object_ref_sink(widgets->context_menu);  /* own the popover so unparent won't destroy it */
     gtk_popover_set_has_arrow(GTK_POPOVER(widgets->context_menu), FALSE);
     gtk_widget_set_halign(widgets->context_menu, GTK_ALIGN_START);
+
+    /* Bag context menu: actions + popover */
+    register_bag_menu_actions(app, widgets);
+    widgets->bag_menu_model = g_menu_new();
+    widgets->bag_menu = gtk_popover_menu_new_from_model(G_MENU_MODEL(widgets->bag_menu_model));
+    g_object_ref_sink(widgets->bag_menu);
+    gtk_popover_set_has_arrow(GTK_POPOVER(widgets->bag_menu), FALSE);
+    gtk_widget_set_halign(widgets->bag_menu, GTK_ALIGN_START);
 
     /* Instant tooltip popover (zero-delay, replaces GTK4's 500ms tooltip) */
     widgets->tooltip_popover = gtk_popover_new();
@@ -1217,6 +1274,11 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
             g_signal_connect(hover, "enter", G_CALLBACK(on_vault_bag_hover_enter), widgets);
             g_signal_connect(hover, "leave", G_CALLBACK(on_vault_bag_hover_leave), widgets);
             gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(hover));
+            /* Right-click for bag context menu */
+            GtkGesture *rclick = gtk_gesture_click_new();
+            gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(rclick), 3);
+            g_signal_connect(rclick, "pressed", G_CALLBACK(on_vault_bag_right_click), widgets);
+            gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(rclick));
             gtk_box_append(GTK_BOX(bag_hbox), btn);
         }
         for (int s = 0; s < 3; s++)
@@ -1300,6 +1362,11 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
             g_signal_connect(hover, "enter", G_CALLBACK(on_char_bag_hover_enter), widgets);
             g_signal_connect(hover, "leave", G_CALLBACK(on_char_bag_hover_leave), widgets);
             gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(hover));
+            /* Right-click for bag context menu */
+            GtkGesture *crclick = gtk_gesture_click_new();
+            gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(crclick), 3);
+            g_signal_connect(crclick, "pressed", G_CALLBACK(on_char_bag_right_click), widgets);
+            gtk_widget_add_controller(btn, GTK_EVENT_CONTROLLER(crclick));
             gtk_box_append(GTK_BOX(char_bag_hbox), btn);
         }
         for (int s = 0; s < 3; s++)

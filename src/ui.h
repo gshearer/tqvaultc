@@ -150,6 +150,13 @@ typedef struct {
     int context_equip_slot;          /* equipment slot (-1 if not equipment) */
     GtkWidget *context_parent;       /* drawing area the menu is attached to */
 
+    /* Bag context menu (right-click on bag buttons) */
+    GMenu *bag_menu_model;
+    GtkWidget *bag_menu;
+    GtkWidget *bag_menu_parent;
+    ContainerType bag_menu_source;   /* CONTAINER_VAULT, CONTAINER_INV, or CONTAINER_BAG */
+    int bag_menu_sack_idx;           /* 0-11 for vault, 0 for inv, 0-2 for bag */
+
     /* Instant tooltip (replaces GTK4 built-in 500ms delayed tooltips) */
     GtkWidget *tooltip_popover;
     GtkWidget *tooltip_label;
@@ -294,6 +301,12 @@ void show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
                             ContainerType source, int sack_idx,
                             int equip_slot, double x, double y);
 void register_context_actions(GtkApplication *app, AppWidgets *widgets);
+
+/* ── Entry points in ui_bag_menu.c ──────────────────────────────────────── */
+
+void register_bag_menu_actions(GtkApplication *app, AppWidgets *widgets);
+void show_bag_context_menu(AppWidgets *widgets, GtkWidget *parent_widget,
+                           ContainerType source, int sack_idx);
 
 /* ── Entry points in ui_manage.c ───────────────────────────────────────── */
 

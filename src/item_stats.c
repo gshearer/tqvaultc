@@ -133,8 +133,6 @@ static AttributeMap attr_maps[] = {
     {"offensiveStunMin", "%.1f Second Stun", false, NULL},
     {"offensiveElementalMin", "%d Elemental Damage", false, NULL},
     {"offensiveLifeMin", "%d Vitality Damage", false, NULL},
-    {"offensiveConvertMin", "%d%% Health to Damage Conversion", false, NULL},
-
     /* Offensive chance-based */
     {"offensiveStunChance", "%.0f%% Chance to Stun", false, NULL},
 
@@ -157,9 +155,6 @@ static AttributeMap attr_maps[] = {
     /* Regen modifiers */
     {"characterLifeRegenModifier", "+%d%% Health Regeneration", true, NULL},
     {"characterManaRegenModifier", "+%d%% Energy Regeneration", true, NULL},
-
-    /* Racial bonus (defense) */
-    {"racialBonusPercentDefense", "+%d%% Defensive Ability vs. Racial", true, NULL},
 
     /* Projectile speed */
     {"skillProjectileSpeedModifier", "+%d%% Projectile Speed", true, NULL},
@@ -212,7 +207,11 @@ static const char *INT_offensiveFumbleMin, *INT_offensiveFumbleDurationMin, *INT
 static const char *INT_offensiveFreezeMin, *INT_offensiveFreezeDurationMin, *INT_offensiveFreezeChance;
 static const char *INT_offensivePetrifyMin, *INT_offensivePetrifyDurationMin, *INT_offensivePetrifyChance;
 static const char *INT_offensiveConfusionMin, *INT_offensiveConfusionDurationMin, *INT_offensiveConfusionChance;
-static const char *INT_racialBonusPercentDamage, *INT_racialBonusRace;
+static const char *INT_offensiveFearMin, *INT_offensiveFearMax, *INT_offensiveFearChance;
+static const char *INT_offensiveConvertMin;
+static const char *INT_offensiveTotalDamageReductionPercentMin, *INT_offensiveTotalDamageReductionPercentChance;
+static const char *INT_offensiveTotalDamageReductionPercentDurationMin;
+static const char *INT_racialBonusPercentDamage, *INT_racialBonusPercentDefense, *INT_racialBonusRace;
 static const char *INT_petBonusName;
 static const char *INT_skillCooldownTime, *INT_refreshTime;
 static const char *INT_skillTargetNumber, *INT_skillActiveDuration, *INT_skillTargetRadius;
@@ -230,6 +229,7 @@ static const char *INT_itemSetName, *INT_setName, *INT_setMembers;
 static const char *INT_completedRelicLevel;
 static const char *INT_dexterityRequirement, *INT_intelligenceRequirement;
 static const char *INT_strengthRequirement, *INT_levelRequirement;
+static const char *INT_itemLevel, *INT_itemCostName, *INT_Class;
 
 #define INTERN(name) INT_##name = arz_intern(#name)
 
@@ -262,6 +262,11 @@ void item_stats_init(void) {
         "offensiveSlowAttackSpeedMin", "offensiveSlowAttackSpeedDurationMin",
         "offensiveSlowRunSpeedMin", "offensiveSlowRunSpeedDurationMin",
         "offensiveStunMin", "offensiveStunDurationMin", "offensiveStunChance",
+        "offensiveFearMin", "offensiveFearMax", "offensiveFearChance",
+        "offensiveConvertMin",
+        "offensiveTotalDamageReductionPercentMin", "offensiveTotalDamageReductionPercentChance",
+        "offensiveTotalDamageReductionPercentDurationMin",
+        "offensiveGlobalChance",
         "offensiveBasePhysicalMin", "offensiveBasePhysicalMax",
         "offensiveBaseColdMin", "offensiveBaseColdMax",
         "offensiveBaseFireMin", "offensiveBaseFireMax",
@@ -269,7 +274,7 @@ void item_stats_init(void) {
         "offensiveBasePoisonMin", "offensiveBasePoisonMax",
         "offensiveBaseLifeMin", "offensiveBaseLifeMax",
         "defensiveDisruption", "defensiveDisruptionDuration",
-        "racialBonusPercentDamage", "racialBonusRace",
+        "racialBonusPercentDamage", "racialBonusPercentDefense", "racialBonusRace",
         NULL
     };
 
@@ -315,7 +320,11 @@ void item_stats_init(void) {
     INTERN(offensiveFreezeMin); INTERN(offensiveFreezeDurationMin); INTERN(offensiveFreezeChance);
     INTERN(offensivePetrifyMin); INTERN(offensivePetrifyDurationMin); INTERN(offensivePetrifyChance);
     INTERN(offensiveConfusionMin); INTERN(offensiveConfusionDurationMin); INTERN(offensiveConfusionChance);
-    INTERN(racialBonusPercentDamage); INTERN(racialBonusRace);
+    INTERN(offensiveFearMin); INTERN(offensiveFearMax); INTERN(offensiveFearChance);
+    INTERN(offensiveConvertMin);
+    INTERN(offensiveTotalDamageReductionPercentMin); INTERN(offensiveTotalDamageReductionPercentChance);
+    INTERN(offensiveTotalDamageReductionPercentDurationMin);
+    INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
     INTERN(petBonusName);
     INTERN(skillCooldownTime); INTERN(refreshTime);
     INTERN(skillTargetNumber); INTERN(skillActiveDuration); INTERN(skillTargetRadius);
@@ -333,6 +342,7 @@ void item_stats_init(void) {
     INTERN(completedRelicLevel);
     INTERN(dexterityRequirement); INTERN(intelligenceRequirement);
     INTERN(strengthRequirement); INTERN(levelRequirement);
+    INTERN(itemLevel); INTERN(itemCostName); INTERN(Class);
 }
 
 void item_stats_free(void) {
@@ -548,6 +558,14 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
     TQArzRecordData *data = asset_get_dbr(record_path);
     if (!data) return;
 
+    /* Detect "X% Chance of:" conditional wrapper — all effects get indented */
+    float global_chance = dbr_get_float_fast(data, INT_offensiveGlobalChance, shard_index);
+    const char *indent = "";
+    if (global_chance > 0) {
+        buf_write(w, "<span color='%s'>%.0f%% Chance of:</span>\n", color, global_chance);
+        indent = "    ";
+    }
+
     /* Flat damage ranges (min-max) */
     {
         static struct { const char **min_int; const char **max_int; const char *label; } damage_types[] = {
@@ -739,14 +757,18 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
 
     /* Racial bonus */
     {
-        float val = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
-        if (fabs(val) > 0.001f) {
-            const char *race = "Enemies";
-            TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
-            if (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
-                race = rv->value.str[0];
-            buf_write(w, "<span color='%s'>+%d%% Damage to %s</span>\n", color, (int)round(val), race);
-        }
+        const char *race = "Enemies";
+        TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
+        if (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
+            race = rv->value.str[0];
+
+        float dmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
+        if (fabs(dmg) > 0.001f)
+            buf_write(w, "<span color='%s'>+%d%% Damage to %ss</span>\n", color, (int)round(dmg), race);
+
+        float def = dbr_get_float_fast(data, INT_racialBonusPercentDefense, shard_index);
+        if (fabs(def) > 0.001f)
+            buf_write(w, "<span color='%s'>%d%% less damage from %ss</span>\n", color, (int)round(def), race);
     }
 
     /* Mastery augmentation: "+N to all skills in X Mastery" */
@@ -795,8 +817,11 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
 
             const char *skill_name = "Unknown Skill";
             if (skill_path) {
-                const char *buff_path = get_record_variable_string(skill_path, INT_buffSkillName);
-                const char *lookup_path = (buff_path && buff_path[0]) ? buff_path : skill_path;
+                /* Follow petSkillName if present (e.g. PetModifier skills) */
+                const char *pet_path = get_record_variable_string(skill_path, INT_petSkillName);
+                const char *base_path = (pet_path && pet_path[0]) ? pet_path : skill_path;
+                const char *buff_path = get_record_variable_string(base_path, INT_buffSkillName);
+                const char *lookup_path = (buff_path && buff_path[0]) ? buff_path : base_path;
                 const char *name_tag = get_record_variable_string(lookup_path, INT_skillDisplayName);
                 if (name_tag) {
                     const char *translated = translation_get(tr, name_tag);
@@ -874,9 +899,9 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         float stun_chance = dbr_get_float_fast(data, INT_offensiveStunChance, shard_index);
         if (stun_dur > 0) {
             if (stun_chance > 0)
-                buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second(s) of Stun</span>\n", color, stun_chance, stun_dur);
+                buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Stun</span>\n", color, indent, stun_chance, stun_dur);
             else
-                buf_write(w, "<span color='%s'>%.1f Second(s) of Stun</span>\n", color, stun_dur);
+                buf_write(w, "<span color='%s'>%s%.1f Second(s) of Stun</span>\n", color, indent, stun_dur);
         }
     }
 
@@ -887,9 +912,9 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         if (fumble_min > 0 && fumble_dur > 0) {
             float fumble_chance = dbr_get_float_fast(data, INT_offensiveFumbleChance, shard_index);
             if (fumble_chance > 0)
-                buf_write(w, "<span color='%s'>%.0f%% Chance of Impaired Aim over %.1f Seconds</span>\n", color, fumble_chance, fumble_dur);
+                buf_write(w, "<span color='%s'>%s%.0f%% Chance of Impaired Aim over %.1f Seconds</span>\n", color, indent, fumble_chance, fumble_dur);
             else
-                buf_write(w, "<span color='%s'>Impaired Aim over %.1f Seconds</span>\n", color, fumble_dur);
+                buf_write(w, "<span color='%s'>%sImpaired Aim over %.1f Seconds</span>\n", color, indent, fumble_dur);
         }
     }
 
@@ -900,9 +925,9 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         if (freeze_min > 0 && freeze_dur > 0) {
             float freeze_chance = dbr_get_float_fast(data, INT_offensiveFreezeChance, shard_index);
             if (freeze_chance > 0)
-                buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second(s) of Freeze</span>\n", color, freeze_chance, freeze_dur);
+                buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Freeze</span>\n", color, indent, freeze_chance, freeze_dur);
             else
-                buf_write(w, "<span color='%s'>%.1f Second(s) of Freeze</span>\n", color, freeze_dur);
+                buf_write(w, "<span color='%s'>%s%.1f Second(s) of Freeze</span>\n", color, indent, freeze_dur);
         }
     }
 
@@ -913,22 +938,57 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         if (petrify_min > 0 && petrify_dur > 0) {
             float petrify_chance = dbr_get_float_fast(data, INT_offensivePetrifyChance, shard_index);
             if (petrify_chance > 0)
-                buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second(s) of Petrify</span>\n", color, petrify_chance, petrify_dur);
+                buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Petrify</span>\n", color, indent, petrify_chance, petrify_dur);
             else
-                buf_write(w, "<span color='%s'>%.1f Second(s) of Petrify</span>\n", color, petrify_dur);
+                buf_write(w, "<span color='%s'>%s%.1f Second(s) of Petrify</span>\n", color, indent, petrify_dur);
         }
+    }
+
+    /* Mind control (offensiveConvertMin — duration-based conversion of enemies) */
+    {
+        float convert_min = dbr_get_float_fast(data, INT_offensiveConvertMin, shard_index);
+        if (convert_min > 0)
+            buf_write(w, "<span color='%s'>%s%.1f Seconds of Mind Control</span>\n", color, indent, convert_min);
     }
 
     /* Offensive confusion */
     {
         float confuse_min = dbr_get_float_fast(data, INT_offensiveConfusionMin, shard_index);
         float confuse_dur = dbr_get_float_fast(data, INT_offensiveConfusionDurationMin, shard_index);
-        if (confuse_min > 0 && confuse_dur > 0) {
+        if (confuse_min > 0) {
             float confuse_chance = dbr_get_float_fast(data, INT_offensiveConfusionChance, shard_index);
-            if (confuse_chance > 0)
-                buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second(s) of Confusion</span>\n", color, confuse_chance, confuse_dur);
+            if (confuse_dur > 0) {
+                if (confuse_chance > 0)
+                    buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Confusion</span>\n", color, indent, confuse_chance, confuse_dur);
+                else
+                    buf_write(w, "<span color='%s'>%s%.1f Second(s) of Confusion</span>\n", color, indent, confuse_dur);
+            } else {
+                buf_write(w, "<span color='%s'>%s%.1f Second(s) of Confusion</span>\n", color, indent, confuse_min);
+            }
+        }
+    }
+
+    /* Fear */
+    {
+        float fear_min = dbr_get_float_fast(data, INT_offensiveFearMin, shard_index);
+        float fear_max = dbr_get_float_fast(data, INT_offensiveFearMax, shard_index);
+        if (fear_min > 0) {
+            if (fear_max > fear_min)
+                buf_write(w, "<span color='%s'>%s%.1f - %.1f Second(s) of Fear</span>\n", color, indent, fear_min, fear_max);
             else
-                buf_write(w, "<span color='%s'>%.1f Second(s) of Confusion</span>\n", color, confuse_dur);
+                buf_write(w, "<span color='%s'>%s%.1f Second(s) of Fear</span>\n", color, indent, fear_min);
+        }
+    }
+
+    /* Total damage reduction (debuff applied to enemies) */
+    {
+        float tdmg_min = dbr_get_float_fast(data, INT_offensiveTotalDamageReductionPercentMin, shard_index);
+        float tdmg_dur = dbr_get_float_fast(data, INT_offensiveTotalDamageReductionPercentDurationMin, shard_index);
+        if (tdmg_min > 0) {
+            if (tdmg_dur > 0)
+                buf_write(w, "<span color='%s'>%s%.0f%% Reduced Damage for %.1f Second(s)</span>\n", color, indent, tdmg_min, tdmg_dur);
+            else
+                buf_write(w, "<span color='%s'>%s%.0f%% Reduced Damage</span>\n", color, indent, tdmg_min);
         }
     }
 
@@ -1008,26 +1068,180 @@ static void add_relic_section(const char *relic_name, const char *relic_bonus,
 
 /* ── requirements ────────────────────────────────────────────────── */
 
+/* Simple recursive-descent expression evaluator for itemCost equations.
+ * Supports: +, -, *, /, ^ (power), parentheses, decimal numbers, and
+ * variable substitution for "itemLevel" and "totalAttCount". */
+
+typedef struct {
+    const char *p;
+    double item_level;
+    double total_att_count;
+} ExprCtx;
+
+static double expr_parse_expr(ExprCtx *c);
+
+static void expr_skip_ws(ExprCtx *c) {
+    while (*c->p == ' ' || *c->p == '\t') c->p++;
+}
+
+static double expr_parse_atom(ExprCtx *c) {
+    expr_skip_ws(c);
+    if (*c->p == '(') {
+        c->p++;
+        double v = expr_parse_expr(c);
+        expr_skip_ws(c);
+        if (*c->p == ')') c->p++;
+        return v;
+    }
+    /* variable or number */
+    if ((*c->p >= 'a' && *c->p <= 'z') || (*c->p >= 'A' && *c->p <= 'Z')) {
+        const char *start = c->p;
+        while ((*c->p >= 'a' && *c->p <= 'z') || (*c->p >= 'A' && *c->p <= 'Z') ||
+               (*c->p >= '0' && *c->p <= '9') || *c->p == '_')
+            c->p++;
+        size_t len = (size_t)(c->p - start);
+        if (len == 9 && strncmp(start, "itemLevel", 9) == 0) return c->item_level;
+        if (len == 13 && strncmp(start, "totalAttCount", 13) == 0) return c->total_att_count;
+        return 0.0;
+    }
+    /* number (possibly negative handled by caller via unary minus) */
+    char *end;
+    double v = strtod(c->p, &end);
+    if (end == c->p) return 0.0;
+    c->p = end;
+    return v;
+}
+
+static double expr_parse_unary(ExprCtx *c) {
+    expr_skip_ws(c);
+    if (*c->p == '-') { c->p++; return -expr_parse_unary(c); }
+    if (*c->p == '+') { c->p++; return expr_parse_unary(c); }
+    return expr_parse_atom(c);
+}
+
+static double expr_parse_power(ExprCtx *c) {
+    double v = expr_parse_unary(c);
+    expr_skip_ws(c);
+    if (*c->p == '^') { c->p++; v = pow(v, expr_parse_power(c)); }
+    return v;
+}
+
+static double expr_parse_muldiv(ExprCtx *c) {
+    double v = expr_parse_power(c);
+    for (;;) {
+        expr_skip_ws(c);
+        if (*c->p == '*') { c->p++; v *= expr_parse_power(c); }
+        else if (*c->p == '/') { c->p++; double d = expr_parse_power(c); if (d != 0) v /= d; }
+        else break;
+    }
+    return v;
+}
+
+static double expr_parse_expr(ExprCtx *c) {
+    double v = expr_parse_muldiv(c);
+    for (;;) {
+        expr_skip_ws(c);
+        if (*c->p == '+') { c->p++; v += expr_parse_muldiv(c); }
+        else if (*c->p == '-') { c->p++; v -= expr_parse_muldiv(c); }
+        else break;
+    }
+    return v;
+}
+
+static double eval_equation(const char *eq, double item_level, double total_att_count) {
+    ExprCtx c = { .p = eq, .item_level = item_level, .total_att_count = total_att_count };
+    return expr_parse_expr(&c);
+}
+
+/* Map item Class to equation prefix used in itemCost records */
+static const char *class_to_equation_prefix(const char *item_class) {
+    if (!item_class) return NULL;
+    static const struct { const char *cls; const char *prefix; } map[] = {
+        {"ArmorProtective_Head",          "head"},
+        {"ArmorProtective_UpperBody",     "upperBody"},
+        {"ArmorProtective_Forearm",       "forearm"},
+        {"ArmorProtective_LowerBody",     "lowerBody"},
+        {"ArmorJewelry_Ring",             "ring"},
+        {"ArmorJewelry_Amulet",           "amulet"},
+        {"WeaponHunting_Spear",           "spear"},
+        {"WeaponMagical_Staff",           "staff"},
+        {"WeaponHunting_RangedOneHand",   "bow"},
+        {"WeaponHunting_Bow",             "bow"},
+        {"WeaponMelee_Sword",             "sword"},
+        {"WeaponMelee_Mace",              "mace"},
+        {"WeaponMelee_Axe",               "axe"},
+        {"WeaponArmor_Shield",            "shield"},
+        {"ArmorJewelry_Bracelet",         "bracelet"},
+        {NULL, NULL}
+    };
+    for (int i = 0; map[i].cls; i++)
+        if (strcasecmp(item_class, map[i].cls) == 0) return map[i].prefix;
+    return NULL;
+}
+
 static void add_requirements(const char *record_path, BufWriter *w) {
     if (!record_path || !record_path[0]) return;
     TQArzRecordData *data = asset_get_dbr(record_path);
     if (!data) return;
 
     buf_write(w, "\n");
-    static struct { const char **interned; const char *label; } req_types[] = {
-        {&INT_dexterityRequirement,    "Required Dexterity"},
-        {&INT_intelligenceRequirement, "Required Intelligence"},
-        {&INT_strengthRequirement,     "Required Strength"},
-        {&INT_levelRequirement,        "Required Player Level"},
-        {NULL, NULL}
+
+    static struct { const char **interned; const char *label; const char *eq_suffix; } req_types[] = {
+        {&INT_levelRequirement,        "Required Player Level", "LevelEquation"},
+        {&INT_dexterityRequirement,    "Required Dexterity",    "DexterityEquation"},
+        {&INT_intelligenceRequirement, "Required Intelligence", "IntelligenceEquation"},
+        {&INT_strengthRequirement,     "Required Strength",     "StrengthEquation"},
+        {NULL, NULL, NULL}
     };
+
+    /* Read static requirement values */
+    int vals[4] = {0};
     for (int r = 0; req_types[r].interned; r++) {
         TQVariable *v = arz_record_get_var(data, *req_types[r].interned);
         if (!v || v->count == 0) continue;
-        int val = (v->type == TQ_VAR_FLOAT) ? (int)v->value.f32[0] : v->value.i32[0];
-        if (val > 0)
-            buf_write(w, "%s: %d\n", req_types[r].label, val);
+        vals[r] = (v->type == TQ_VAR_FLOAT) ? (int)v->value.f32[0] : v->value.i32[0];
     }
+
+    /* For any requirement type still zero, try dynamic computation via equations */
+    int needs_dynamic = 0;
+    for (int r = 0; req_types[r].interned; r++)
+        if (vals[r] <= 0) { needs_dynamic = 1; break; }
+
+    if (needs_dynamic) {
+        const char *item_class = record_get_string_fast(data, INT_Class);
+        const char *eq_prefix = class_to_equation_prefix(item_class);
+        if (eq_prefix) {
+            TQVariable *lvl_var = arz_record_get_var(data, INT_itemLevel);
+            double item_level = 0;
+            if (lvl_var && lvl_var->count > 0)
+                item_level = (lvl_var->type == TQ_VAR_FLOAT) ? lvl_var->value.f32[0] : (double)lvl_var->value.i32[0];
+
+            if (item_level > 0) {
+                const char *cost_path = record_get_string_fast(data, INT_itemCostName);
+                TQArzRecordData *cost_data = NULL;
+                if (cost_path && cost_path[0])
+                    cost_data = asset_get_dbr(cost_path);
+                if (!cost_data)
+                    cost_data = asset_get_dbr("records\\game\\itemcost.dbr");
+
+                if (cost_data) {
+                    for (int r = 0; req_types[r].interned; r++) {
+                        if (vals[r] > 0) continue;
+                        char eq_name[128];
+                        snprintf(eq_name, sizeof(eq_name), "%s%s", eq_prefix, req_types[r].eq_suffix);
+                        const char *equation = record_get_string_fast(cost_data, arz_intern(eq_name));
+                        if (!equation || !equation[0]) continue;
+                        int val = (int)ceil(eval_equation(equation, item_level, 0.0));
+                        if (val > 0) vals[r] = val;
+                    }
+                }
+            }
+        }
+    }
+
+    for (int r = 0; req_types[r].interned; r++)
+        if (vals[r] > 0)
+            buf_write(w, "%s: %d\n", req_types[r].label, vals[r]);
 }
 
 /* ── main tooltip formatter ──────────────────────────────────────── */
@@ -1138,8 +1352,20 @@ static void format_stats_common(uint32_t seed, const char *base_name, const char
     }
 
     /* Detect if this is a standalone relic/charm */
-    bool standalone_relic_charm = (base_name && (path_contains_ci(base_name, "animalrelic")
-        || path_contains_ci(base_name, "\\relics\\") || path_contains_ci(base_name, "\\charms\\")));
+    bool standalone_relic_charm = false;
+    if (base_name) {
+        if (path_contains_ci(base_name, "animalrelic")
+            || path_contains_ci(base_name, "\\relics\\")
+            || path_contains_ci(base_name, "\\charms\\"))
+            standalone_relic_charm = true;
+        else if (base_data) {
+            /* Fallback: check Class for items in non-standard dirs (e.g. HCDUNGEON) */
+            const char *cls = record_get_string_fast(base_data, INT_Class);
+            if (cls && (strcasecmp(cls, "ItemRelic") == 0 ||
+                        strcasecmp(cls, "ItemCharm") == 0))
+                standalone_relic_charm = true;
+        }
+    }
     bool is_artifact = (base_name && path_contains_ci(base_name, "\\artifacts\\") && !path_contains_ci(base_name, "\\arcaneformulae\\"));
     int base_shard_index = 0;
     bool standalone_complete = false;
@@ -1170,13 +1396,19 @@ static void format_stats_common(uint32_t seed, const char *base_name, const char
                 buf_write(&w, "\n<span color='#FFA500'><b>Base Item Properties</b></span>\n");
         }
         free(eb);
-        /* Attack speed tag — only meaningful for base weapon items */
-        if (!standalone_relic_charm && !is_artifact) {
-            const char *speed_tag = base_data ? record_get_string_fast(base_data, INT_characterBaseAttackSpeedTag) : NULL;
-            if (speed_tag) {
-                const char *speed_str = translation_get(tr, speed_tag);
-                if (speed_str)
-                    buf_write(&w, "<span color='#00FFFF'>%s</span>\n", speed_str);
+        /* Attack speed tag — only meaningful for weapons and shields */
+        if (!standalone_relic_charm && !is_artifact && base_data) {
+            const char *item_class = record_get_string_fast(base_data, INT_Class);
+            if (item_class && (strncasecmp(item_class, "WeaponMelee_", 12) == 0 ||
+                               strncasecmp(item_class, "WeaponHunting_", 14) == 0 ||
+                               strncasecmp(item_class, "WeaponMagical_", 14) == 0 ||
+                               strcasecmp(item_class, "WeaponArmor_Shield") == 0)) {
+                const char *speed_tag = record_get_string_fast(base_data, INT_characterBaseAttackSpeedTag);
+                if (speed_tag) {
+                    const char *speed_str = translation_get(tr, speed_tag);
+                    if (speed_str)
+                        buf_write(&w, "<span color='#00FFFF'>%s</span>\n", speed_str);
+                }
             }
         }
         add_stats_from_record(base_name, tr, &w,
@@ -1298,69 +1530,6 @@ static void format_stats_common(uint32_t seed, const char *base_name, const char
                 }
             }
 
-            /* Base item "X% Chance of:" conditional effects (offensiveGlobalChance) */
-            if (base_data) {
-                float global_chance = dbr_get_float_fast(base_data, INT_offensiveGlobalChance, 0);
-                if (global_chance > 0) {
-                    buf_write(&w, "<span color='#DAA520'>%.0f%% Chance of:</span>\n", global_chance);
-                    /* Stun */
-                    float stun = dbr_get_float_fast(base_data, INT_offensiveStunMin, 0);
-                    if (stun > 0)
-                        buf_write(&w, "<span color='#DAA520'>    %.1f Second(s) of Stun</span>\n", stun);
-                    /* Lightning burn */
-                    float eburn_mn = dbr_get_float_fast(base_data, INT_offensiveSlowLightningMin, 0);
-                    float eburn_mx = dbr_get_float_fast(base_data, INT_offensiveSlowLightningMax, 0);
-                    float eburn_dur = dbr_get_float_fast(base_data, INT_offensiveSlowLightningDurationMin, 0);
-                    if (eburn_dur <= 0) eburn_dur = dbr_get_float_fast(base_data, INT_offensiveSlowLightningDurationMax, 0);
-                    if (eburn_mn > 0 && eburn_dur > 0) {
-                        if (eburn_mx > eburn_mn)
-                            buf_write(&w, "<span color='#DAA520'>    %d - %d Electrical Burn Damage over %.1f Seconds</span>\n",
-                                (int)round(eburn_mn), (int)round(eburn_mx), eburn_dur);
-                        else
-                            buf_write(&w, "<span color='#DAA520'>    %d Electrical Burn Damage over %.1f Seconds</span>\n",
-                                (int)round(eburn_mn), eburn_dur);
-                    }
-                    /* Burn (fire) */
-                    float burn_mn = dbr_get_float_fast(base_data, INT_offensiveSlowFireMin, 0);
-                    float burn_mx = dbr_get_float_fast(base_data, INT_offensiveSlowFireMax, 0);
-                    float burn_dur = dbr_get_float_fast(base_data, INT_offensiveSlowFireDurationMin, 0);
-                    if (burn_dur <= 0) burn_dur = dbr_get_float_fast(base_data, INT_offensiveSlowFireDurationMax, 0);
-                    if (burn_mn > 0 && burn_dur > 0) {
-                        if (burn_mx > burn_mn)
-                            buf_write(&w, "<span color='#DAA520'>    %d - %d Burn Damage over %.1f Seconds</span>\n",
-                                (int)round(burn_mn), (int)round(burn_mx), burn_dur);
-                        else
-                            buf_write(&w, "<span color='#DAA520'>    %d Burn Damage over %.1f Seconds</span>\n",
-                                (int)round(burn_mn), burn_dur);
-                    }
-                    /* Frostburn (cold) */
-                    float frost_mn = dbr_get_float_fast(base_data, INT_offensiveSlowColdMin, 0);
-                    float frost_mx = dbr_get_float_fast(base_data, INT_offensiveSlowColdMax, 0);
-                    float frost_dur = dbr_get_float_fast(base_data, INT_offensiveSlowColdDurationMin, 0);
-                    if (frost_dur <= 0) frost_dur = dbr_get_float_fast(base_data, INT_offensiveSlowColdDurationMax, 0);
-                    if (frost_mn > 0 && frost_dur > 0) {
-                        if (frost_mx > frost_mn)
-                            buf_write(&w, "<span color='#DAA520'>    %d - %d Frostburn Damage over %.1f Seconds</span>\n",
-                                (int)round(frost_mn), (int)round(frost_mx), frost_dur);
-                        else
-                            buf_write(&w, "<span color='#DAA520'>    %d Frostburn Damage over %.1f Seconds</span>\n",
-                                (int)round(frost_mn), frost_dur);
-                    }
-                    /* Poison */
-                    float poison_mn = dbr_get_float_fast(base_data, INT_offensiveSlowPoisonMin, 0);
-                    float poison_mx = dbr_get_float_fast(base_data, INT_offensiveSlowPoisonMax, 0);
-                    float poison_dur = dbr_get_float_fast(base_data, INT_offensiveSlowPoisonDurationMin, 0);
-                    if (poison_dur <= 0) poison_dur = dbr_get_float_fast(base_data, INT_offensiveSlowPoisonDurationMax, 0);
-                    if (poison_mn > 0 && poison_dur > 0) {
-                        if (poison_mx > poison_mn)
-                            buf_write(&w, "<span color='#DAA520'>    %d - %d Poison Damage over %.1f Seconds</span>\n",
-                                (int)round(poison_mn), (int)round(poison_mx), poison_dur);
-                        else
-                            buf_write(&w, "<span color='#DAA520'>    %d Poison Damage over %.1f Seconds</span>\n",
-                                (int)round(poison_mn), poison_dur);
-                    }
-                }
-            }
         }
     }
 

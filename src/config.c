@@ -9,7 +9,7 @@
 
 #define CONFIG_FILENAME "tqvc-config.json"
 
-TQConfig global_config = {NULL, NULL, NULL, NULL, NULL};
+TQConfig global_config = {NULL, NULL, NULL, NULL, 0, NULL};
 bool tqvc_debug = false;
 static bool g_first_run = false;
 
@@ -48,6 +48,10 @@ static void load_from_file(const char *path) {
     }
     if (json_object_object_get_ex(parsed_json, "last_vault_name", &last_vault_obj)) {
         global_config.last_vault_name = strdup(json_object_get_string(last_vault_obj));
+    }
+    struct json_object *last_vault_bag_obj;
+    if (json_object_object_get_ex(parsed_json, "last_vault_bag", &last_vault_bag_obj)) {
+        global_config.last_vault_bag = json_object_get_int(last_vault_bag_obj);
     }
 
     global_config.config_path = strdup(path);
@@ -149,6 +153,10 @@ void config_set_last_vault(const char *name) {
     global_config.last_vault_name = name ? strdup(name) : NULL;
 }
 
+void config_set_last_vault_bag(int bag_idx) {
+    global_config.last_vault_bag = bag_idx;
+}
+
 bool config_is_first_run(void) {
     return g_first_run;
 }
@@ -171,6 +179,7 @@ bool config_save() {
     json_object_object_add(root, "game_folder", json_object_new_string(global_config.game_folder ? global_config.game_folder : ""));
     json_object_object_add(root, "last_character_path", json_object_new_string(global_config.last_character_path ? global_config.last_character_path : ""));
     json_object_object_add(root, "last_vault_name", json_object_new_string(global_config.last_vault_name ? global_config.last_vault_name : ""));
+    json_object_object_add(root, "last_vault_bag", json_object_new_int(global_config.last_vault_bag));
 
     const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PRETTY);
     FILE *fp = fopen(global_config.config_path, "w");

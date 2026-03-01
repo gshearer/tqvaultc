@@ -8,6 +8,7 @@ typedef struct {
     char *game_folder;
     char *last_character_path;
     char *last_vault_name;
+    int last_vault_bag;
     char *config_path; // The path where the config was loaded from
 } TQConfig;
 
@@ -30,6 +31,7 @@ void config_set_save_folder(const char *path);
 void config_set_game_folder(const char *path);
 void config_set_last_character(const char *name);
 void config_set_last_vault(const char *name);
+void config_set_last_vault_bag(int bag_idx);
 
 /**
  * config_is_first_run - Returns true if no config file existed on disk at startup

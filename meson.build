@@ -40,6 +40,7 @@ app_sources = [
   'src/affix_table.c',
   'src/ui_manage.c',
   'src/ui_context_menu.c',
+  'src/ui_bag_menu.c',
   'src/ui_affix_dialog.c',
   'src/ui_draw.c',
   'src/ui_tooltip.c',
