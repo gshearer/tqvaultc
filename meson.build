@@ -67,7 +67,13 @@ executable('tq-dbr-tool',
   dependencies: [gtk_dep, zlib_dep, m_dep],
   install: true)
 
-# 6. Build the Texture Extractor
+# 6. Build the Player.chr Debugging Tool
+executable('tq-chr-tool',
+  ['src/utils/tq_chr_tool.c', 'src/character.c'],
+  dependencies: [m_dep],
+  install: true)
+
+# 7. Build the Texture Extractor
 executable('extract-textures',
   ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c'],
   dependencies: [gtk_dep, json_dep, zlib_dep, magick_dep],

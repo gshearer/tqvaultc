@@ -6,6 +6,23 @@
 #include <ctype.h>
 #include <unistd.h>
 
+/* String-valued keys that reach the default handler (not explicitly parsed).
+ * Used to fix Bug 1: the old heuristic misinterpreted small integer values
+ * (1-511) as string length prefixes, corrupting the parse stream. */
+static const char *default_string_keys[] = {
+    "playerTexture", "greatestMonsterKilledName",
+    "lastMonsterHit", "lastMonsterHitBy", "teleportUIDsName",
+    "itemName", "bitmapDownName", "bitmapUpName", "defaultText",
+    "scrollName", "description", "oTokens", "playerClassTag",
+    "uniqueId", "streamData", NULL
+};
+
+static int is_default_string_key(const char *key) {
+    for (int i = 0; default_string_keys[i]; i++)
+        if (strcmp(key, default_string_keys[i]) == 0) return 1;
+    return 0;
+}
+
 static uint32_t read_u32(const uint8_t *data, size_t offset) {
     uint32_t val;
     memcpy(&val, data + offset, 4);
@@ -87,6 +104,11 @@ static void bb_write_key_u32(ByteBuf *b, const char *key, uint32_t val) {
     bb_write_u32(b, val);
 }
 
+/* ── Block sentinel values used by the TQ engine ─────────────────────── */
+
+#define TQ_BEGIN_BLOCK  0xB01DFACE
+#define TQ_END_BLOCK    0xDEADC0DE
+
 /* ── Encode inventory blob ─────────────────────────────────────────────── */
 
 static void encode_inventory_blob(TQCharacter *chr, uint8_t **out, size_t *out_size) {
@@ -94,13 +116,13 @@ static void encode_inventory_blob(TQCharacter *chr, uint8_t **out, size_t *out_s
     bb_init(&b, 4096);
 
     bb_write_key_u32(&b, "numberOfSacks", (uint32_t)chr->num_inv_sacks);
-    bb_write_key_u32(&b, "currentlyFocusedSackNumber", 0);
-    bb_write_key_u32(&b, "currentlySelectedSackNumber", 0);
+    bb_write_key_u32(&b, "currentlyFocusedSackNumber", chr->focused_sack);
+    bb_write_key_u32(&b, "currentlySelectedSackNumber", chr->selected_sack);
 
     for (int s = 0; s < chr->num_inv_sacks; s++) {
         TQVaultSack *sack = &chr->inv_sacks[s];
 
-        bb_write_key_u32(&b, "begin_block", 0);
+        bb_write_key_u32(&b, "begin_block", TQ_BEGIN_BLOCK);
         bb_write_key_u32(&b, "tempBool", 0);
 
         /* Compute expanded item count (stacked items expand to multiple entries) */
@@ -117,26 +139,32 @@ static void encode_inventory_blob(TQCharacter *chr, uint8_t **out, size_t *out_s
 
             for (int si = 0; si < stack; si++) {
                 /* Outer begin_block (Sack type) */
-                bb_write_key_u32(&b, "begin_block", 0);
+                bb_write_key_u32(&b, "begin_block", TQ_BEGIN_BLOCK);
                 /* Inner begin_block */
-                bb_write_key_u32(&b, "begin_block", 0);
+                bb_write_key_u32(&b, "begin_block", TQ_BEGIN_BLOCK);
 
                 bb_write_key_str(&b, "baseName",    item->base_name);
                 bb_write_key_str(&b, "prefixName",  item->prefix_name);
                 bb_write_key_str(&b, "suffixName",  item->suffix_name);
                 bb_write_key_str(&b, "relicName",   item->relic_name);
                 bb_write_key_str(&b, "relicBonus",  item->relic_bonus);
-                bb_write_key_u32(&b, "seed",        si == 0 ? item->seed : (uint32_t)rand());
+                bb_write_key_u32(&b, "seed",
+                    si == 0 ? item->seed
+                    : (si - 1 < item->stack_seed_count ? item->stack_seeds[si - 1]
+                                                       : item->seed));
                 bb_write_key_u32(&b, "var1",        item->var1);
 
                 if (chr->has_atlantis) {
                     bb_write_key_str(&b, "relicName2",  item->relic_name2);
                     bb_write_key_str(&b, "relicBonus2", item->relic_bonus2);
-                    bb_write_key_u32(&b, "var2",        item->var2);
+                    bb_write_key_u32(&b, "var2",
+                        si == 0 ? item->var2
+                        : (si - 1 < item->stack_seed_count && item->stack_var2
+                           ? item->stack_var2[si - 1] : item->var2));
                 }
 
                 /* Inner end_block */
-                bb_write_key_u32(&b, "end_block", 0);
+                bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
 
                 /* First entry uses real position; extras use (-1, -1) */
                 if (si == 0) {
@@ -148,12 +176,12 @@ static void encode_inventory_blob(TQCharacter *chr, uint8_t **out, size_t *out_s
                 }
 
                 /* Outer end_block */
-                bb_write_key_u32(&b, "end_block", 0);
+                bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
             }
         }
 
         /* Sack end_block */
-        bb_write_key_u32(&b, "end_block", 0);
+        bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
     }
 
     *out = b.data;
@@ -166,51 +194,52 @@ static void encode_equipment_blob(TQCharacter *chr, uint8_t **out, size_t *out_s
     ByteBuf b;
     bb_init(&b, 2048);
 
-    bb_write_key_u32(&b, "equipmentCtrlIOStreamVersion", 2);
+    bb_write_key_u32(&b, "equipmentCtrlIOStreamVersion", 1);
 
-    for (int slot = 0; slot < 12; slot++) {
-        /* Weapon set wrappers: begin at slots 7 and 9 */
-        if (slot == 7 || slot == 9) {
-            bb_write_key_u32(&b, "begin_block", 0);
-            bb_write_key_u32(&b, "alternate", slot == 9 ? 1 : 0);
-        }
+    /* Helper: write one equipment slot (item block + itemAttached) */
+    #define WRITE_EQUIP_SLOT(slot) do { \
+        TQItem *eq = chr->equipment[slot]; \
+        bb_write_key_u32(&b, "begin_block", TQ_BEGIN_BLOCK); \
+        bb_write_key_str(&b, "baseName",    eq ? eq->base_name    : NULL); \
+        bb_write_key_str(&b, "prefixName",  eq ? eq->prefix_name  : NULL); \
+        bb_write_key_str(&b, "suffixName",  eq ? eq->suffix_name  : NULL); \
+        bb_write_key_str(&b, "relicName",   eq ? eq->relic_name   : NULL); \
+        bb_write_key_str(&b, "relicBonus",  eq ? eq->relic_bonus  : NULL); \
+        bb_write_key_u32(&b, "seed",        eq ? eq->seed : 0); \
+        bb_write_key_u32(&b, "var1",        eq ? eq->var1 : 0); \
+        if (chr->has_atlantis) { \
+            bb_write_key_str(&b, "relicName2",  eq ? eq->relic_name2  : NULL); \
+            bb_write_key_str(&b, "relicBonus2", eq ? eq->relic_bonus2 : NULL); \
+            bb_write_key_u32(&b, "var2",        eq ? eq->var2 : chr->equip_slot_var2[slot]); \
+        } \
+        bb_write_key_u32(&b, "end_block", TQ_END_BLOCK); \
+        bb_write_key_u32(&b, "itemAttached", (uint32_t)chr->equip_attached[slot]); \
+    } while(0)
 
-        TQItem *eq = chr->equipment[slot];
+    /* Slots 0-6: Head, Neck, Chest, Legs, Arms, Ring1, Ring2 */
+    for (int slot = 0; slot < 7; slot++)
+        WRITE_EQUIP_SLOT(slot);
 
-        /* Inner begin_block (Equipment type: single nesting) */
-        bb_write_key_u32(&b, "begin_block", 0);
-
-        bb_write_key_str(&b, "baseName",    eq ? eq->base_name    : NULL);
-        bb_write_key_str(&b, "prefixName",  eq ? eq->prefix_name  : NULL);
-        bb_write_key_str(&b, "suffixName",  eq ? eq->suffix_name  : NULL);
-        bb_write_key_str(&b, "relicName",   eq ? eq->relic_name   : NULL);
-        bb_write_key_str(&b, "relicBonus",  eq ? eq->relic_bonus  : NULL);
-        bb_write_key_u32(&b, "seed",        eq ? eq->seed : 0);
-        bb_write_key_u32(&b, "var1",        eq ? eq->var1 : 0);
-
-        if (chr->has_atlantis) {
-            bb_write_key_str(&b, "relicName2",  eq ? eq->relic_name2  : NULL);
-            bb_write_key_str(&b, "relicBonus2", eq ? eq->relic_bonus2 : NULL);
-            bb_write_key_u32(&b, "var2",        eq ? eq->var2 : 0);
-        }
-
-        /* Inner end_block */
-        bb_write_key_u32(&b, "end_block", 0);
-
-        /* itemAttached: 1 if slot has item AND not secondary weapon set (slots 9, 10) */
-        int attached = 0;
-        if (eq && eq->base_name && slot != 9 && slot != 10)
-            attached = 1;
-        bb_write_key_u32(&b, "itemAttached", (uint32_t)attached);
-
-        /* Weapon set wrappers: end at slots 8 and 10 */
-        if (slot == 8 || slot == 10) {
-            bb_write_key_u32(&b, "end_block", 0);
-        }
+    /* Weapon sets: write in original order (first_alternate) */
+    int first = chr->first_alternate;  /* 0 or 1 */
+    int second = 1 - first;
+    for (int wi = 0; wi < 2; wi++) {
+        int alt = (wi == 0) ? first : second;
+        int base_slot = 7 + alt * 2;
+        bb_write_key_u32(&b, "begin_block", TQ_BEGIN_BLOCK);
+        bb_write_key_u32(&b, "alternate", (uint32_t)alt);
+        WRITE_EQUIP_SLOT(base_slot);
+        WRITE_EQUIP_SLOT(base_slot + 1);
+        bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
     }
 
+    /* Slot 11: Artifact */
+    WRITE_EQUIP_SLOT(11);
+
+    #undef WRITE_EQUIP_SLOT
+
     /* Final equipment end_block */
-    bb_write_key_u32(&b, "end_block", 0);
+    bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
 
     *out = b.data;
     *out_size = b.size;
@@ -250,7 +279,10 @@ TQCharacter* character_load(const char *filepath) {
 
     /* Equipment parser state */
     int in_equipment  = 0;
-    int equipment_slot = 0;
+    int equip_count = 0;        /* linear counter: how many itemAttached seen */
+    int cur_equip_slot = 0;     /* actual slot index for current item (0-11) */
+    int cur_alternate = -1;     /* -1 = not in weapon wrapper, 0 or 1 */
+    int weapon_sub = 0;         /* index within weapon wrapper (0 or 1) */
     int equip_end_pending = 0;  /* set when all 12 equipment slots parsed */
 
     /*
@@ -303,7 +335,7 @@ TQCharacter* character_load(const char *filepath) {
                     offset += 4;
                     character->equip_block_start = offset;
                     in_equipment  = 1;
-                    equipment_slot = 0;
+                    cur_equip_slot = 0;
 
                 /* ── Inventory section header ───────────────────────── */
                 } else if (inv_state == 1 && strcmp(key, "numberOfSacks") == 0) {
@@ -313,10 +345,12 @@ TQCharacter* character_load(const char *filepath) {
                     inv_state = 2;
 
                 } else if (inv_state == 2 && strcmp(key, "currentlyFocusedSackNumber") == 0) {
+                    character->focused_sack = read_u32(character->raw_data, offset);
                     offset += 4;
                     inv_state = 3;
 
                 } else if (inv_state == 3 && strcmp(key, "currentlySelectedSackNumber") == 0) {
+                    character->selected_sack = read_u32(character->raw_data, offset);
                     offset += 4;
                     inv_sack_idx = -1;
                     inv_state = 4;
@@ -356,8 +390,17 @@ TQCharacter* character_load(const char *filepath) {
                                 TQVaultSack *sk = &character->inv_sacks[inv_sack_idx];
                                 if (cur_inv_item->point_x == -1 && cur_inv_item->point_y == -1
                                         && sk->num_items > 0) {
-                                    /* Stackable extra: merge into previous item */
-                                    sk->items[sk->num_items - 1].stack_size++;
+                                    /* Stackable extra: merge into previous item, preserve seed+var2 */
+                                    TQVaultItem *prev = &sk->items[sk->num_items - 1];
+                                    int idx = prev->stack_seed_count;
+                                    prev->stack_seeds = realloc(prev->stack_seeds,
+                                        (idx + 1) * sizeof(uint32_t));
+                                    prev->stack_var2 = realloc(prev->stack_var2,
+                                        (idx + 1) * sizeof(uint32_t));
+                                    prev->stack_seeds[idx] = cur_inv_item->seed;
+                                    prev->stack_var2[idx] = cur_inv_item->var2;
+                                    prev->stack_seed_count++;
+                                    prev->stack_size++;
                                     vault_item_free_strings(cur_inv_item);
                                 } else {
                                     cur_inv_item->stack_size = 1;
@@ -390,6 +433,10 @@ TQCharacter* character_load(const char *filepath) {
                         /* Final equipment end_block */
                         character->equip_block_end = offset;
                         equip_end_pending = 0;
+                    } else if (in_equipment && cur_alternate >= 0 && weapon_sub >= 2) {
+                        /* Weapon wrapper end_block */
+                        cur_alternate = -1;
+                        if (equip_count >= 11) cur_equip_slot = 11;
                     }
 
                 /* ── Sack header fields ─────────────────────────────── */
@@ -409,10 +456,10 @@ TQCharacter* character_load(const char *filepath) {
                 } else if (strcmp(key, "baseName") == 0) {
                     char *val = read_string(character->raw_data, offset, &offset);
                     if (in_equipment) {
-                        if (val && *val && equipment_slot < 12) {
-                            free(character->equipment[equipment_slot]);
-                            character->equipment[equipment_slot] = calloc(1, sizeof(TQItem));
-                            character->equipment[equipment_slot]->base_name = val;
+                        if (val && *val && cur_equip_slot < 12) {
+                            free(character->equipment[cur_equip_slot]);
+                            character->equipment[cur_equip_slot] = calloc(1, sizeof(TQItem));
+                            character->equipment[cur_equip_slot]->base_name = val;
                         } else { free(val); }
                     } else if (inv_state == 9 && cur_inv_item) {
                         if (val && *val) {
@@ -428,8 +475,8 @@ TQCharacter* character_load(const char *filepath) {
                            strcmp(key, "relicName2")  == 0 ||
                            strcmp(key, "relicBonus2") == 0) {
                     char *val = read_string(character->raw_data, offset, &offset);
-                    if (in_equipment && equipment_slot < 12 && character->equipment[equipment_slot]) {
-                        TQItem *eq = character->equipment[equipment_slot];
+                    if (in_equipment && cur_equip_slot < 12 && character->equipment[cur_equip_slot]) {
+                        TQItem *eq = character->equipment[cur_equip_slot];
                         if      (strcmp(key, "prefixName")  == 0) eq->prefix_name  = val;
                         else if (strcmp(key, "suffixName")  == 0) eq->suffix_name  = val;
                         else if (strcmp(key, "relicName")   == 0) eq->relic_name   = val;
@@ -452,25 +499,27 @@ TQCharacter* character_load(const char *filepath) {
                 } else if (strcmp(key, "seed") == 0) {
                     uint32_t v = read_u32(character->raw_data, offset);
                     offset += 4;
-                    if (in_equipment && equipment_slot < 12 && character->equipment[equipment_slot])
-                        character->equipment[equipment_slot]->seed = v;
+                    if (in_equipment && cur_equip_slot < 12 && character->equipment[cur_equip_slot])
+                        character->equipment[cur_equip_slot]->seed = v;
                     else if (inv_state == 9 && cur_inv_item)
                         cur_inv_item->seed = v;
 
                 } else if (strcmp(key, "var1") == 0) {
                     uint32_t v = read_u32(character->raw_data, offset);
                     offset += 4;
-                    if (in_equipment && equipment_slot < 12 && character->equipment[equipment_slot])
-                        character->equipment[equipment_slot]->var1 = v;
+                    if (in_equipment && cur_equip_slot < 12 && character->equipment[cur_equip_slot])
+                        character->equipment[cur_equip_slot]->var1 = v;
                     else if (inv_state == 9 && cur_inv_item)
                         cur_inv_item->var1 = v;
 
                 } else if (strcmp(key, "var2") == 0) {
                     uint32_t v = read_u32(character->raw_data, offset);
                     offset += 4;
-                    if (in_equipment && equipment_slot < 12 && character->equipment[equipment_slot])
-                        character->equipment[equipment_slot]->var2 = v;
-                    else if (inv_state == 9 && cur_inv_item)
+                    if (in_equipment && cur_equip_slot < 12) {
+                        character->equip_slot_var2[cur_equip_slot] = v;
+                        if (character->equipment[cur_equip_slot])
+                            character->equipment[cur_equip_slot]->var2 = v;
+                    } else if (inv_state == 9 && cur_inv_item)
                         cur_inv_item->var2 = v;
 
                 /* ── Item position fields ───────────────────────────── */
@@ -485,11 +534,36 @@ TQCharacter* character_load(const char *filepath) {
                     offset += 4;
 
                 /* ── Equipment machinery ────────────────────────────── */
+                } else if (strcmp(key, "equipmentCtrlIOStreamVersion") == 0) {
+                    offset += 4;  /* uint32, skip */
+
+                } else if (strcmp(key, "alternate") == 0) {
+                    if (in_equipment) {
+                        cur_alternate = (int)read_u32(character->raw_data, offset);
+                        if (equip_count == 7)
+                            character->first_alternate = cur_alternate;
+                        weapon_sub = 0;
+                        cur_equip_slot = 7 + cur_alternate * 2;
+                    }
+                    offset += 4;
+
                 } else if (strcmp(key, "itemAttached") == 0) {
+                    if (in_equipment && cur_equip_slot < 12)
+                        character->equip_attached[cur_equip_slot] =
+                            (int)read_u32(character->raw_data, offset);
                     offset += 4;
                     if (in_equipment) {
-                        equipment_slot++;
-                        if (equipment_slot >= 12) {
+                        equip_count++;
+                        if (cur_alternate >= 0) {
+                            weapon_sub++;
+                            if (weapon_sub < 2)
+                                cur_equip_slot = 7 + cur_alternate * 2 + weapon_sub;
+                        } else if (equip_count < 7) {
+                            cur_equip_slot = equip_count;
+                        } else {
+                            cur_equip_slot = 11;
+                        }
+                        if (equip_count >= 12) {
                             in_equipment = 0;
                             equip_end_pending = 1;
                         }
@@ -543,13 +617,19 @@ TQCharacter* character_load(const char *filepath) {
                     }
                     free(skill);
 
-                /* ── Default: skip 4-byte value (or string) ─────────── */
+                /* ── Default: skip value ──────────────────────────────── */
                 } else {
-                    uint32_t val = read_u32(character->raw_data, offset);
-                    if (val > 0 && val < 512 && offset + 4 + val <= (size_t)size)
-                        offset += 4 + val;
-                    else
+                    if (is_default_string_key(key)) {
+                        /* Known string key: read length-prefixed string */
+                        uint32_t slen = read_u32(character->raw_data, offset);
+                        if (slen > 0 && slen < 4096 && offset + 4 + slen <= (size_t)size)
+                            offset += 4 + slen;
+                        else
+                            offset += 4;
+                    } else {
+                        /* Everything else is a 4-byte value (uint32 or float) */
                         offset += 4;
+                    }
                 }
 
                 free(key);

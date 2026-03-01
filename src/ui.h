@@ -107,9 +107,9 @@ typedef struct {
     GtkWidget *secresist_grid;
     GtkWidget *secresist_cells[14][8];
 
-    /* Bonus Damage table — 10 columns (percentage only) */
+    /* Bonus Damage table — 11 columns (percentage only) */
     GtkWidget *bdmg_grid;
-    GtkWidget *bdmg_cells[14][10];
+    GtkWidget *bdmg_cells[14][11];
 
     /* Pet Bonus Damage table — 10 columns (percentage only) */
     GtkWidget *petdmg_grid;

@@ -51,10 +51,15 @@ typedef struct {
     char *mastery2;
 
     TQItem *equipment[12]; // Head, Neck, Chest, Legs, Arms, Ring1, Ring2, Wep1, Shld1, Wep2, Shld2, Artifact
+    uint32_t equip_slot_var2[12]; /* per-slot var2, even for empty slots */
+    int equip_attached[12];       /* per-slot itemAttached flag */
+    int first_alternate;          /* which alternate wrapper came first (0 or 1) */
 
     /* Inventory: sacks[0] = main 12×5, sacks[1..3] = extra bags 8×5 */
     TQVaultSack inv_sacks[4];
     int num_inv_sacks;
+    uint32_t focused_sack;    /* currentlyFocusedSackNumber */
+    uint32_t selected_sack;   /* currentlySelectedSackNumber */
 
     /* Splice boundary offsets for binary save */
     size_t inv_block_start;    /* offset of "numberOfSacks" key length prefix */

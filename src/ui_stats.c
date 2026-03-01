@@ -159,18 +159,18 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
     }
 
     /* ── Bonus Damage — percentage only from item components ── */
-    static const char *bdmg_pct_attrs[10] = {
+    static const char *bdmg_pct_attrs[11] = {
         "offensivePhysicalModifier", "offensivePierceModifier",
         "offensiveSlowPoisonModifier", "offensiveSlowBleedingModifier",
         "offensiveLifeModifier", "offensiveElementalModifier",
         "offensiveFireModifier", "offensiveColdModifier", "offensiveLightningModifier",
-        "offensiveTotalDamageModifier"
+        "offensiveTotalDamageModifier", "offensiveSlowLifeLeachModifier"
     };
 
-    float bd_pct[12][10];
+    float bd_pct[12][11];
     for (int r = 0; r < 12; r++) {
         int idx = slot_indices[r];
-        for (int c = 0; c < 10; c++) {
+        for (int c = 0; c < 11; c++) {
             float pct = 0.0f;
             if (chr->equipment[idx])
                 pct = item_get_resistance(chr->equipment[idx], bdmg_pct_attrs[c]);
@@ -186,7 +186,7 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
             }
         }
     }
-    for (int c = 0; c < 10; c++) {
+    for (int c = 0; c < 11; c++) {
         float total_p = 0.0f, total_a = 0.0f;
         for (int r = 0; r < 12; r++) {
             if (r != 2 && r != 3) total_p += bd_pct[r][c];
@@ -611,12 +611,12 @@ void build_stat_tables(AppWidgets *widgets, GtkWidget *tables_inner) {
 
     /* ── 3. Bonus Damage ── */
     {
-        static const char *bd_hdrs[10] = { "Phy", "Prc", "Psn", "Ble", "Vit", "Ele", "Fir", "Cld", "Ltn", "Tot" };
-        static const char *bd_css[10] = {
+        static const char *bd_hdrs[11] = { "Phy", "Prc", "Psn", "Ble", "Vit", "Ele", "Fir", "Cld", "Ltn", "Tot", "LL" };
+        static const char *bd_css[11] = {
             "dmg-hdr-phy", "dmg-hdr-prc", "dmg-hdr-psn", "dmg-hdr-ble",
-            "dmg-hdr-vit", "dmg-hdr-ele", "dmg-hdr-fir", "dmg-hdr-cld", "dmg-hdr-ltn", "dmg-hdr-tot"
+            "dmg-hdr-vit", "dmg-hdr-ele", "dmg-hdr-fir", "dmg-hdr-cld", "dmg-hdr-ltn", "dmg-hdr-tot", "dmg-hdr-ll"
         };
-        BUILD_TABLE_SECTION(bd_vbox, "BONUS DAMAGE", widgets->bdmg_grid, 10, bd_hdrs, bd_css, widgets->bdmg_cells);
+        BUILD_TABLE_SECTION(bd_vbox, "BONUS DAMAGE", widgets->bdmg_grid, 11, bd_hdrs, bd_css, widgets->bdmg_cells);
     }
 
     /* ── 4. Pet Bonus Damage ── */

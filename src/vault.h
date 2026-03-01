@@ -20,6 +20,9 @@ typedef struct {
     int width;
     int height;
     int stack_size;
+    uint32_t *stack_seeds;  /* seeds for stack entries 1..stack_size-1 (entry 0 uses .seed) */
+    uint32_t *stack_var2;   /* var2 for stack entries 1..stack_size-1 (entry 0 uses .var2) */
+    int stack_seed_count;
 } TQVaultItem;
 
 typedef struct {

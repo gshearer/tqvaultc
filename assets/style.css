@@ -58,6 +58,7 @@
 .dmg-hdr-cld { background: alpha(#88ccff, 0.15); color: #88ccff; }
 .dmg-hdr-ltn { background: alpha(#dddd44, 0.15); color: #dddd44; }
 .dmg-hdr-tot { background: alpha(#ffffff, 0.10); color: #e0e0e0; }
+.dmg-hdr-ll  { background: alpha(#dd5577, 0.15); color: #dd5577; }
 .dmg-hdr-oa  { background: alpha(#ffaa44, 0.15); color: #ffaa44; }
 .dmg-hdr-da  { background: alpha(#44aaff, 0.15); color: #44aaff; }
 

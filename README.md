@@ -61,3 +61,8 @@ Big THANK YOU to those who contributed to the TQVaultAE program. Without it, thi
 
 # Build View
 ![Build_View](https://github.com/gshearer/tqvaultc/blob/main/screenshots/tqvaultc-build-view.png?raw=true)
+
+## TODO ##
+
+* Caravan, Transfer, and Relic vaults
+* Add the ability to adjust affixes of legendaries according to the Dwarven forge rules

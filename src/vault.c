@@ -240,6 +240,9 @@ void vault_item_free_strings(TQVaultItem *it) {
     free(it->relic_bonus);  it->relic_bonus  = NULL;
     free(it->relic_name2);  it->relic_name2  = NULL;
     free(it->relic_bonus2); it->relic_bonus2 = NULL;
+    free(it->stack_seeds);  it->stack_seeds  = NULL;
+    free(it->stack_var2);   it->stack_var2   = NULL;
+    it->stack_seed_count = 0;
 }
 
 void vault_free(TQVault *vault) {
