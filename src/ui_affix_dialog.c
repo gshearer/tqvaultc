@@ -167,6 +167,7 @@ static void on_affix_dialog_apply(GtkButton *btn, gpointer data) {
     }
     invalidate_tooltips(w);
     queue_redraw_equip(w);
+    update_save_button_sensitivity(w);
     st->preview_label = NULL;  /* prevent row-deselect signals from using destroyed widget */
     gtk_window_destroy(GTK_WINDOW(st->dialog));
 }

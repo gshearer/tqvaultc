@@ -5,12 +5,14 @@
 #include <stdbool.h>
 #include "character.h"
 #include "vault.h"
+#include "stash.h"
 #include "translation.h"
 
 /* ── Shared enums ──────────────────────────────────────────────────────── */
 
 typedef enum {
-    CONTAINER_NONE, CONTAINER_VAULT, CONTAINER_INV, CONTAINER_BAG, CONTAINER_EQUIP
+    CONTAINER_NONE, CONTAINER_VAULT, CONTAINER_INV, CONTAINER_BAG, CONTAINER_EQUIP,
+    CONTAINER_TRANSFER, CONTAINER_PLAYER_STASH, CONTAINER_RELIC_VAULT
 } ContainerType;
 
 /* ── Held item (click-to-move) ─────────────────────────────────────────── */
@@ -161,6 +163,23 @@ typedef struct {
     char search_text[256];          /* lowercased search term, empty = no search */
     bool vault_sack_match[12];      /* per-sack: any items match? */
     bool char_sack_match[4];        /* per-char-inv-sack: any items match? */
+
+    /* Caravan Driver stash tabs */
+    GtkWidget *stash_notebook;
+    GtkWidget *stash_transfer_da;
+    GtkWidget *stash_player_da;
+    GtkWidget *stash_relic_da;
+    TQStash *transfer_stash;
+    TQStash *player_stash;
+    TQStash *relic_vault;
+
+    /* Stash tooltip caches */
+    TQVaultItem *last_transfer_tooltip_item;
+    char last_transfer_tooltip_markup[16384];
+    TQVaultItem *last_player_tooltip_item;
+    char last_player_tooltip_markup[16384];
+    TQVaultItem *last_relic_tooltip_item;
+    char last_relic_tooltip_markup[16384];
 } AppWidgets;
 
 /* ── Functions shared across ui modules (defined in ui.c) ──────────────── */
@@ -170,6 +189,7 @@ void queue_redraw_all(AppWidgets *widgets);
 void queue_redraw_equip(AppWidgets *widgets);
 void save_vault_if_dirty(AppWidgets *widgets);
 void save_character_if_dirty(AppWidgets *widgets);
+void save_stashes_if_dirty(AppWidgets *widgets);
 void update_save_button_sensitivity(AppWidgets *widgets);
 void repopulate_vault_combo(AppWidgets *widgets, const char *select_name);
 void repopulate_character_combo(AppWidgets *widgets, const char *select_name);
@@ -205,6 +225,13 @@ void inv_draw_cb(GtkDrawingArea *drawing_area, cairo_t *cr,
 void bag_draw_cb(GtkDrawingArea *drawing_area, cairo_t *cr,
                  int width, int height, gpointer user_data);
 void on_vault_resize(GtkDrawingArea *area, int width, int height, gpointer user_data);
+void draw_sack_items(cairo_t *cr, AppWidgets *widgets,
+                     TQVaultSack *sack, int cols, int rows,
+                     int width, int height, double forced_cell,
+                     GtkWidget *this_widget);
+void stash_transfer_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
+void stash_player_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
+void stash_relic_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
 
 /* ── Entry points in ui_tooltip.c ──────────────────────────────────────── */
 
@@ -235,6 +262,14 @@ void on_vault_click(GtkGestureClick *gesture, int n_press, double x, double y, g
 void on_inv_click(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data);
 void on_bag_click(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data);
 void on_equip_click(GtkGestureClick *gesture, int n_press, double x, double y, gpointer user_data);
+void handle_sack_click(AppWidgets *widgets, GtkWidget *drawing_area,
+                       TQVaultSack *sack,
+                       ContainerType ctype, int sack_idx,
+                       int cols, int rows, double cell,
+                       double px, double py, int button);
+void on_stash_transfer_click(GtkGestureClick *g, int n, double x, double y, gpointer ud);
+void on_stash_player_click(GtkGestureClick *g, int n, double x, double y, gpointer ud);
+void on_stash_relic_click(GtkGestureClick *g, int n, double x, double y, gpointer ud);
 
 /* ── Entry points in ui_stats.c ────────────────────────────────────────── */
 

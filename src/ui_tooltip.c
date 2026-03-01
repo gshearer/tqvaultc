@@ -170,6 +170,68 @@ static void update_instant_tooltip(AppWidgets *widgets) {
 
     #undef SACK_ITEM_RECT
 
+    /* Helper macro for stash tooltip item rects (cell size from stash dims) */
+    #define STASH_ITEM_RECT(it, stash_ptr) do {                             \
+        double cell = (double)pw / (stash_ptr)->sack_width;                 \
+        double cell_h2 = (double)ph / (stash_ptr)->sack_height;             \
+        if (cell_h2 < cell) cell = cell_h2;                                 \
+        if (cell <= 0.0) cell = 32.0;                                       \
+        int iw, ih;                                                         \
+        get_item_dims(widgets, (it), &iw, &ih);                            \
+        rect.x      = (int)((it)->point_x * cell);                        \
+        rect.y      = (int)((it)->point_y * cell);                        \
+        rect.width  = (int)(iw * cell);                                    \
+        rect.height = (int)(ih * cell);                                    \
+    } while (0)
+
+    /* Stash tooltip helper: compute cell size, find item, show tooltip.
+     * Uses find_item_at_cell() with the locally-computed cell size instead of
+     * sack_hit_test() (which would use compute_cell_size() — wrong for stashes). */
+    #define STASH_TOOLTIP(da_field, stash_field, cache_item, cache_markup, label) \
+    if (w == widgets->da_field && widgets->stash_field) {                        \
+        TQStash *st = widgets->stash_field;                                      \
+        double scw = (double)pw / st->sack_width;                                \
+        double sch = (double)ph / st->sack_height;                               \
+        double scell = scw < sch ? scw : sch;                                    \
+        if (scell <= 0.0) scell = 32.0;                                          \
+        item = find_item_at_cell(widgets, &st->sack, st->sack_width,             \
+                                 st->sack_height, scell, x, y, NULL);            \
+        if (item) {                                                              \
+            if (item == widgets->cache_item &&                                   \
+                gtk_widget_get_visible(popover)) return;                         \
+            widgets->cache_item = item;                                          \
+            widgets->cache_markup[0] = '\0';                                     \
+            vault_item_format_stats(item, widgets->translations,                 \
+                                    widgets->cache_markup,                        \
+                                    sizeof(widgets->cache_markup));               \
+            if (widgets->tooltip_parent != w) {                                  \
+                if (widgets->tooltip_parent) gtk_widget_unparent(popover);       \
+                gtk_widget_set_parent(popover, w);                               \
+                widgets->tooltip_parent = w;                                     \
+            }                                                                    \
+            STASH_ITEM_RECT(item, st);                                           \
+            gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),              \
+                                 widgets->cache_markup);                          \
+            gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);            \
+            tooltip_set_position(popover, w, &rect);                             \
+            gtk_widget_set_visible(popover, TRUE);                               \
+            return;                                                              \
+        }                                                                        \
+        widgets->cache_item = NULL;                                              \
+        gtk_widget_set_visible(popover, FALSE);                                  \
+        return;                                                                  \
+    }
+
+    STASH_TOOLTIP(stash_transfer_da, transfer_stash,
+                  last_transfer_tooltip_item, last_transfer_tooltip_markup, "Transfer")
+    STASH_TOOLTIP(stash_player_da, player_stash,
+                  last_player_tooltip_item, last_player_tooltip_markup, "Storage")
+    STASH_TOOLTIP(stash_relic_da, relic_vault,
+                  last_relic_tooltip_item, last_relic_tooltip_markup, "Relics")
+
+    #undef STASH_TOOLTIP
+    #undef STASH_ITEM_RECT
+
     if (w == widgets->equip_drawing_area) {
         if (!widgets->current_character) { gtk_widget_set_visible(popover, FALSE); return; }
         double cell_size = compute_cell_size(widgets);

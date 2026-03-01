@@ -191,6 +191,16 @@ void save_character_if_dirty(AppWidgets *widgets) {
     }
 }
 
+/* Save all dirty stashes */
+void save_stashes_if_dirty(AppWidgets *widgets) {
+    if (widgets->transfer_stash && widgets->transfer_stash->dirty)
+        stash_save(widgets->transfer_stash);
+    if (widgets->player_stash && widgets->player_stash->dirty)
+        stash_save(widgets->player_stash);
+    if (widgets->relic_vault && widgets->relic_vault->dirty)
+        stash_save(widgets->relic_vault);
+}
+
 /* Get item dimensions (texture-based if available, else from struct fields) */
 void get_item_dims(AppWidgets *widgets, TQVaultItem *item, int *w, int *h) {
     GdkPixbuf *pixbuf = load_item_texture(widgets, item->base_name, item->var1);
@@ -236,6 +246,9 @@ void invalidate_tooltips(AppWidgets *widgets) {
     widgets->last_inv_tooltip_item = NULL;
     widgets->last_bag_tooltip_item = NULL;
     widgets->last_equip_tooltip_slot = -1;
+    widgets->last_transfer_tooltip_item = NULL;
+    widgets->last_player_tooltip_item = NULL;
+    widgets->last_relic_tooltip_item = NULL;
     if (widgets->tooltip_popover)
         gtk_widget_set_visible(widgets->tooltip_popover, FALSE);
 }
@@ -253,6 +266,12 @@ void queue_redraw_all(AppWidgets *widgets) {
     gtk_widget_queue_draw(widgets->inv_drawing_area);
     gtk_widget_queue_draw(widgets->bag_drawing_area);
     gtk_widget_queue_draw(widgets->equip_drawing_area);
+    if (widgets->stash_transfer_da)
+        gtk_widget_queue_draw(widgets->stash_transfer_da);
+    if (widgets->stash_player_da)
+        gtk_widget_queue_draw(widgets->stash_player_da);
+    if (widgets->stash_relic_da)
+        gtk_widget_queue_draw(widgets->stash_relic_da);
 }
 
 /* ── Search logic ────────────────────────────────────────────────────────── */
@@ -629,6 +648,14 @@ static void on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_
         update_save_button_sensitivity(widgets);
     }
 
+    /* Save dirty player stash before switching */
+    if (widgets->player_stash && widgets->player_stash->dirty)
+        stash_save(widgets->player_stash);
+    if (widgets->player_stash) {
+        stash_free(widgets->player_stash);
+        widgets->player_stash = NULL;
+    }
+
     char *name = dropdown_get_selected_text(combo);
     if (!name) return;
 
@@ -637,6 +664,14 @@ static void on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_
 
     char path[1024];
     snprintf(path, sizeof(path), "%s/SaveData/Main/%s/Player.chr", global_config.save_folder, name);
+
+    /* Load per-character player stash */
+    char *ps_path = stash_build_path(STASH_PLAYER, name);
+    if (ps_path) {
+        widgets->player_stash = stash_load(ps_path);
+        free(ps_path);
+    }
+
     g_free(name);
 
     TQCharacter *chr = character_load(path);
@@ -645,6 +680,7 @@ static void on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_
         prefetch_for_character(chr);
         run_search(widgets);
     }
+    queue_redraw_all(widgets);
 }
 
 /* Bag button state indices */
@@ -954,6 +990,7 @@ static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
     AppWidgets *widgets = (AppWidgets *)user_data;
     cancel_held_item(widgets);
     save_vault_if_dirty(widgets);
+    save_stashes_if_dirty(widgets);
 
     if (widgets->char_dirty) {
         int choice = confirm_unsaved_character(widgets);
@@ -963,6 +1000,14 @@ static gboolean on_close_request(GtkWindow *window, gpointer user_data) {
             return TRUE;  /* Cancel — block close */
         /* Discard: don't save, allow close */
     }
+
+    /* Free stash data */
+    stash_free(widgets->transfer_stash);
+    widgets->transfer_stash = NULL;
+    stash_free(widgets->player_stash);
+    widgets->player_stash = NULL;
+    stash_free(widgets->relic_vault);
+    widgets->relic_vault = NULL;
 
     /* Unparent the context-menu popover so the drawing area it's attached to
      * doesn't complain about leftover children during finalization. */
@@ -1398,24 +1443,64 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_add_controller(widgets->equip_drawing_area, equip_motion);
     gtk_box_append(GTK_BOX(equip_col), widgets->equip_drawing_area);
 
-    /* Right column: single scrollable pane with all stats tables */
-    GtkWidget *tables_col = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    gtk_widget_set_hexpand(tables_col, TRUE);
-    gtk_widget_set_vexpand(tables_col, TRUE);
-    gtk_box_append(GTK_BOX(bottom_hbox), tables_col);
+    /* Right column: notebook with stats + stash tabs */
+    widgets->stash_notebook = gtk_notebook_new();
+    gtk_widget_set_hexpand(widgets->stash_notebook, TRUE);
+    gtk_widget_set_vexpand(widgets->stash_notebook, TRUE);
+    gtk_box_append(GTK_BOX(bottom_hbox), widgets->stash_notebook);
 
+    /* Tab 0: Stats */
     GtkWidget *tables_scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tables_scroll),
                                     GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
     gtk_widget_set_hexpand(tables_scroll, TRUE);
     gtk_widget_set_vexpand(tables_scroll, TRUE);
-    gtk_box_append(GTK_BOX(tables_col), tables_scroll);
-
     GtkWidget *tables_inner = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(tables_scroll), tables_inner);
-
-    /* Build all stat tables (resistances, damage, speed, health) */
     build_stat_tables(widgets, tables_inner);
+    gtk_notebook_append_page(GTK_NOTEBOOK(widgets->stash_notebook),
+        tables_scroll, gtk_label_new("Stats"));
+
+    /* Helper: create a stash tab with scrolled drawing area + event controllers */
+    #define MAKE_STASH_TAB(da_field, draw_cb, click_cb, tab_label) do { \
+        GtkWidget *sw = gtk_scrolled_window_new();                      \
+        gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(sw),         \
+            GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);                \
+        gtk_widget_set_hexpand(sw, TRUE);                               \
+        gtk_widget_set_vexpand(sw, TRUE);                               \
+        widgets->da_field = gtk_drawing_area_new();                     \
+        gtk_widget_set_hexpand(widgets->da_field, TRUE);                \
+        gtk_widget_set_vexpand(widgets->da_field, TRUE);                \
+        gtk_drawing_area_set_draw_func(                                 \
+            GTK_DRAWING_AREA(widgets->da_field), draw_cb, widgets, NULL);\
+        GtkGesture *sc = gtk_gesture_click_new();                       \
+        gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(sc), 0);      \
+        g_signal_connect(sc, "pressed", G_CALLBACK(click_cb), widgets); \
+        gtk_widget_add_controller(widgets->da_field,                    \
+            GTK_EVENT_CONTROLLER(sc));                                  \
+        GtkEventController *sm = gtk_event_controller_motion_new();     \
+        g_signal_connect(sm, "motion", G_CALLBACK(on_motion), widgets); \
+        g_signal_connect(sm, "leave", G_CALLBACK(on_motion_leave), widgets);\
+        gtk_widget_add_controller(widgets->da_field, sm);               \
+        gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(sw),          \
+            widgets->da_field);                                         \
+        gtk_notebook_append_page(GTK_NOTEBOOK(widgets->stash_notebook), \
+            sw, gtk_label_new(tab_label));                              \
+    } while (0)
+
+    /* Tab 1: Transfer Stash */
+    MAKE_STASH_TAB(stash_transfer_da, stash_transfer_draw_cb,
+                   on_stash_transfer_click, "Transfer");
+
+    /* Tab 2: Player Stash */
+    MAKE_STASH_TAB(stash_player_da, stash_player_draw_cb,
+                   on_stash_player_click, "Storage");
+
+    /* Tab 3: Relic Vault */
+    MAKE_STASH_TAB(stash_relic_da, stash_relic_draw_cb,
+                   on_stash_relic_click, "Relics");
+
+    #undef MAKE_STASH_TAB
 
     /* ── Actions ── */
     GSimpleAction *settings_action = g_simple_action_new("settings", NULL);
@@ -1432,6 +1517,12 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     if (global_config.save_folder) {
         repopulate_vault_combo(widgets, NULL);
         repopulate_character_combo(widgets, NULL);
+
+        /* Load global stashes (transfer + relic vault) */
+        char *tp = stash_build_path(STASH_TRANSFER, NULL);
+        if (tp) { widgets->transfer_stash = stash_load(tp); free(tp); }
+        char *rp = stash_build_path(STASH_RELIC_VAULT, NULL);
+        if (rp) { widgets->relic_vault = stash_load(rp); free(rp); }
     }
     /* Save vault on close */
     g_signal_connect(window, "close-request", G_CALLBACK(on_close_request), widgets);

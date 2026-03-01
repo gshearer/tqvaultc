@@ -64,5 +64,4 @@ Big THANK YOU to those who contributed to the TQVaultAE program. Without it, thi
 
 ## TODO ##
 
-* Caravan, Transfer, and Relic vaults
 * Add the ability to adjust affixes of legendaries according to the Dwarven forge rules

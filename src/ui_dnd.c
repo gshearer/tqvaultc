@@ -18,6 +18,16 @@ void vault_item_deep_copy(TQVaultItem *dst, const TQVaultItem *src) {
     dst->relic_bonus = safe_strdup(src->relic_bonus);
     dst->relic_name2 = safe_strdup(src->relic_name2);
     dst->relic_bonus2= safe_strdup(src->relic_bonus2);
+    if (src->stack_seeds && src->stack_seed_count > 0) {
+        size_t n = (size_t)src->stack_seed_count;
+        dst->stack_seeds = malloc(n * sizeof(uint32_t));
+        memcpy(dst->stack_seeds, src->stack_seeds, n * sizeof(uint32_t));
+        dst->stack_var2 = malloc(n * sizeof(uint32_t));
+        memcpy(dst->stack_var2, src->stack_var2, n * sizeof(uint32_t));
+    } else {
+        dst->stack_seeds = NULL;
+        dst->stack_var2  = NULL;
+    }
 }
 
 void sack_add_item(TQVaultSack *sack, const TQVaultItem *item) {
@@ -159,6 +169,27 @@ void cancel_held_item(AppWidgets *widgets) {
             TQItem *eq = calloc(1, sizeof(TQItem));
             vault_item_to_equip(eq, &hi->item);
             widgets->current_character->equipment[hi->source_equip_slot] = eq;
+        }
+        break;
+    case CONTAINER_TRANSFER:
+        if (widgets->transfer_stash) {
+            TQVaultItem copy;
+            vault_item_deep_copy(&copy, &hi->item);
+            sack_add_item(&widgets->transfer_stash->sack, &copy);
+        }
+        break;
+    case CONTAINER_PLAYER_STASH:
+        if (widgets->player_stash) {
+            TQVaultItem copy;
+            vault_item_deep_copy(&copy, &hi->item);
+            sack_add_item(&widgets->player_stash->sack, &copy);
+        }
+        break;
+    case CONTAINER_RELIC_VAULT:
+        if (widgets->relic_vault) {
+            TQVaultItem copy;
+            vault_item_deep_copy(&copy, &hi->item);
+            sack_add_item(&widgets->relic_vault->sack, &copy);
         }
         break;
     default:
@@ -393,7 +424,7 @@ static void pick_up_from_sack(AppWidgets *widgets, TQVaultSack *sack,
     queue_redraw_all(widgets);
 }
 
-static void place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
+void place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
                            ContainerType ctype, int sack_idx,
                            int cols, int rows, double cell, double px, double py) {
     HeldItem *hi = widgets->held_item;
@@ -521,12 +552,23 @@ done:
         update_save_button_sensitivity(widgets);
     }
 
+    /* Mark stash dirty if source or destination is a stash */
+    if (ctype == CONTAINER_TRANSFER || held_source == CONTAINER_TRANSFER) {
+        if (widgets->transfer_stash) widgets->transfer_stash->dirty = true;
+    }
+    if (ctype == CONTAINER_PLAYER_STASH || held_source == CONTAINER_PLAYER_STASH) {
+        if (widgets->player_stash) widgets->player_stash->dirty = true;
+    }
+    if (ctype == CONTAINER_RELIC_VAULT || held_source == CONTAINER_RELIC_VAULT) {
+        if (widgets->relic_vault) widgets->relic_vault->dirty = true;
+    }
+
     invalidate_tooltips(widgets);
     queue_redraw_all(widgets);
 }
 
 /* ── Sack click handler: handles both pick-up and place ─────────────────── */
-static void handle_sack_click(AppWidgets *widgets, GtkWidget *drawing_area,
+void handle_sack_click(AppWidgets *widgets, GtkWidget *drawing_area,
                                TQVaultSack *sack,
                                ContainerType ctype, int sack_idx,
                                int cols, int rows, double cell,
@@ -764,4 +806,58 @@ void on_equip_click(GtkGestureClick *gesture, int n_press, double x, double y, g
         invalidate_tooltips(widgets);
         queue_redraw_equip(widgets);
     }
+}
+
+/* ── Stash click callbacks ─────────────────────────────────────────────── */
+
+static double stash_cell_size(TQStash *stash, GtkWidget *da) {
+    if (!stash) return 32.0;
+    int w = gtk_widget_get_width(da);
+    int h = gtk_widget_get_height(da);
+    double cw = (double)w / stash->sack_width;
+    double ch = (double)h / stash->sack_height;
+    double cell = cw < ch ? cw : ch;
+    return cell > 0.0 ? cell : 32.0;
+}
+
+void on_stash_transfer_click(GtkGestureClick *g, int n, double x, double y,
+                              gpointer ud) {
+    (void)n;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    if (!widgets->transfer_stash) return;
+    double cell = stash_cell_size(widgets->transfer_stash, widgets->stash_transfer_da);
+    int button = (int)gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g));
+    handle_sack_click(widgets, widgets->stash_transfer_da,
+                      &widgets->transfer_stash->sack, CONTAINER_TRANSFER, 0,
+                      widgets->transfer_stash->sack_width,
+                      widgets->transfer_stash->sack_height,
+                      cell, x, y, button);
+}
+
+void on_stash_player_click(GtkGestureClick *g, int n, double x, double y,
+                            gpointer ud) {
+    (void)n;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    if (!widgets->player_stash) return;
+    double cell = stash_cell_size(widgets->player_stash, widgets->stash_player_da);
+    int button = (int)gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g));
+    handle_sack_click(widgets, widgets->stash_player_da,
+                      &widgets->player_stash->sack, CONTAINER_PLAYER_STASH, 0,
+                      widgets->player_stash->sack_width,
+                      widgets->player_stash->sack_height,
+                      cell, x, y, button);
+}
+
+void on_stash_relic_click(GtkGestureClick *g, int n, double x, double y,
+                           gpointer ud) {
+    (void)n;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    if (!widgets->relic_vault) return;
+    double cell = stash_cell_size(widgets->relic_vault, widgets->stash_relic_da);
+    int button = (int)gtk_gesture_single_get_current_button(GTK_GESTURE_SINGLE(g));
+    handle_sack_click(widgets, widgets->stash_relic_da,
+                      &widgets->relic_vault->sack, CONTAINER_RELIC_VAULT, 0,
+                      widgets->relic_vault->sack_width,
+                      widgets->relic_vault->sack_height,
+                      cell, x, y, button);
 }

@@ -14,6 +14,21 @@
 #include <string.h>
 #include <strings.h>
 
+/* Set the appropriate dirty flag based on container type. */
+static void mark_context_dirty(AppWidgets *widgets) {
+    ContainerType src = widgets->context_source;
+    if (src == CONTAINER_VAULT)
+        widgets->vault_dirty = true;
+    else if (src == CONTAINER_TRANSFER && widgets->transfer_stash)
+        widgets->transfer_stash->dirty = true;
+    else if (src == CONTAINER_PLAYER_STASH && widgets->player_stash)
+        widgets->player_stash->dirty = true;
+    else if (src == CONTAINER_RELIC_VAULT && widgets->relic_vault)
+        widgets->relic_vault->dirty = true;
+    else
+        widgets->char_dirty = true;
+}
+
 /* ── Relic type label ──────────────────────────────────────────────────── */
 
 /* Determine if a relic path refers to a charm or a relic. */
@@ -517,6 +532,18 @@ static void on_item_delete(GSimpleAction *action, GVariant *param, gpointer data
                 sack = &widgets->current_character->inv_sacks[idx];
                 widgets->char_dirty = true;
             }
+        } else if (widgets->context_source == CONTAINER_TRANSFER &&
+                   widgets->transfer_stash) {
+            sack = &widgets->transfer_stash->sack;
+            widgets->transfer_stash->dirty = true;
+        } else if (widgets->context_source == CONTAINER_PLAYER_STASH &&
+                   widgets->player_stash) {
+            sack = &widgets->player_stash->sack;
+            widgets->player_stash->dirty = true;
+        } else if (widgets->context_source == CONTAINER_RELIC_VAULT &&
+                   widgets->relic_vault) {
+            sack = &widgets->relic_vault->sack;
+            widgets->relic_vault->dirty = true;
         }
         if (sack) {
             for (int i = 0; i < sack->num_items; i++) {
@@ -533,6 +560,7 @@ static void on_item_delete(GSimpleAction *action, GVariant *param, gpointer data
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Remove relic from slot 1 of the right-clicked item and place it on the cursor. */
@@ -588,14 +616,12 @@ static void on_item_remove_relic(GSimpleAction *action, GVariant *param, gpointe
         free(it->relic_name);  it->relic_name = NULL;
         free(it->relic_bonus); it->relic_bonus = NULL;
         it->var1 = 0;
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
 
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Remove relic from slot 2 of the right-clicked item and place it on the cursor. */
@@ -651,14 +677,12 @@ static void on_item_remove_relic2(GSimpleAction *action, GVariant *param, gpoint
         free(it->relic_name2);  it->relic_name2 = NULL;
         free(it->relic_bonus2); it->relic_bonus2 = NULL;
         it->var2 = 0;
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
 
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Set prefix on the right-clicked item */
@@ -677,13 +701,11 @@ static void on_set_prefix(GSimpleAction *action, GVariant *param, gpointer data)
         TQVaultItem *it = widgets->context_item;
         free(it->prefix_name);
         it->prefix_name = strdup(affix_path);
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Remove prefix from the right-clicked item */
@@ -700,13 +722,11 @@ static void on_remove_prefix(GSimpleAction *action, GVariant *param, gpointer da
         TQVaultItem *it = widgets->context_item;
         free(it->prefix_name);
         it->prefix_name = NULL;
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Set suffix on the right-clicked item */
@@ -725,13 +745,11 @@ static void on_set_suffix(GSimpleAction *action, GVariant *param, gpointer data)
         TQVaultItem *it = widgets->context_item;
         free(it->suffix_name);
         it->suffix_name = strdup(affix_path);
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Remove suffix from the right-clicked item */
@@ -748,13 +766,11 @@ static void on_remove_suffix(GSimpleAction *action, GVariant *param, gpointer da
         TQVaultItem *it = widgets->context_item;
         free(it->suffix_name);
         it->suffix_name = NULL;
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Set completion bonus on slot 1 (or standalone relic/charm/artifact) */
@@ -773,13 +789,11 @@ static void on_set_relic_bonus(GSimpleAction *action, GVariant *param, gpointer 
         TQVaultItem *it = widgets->context_item;
         free(it->relic_bonus);
         it->relic_bonus = strdup(bonus_path);
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* Set completion bonus on slot 2 */
@@ -798,13 +812,11 @@ static void on_set_relic_bonus2(GSimpleAction *action, GVariant *param, gpointer
         TQVaultItem *it = widgets->context_item;
         free(it->relic_bonus2);
         it->relic_bonus2 = strdup(bonus_path);
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
     }
     invalidate_tooltips(widgets);
     queue_redraw_equip(widgets);
+    update_save_button_sensitivity(widgets);
 }
 
 /* ── Modify Affixes action (launches dialog) ───────────────────────────── */
@@ -851,12 +863,10 @@ static void on_set_qty_ok(GtkButton *btn, gpointer user_data) {
         } else {
             it->stack_size = qty;
         }
-        if (widgets->context_source == CONTAINER_VAULT)
-            widgets->vault_dirty = true;
-        else
-            widgets->char_dirty = true;
+        mark_context_dirty(widgets);
         invalidate_tooltips(widgets);
         queue_redraw_equip(widgets);
+        update_save_button_sensitivity(widgets);
     }
     gtk_window_destroy(GTK_WINDOW(dialog));
 }

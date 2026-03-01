@@ -46,7 +46,8 @@ app_sources = [
   'src/ui_dnd.c',
   'src/ui_stats.c',
   'src/ui_settings.c',
-  'src/prefetch.c'
+  'src/prefetch.c',
+  'src/stash.c'
 ]
 
 # 4. Build the GUI Application

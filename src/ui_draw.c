@@ -311,10 +311,10 @@ void equip_draw_cb(GtkDrawingArea *drawing_area, cairo_t *cr,
 
 /* ── Shared sack drawing helper ──────────────────────────────────────────── */
 
-static void draw_sack_items(cairo_t *cr, AppWidgets *widgets,
-                             TQVaultSack *sack, int cols, int rows,
-                             int width, int height, double forced_cell,
-                             GtkWidget *this_widget)
+void draw_sack_items(cairo_t *cr, AppWidgets *widgets,
+                     TQVaultSack *sack, int cols, int rows,
+                     int width, int height, double forced_cell,
+                     GtkWidget *this_widget)
 {
     /* Use forced_cell when provided (>0); otherwise derive from dimensions. */
     double cell;
@@ -672,4 +672,63 @@ double compute_cell_size(AppWidgets *widgets)
     if (cell < 1.0) cell = 1.0;
 
     return cell;
+}
+
+/* ── Stash draw callbacks ──────────────────────────────────────────────── */
+
+static void draw_empty_stash_message(cairo_t *cr, int width, int height,
+                                      const char *msg) {
+    cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+    cairo_paint(cr);
+    cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL,
+                           CAIRO_FONT_WEIGHT_NORMAL);
+    cairo_set_font_size(cr, 13.0);
+    cairo_text_extents_t te;
+    cairo_text_extents(cr, msg, &te);
+    cairo_set_source_rgb(cr, 0.5, 0.5, 0.5);
+    cairo_move_to(cr, ((double)width - te.width) / 2.0 - te.x_bearing,
+                      ((double)height - te.height) / 2.0 - te.y_bearing);
+    cairo_show_text(cr, msg);
+}
+
+static void stash_draw_common(cairo_t *cr, AppWidgets *widgets,
+                               TQStash *stash, GtkWidget *da,
+                               int width, int height, const char *empty_msg) {
+    if (!stash) {
+        draw_empty_stash_message(cr, width, height, empty_msg);
+        return;
+    }
+    double cw = (double)width  / stash->sack_width;
+    double ch = (double)height / stash->sack_height;
+    double cell = cw < ch ? cw : ch;
+    if (cell < 1.0) cell = 1.0;
+    draw_sack_items(cr, widgets, &stash->sack, stash->sack_width,
+                    stash->sack_height, width, height, cell, da);
+}
+
+void stash_transfer_draw_cb(GtkDrawingArea *da, cairo_t *cr,
+                             int w, int h, gpointer ud) {
+    (void)da;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    stash_draw_common(cr, widgets, widgets->transfer_stash,
+                      widgets->stash_transfer_da, w, h,
+                      "Transfer stash not found");
+}
+
+void stash_player_draw_cb(GtkDrawingArea *da, cairo_t *cr,
+                           int w, int h, gpointer ud) {
+    (void)da;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    stash_draw_common(cr, widgets, widgets->player_stash,
+                      widgets->stash_player_da, w, h,
+                      "Player stash not found");
+}
+
+void stash_relic_draw_cb(GtkDrawingArea *da, cairo_t *cr,
+                          int w, int h, gpointer ud) {
+    (void)da;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    stash_draw_common(cr, widgets, widgets->relic_vault,
+                      widgets->stash_relic_da, w, h,
+                      "Relic vault not found");
 }
