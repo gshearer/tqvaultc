@@ -292,7 +292,13 @@ void on_view_build_clicked(GtkButton *btn, gpointer user_data);
 
 /* ── Entry points in ui_affix_dialog.c ─────────────────────────────────── */
 
-void show_affix_dialog(AppWidgets *widgets);
+struct TQItemAffixes_tag;  /* forward declaration (defined in affix_table.h) */
+
+/* Show the affix modification dialog. If override_affixes is non-NULL, use those
+ * instead of looking up via affix_table_get(). If override_title is non-NULL,
+ * use it as the dialog title instead of "Modify Affixes". */
+void show_affix_dialog(AppWidgets *widgets, struct TQItemAffixes_tag *override_affixes,
+                       const char *override_title);
 
 /* ── Entry points in ui_context_menu.c ─────────────────────────────────── */
 

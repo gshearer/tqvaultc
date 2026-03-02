@@ -16,7 +16,8 @@
 typedef struct {
     AppWidgets *widgets;
     GtkWidget  *dialog;
-    TQItemAffixes *affixes;          /* owned — freed on destroy */
+    TQItemAffixes *affixes;          /* affix data */
+    bool owns_affixes;               /* true if we should free affixes on destroy */
     GtkListBox *prefix_listbox;
     GtkListBox *suffix_listbox;
     GtkWidget  *prefix_search;
@@ -47,8 +48,10 @@ static void affix_dialog_state_free(gpointer data) {
     free(st->orig_suffix);
     free(st->selected_prefix);
     free(st->selected_suffix);
-    /* Do NOT call affix_result_free(st->affixes) — the result is owned by
-     * affix_table's internal cache and will be reused on subsequent calls. */
+    /* If affixes came from the internal cache (affix_table_get), don't free.
+     * If they came from an override (e.g. forge), we own them and must free. */
+    if (st->owns_affixes)
+        affix_result_free(st->affixes);
     g_free(st);
 }
 
@@ -232,7 +235,8 @@ static GtkWidget *make_affix_row(const char *name, const char *affix_path,
     return row;
 }
 
-void show_affix_dialog(AppWidgets *widgets) {
+void show_affix_dialog(AppWidgets *widgets, TQItemAffixes *override_affixes,
+                       const char *override_title) {
     const char *base = NULL;
     TQVaultItem *vault_item = widgets->context_item;
     TQItem *equip_item = widgets->context_equip_item;
@@ -244,14 +248,21 @@ void show_affix_dialog(AppWidgets *widgets) {
         base = vault_item->base_name;
     if (!base) return;
 
-
-    TQItemAffixes *affixes = affix_table_get(base, widgets->translations);
+    TQItemAffixes *affixes;
+    bool owns_affixes = false;
+    if (override_affixes) {
+        affixes = override_affixes;
+        owns_affixes = true;   /* caller transfers ownership */
+    } else {
+        affixes = affix_table_get(base, widgets->translations);
+    }
     if (!affixes) return;
 
 
     AffixDialogState *st = g_new0(AffixDialogState, 1);
     st->widgets = widgets;
     st->affixes = affixes;
+    st->owns_affixes = owns_affixes;
     st->vault_item = vault_item;
     st->equip_item = equip_item;
     st->source = widgets->context_source;
@@ -288,7 +299,7 @@ void show_affix_dialog(AppWidgets *widgets) {
     /* -- Build dialog window -- */
     GtkWidget *dialog = gtk_window_new();
     st->dialog = dialog;
-    gtk_window_set_title(GTK_WINDOW(dialog), "Modify Affixes");
+    gtk_window_set_title(GTK_WINDOW(dialog), override_title ? override_title : "Modify Affixes");
     gtk_window_set_modal(GTK_WINDOW(dialog), TRUE);
     gtk_window_set_transient_for(GTK_WINDOW(dialog), GTK_WINDOW(widgets->main_window));
     gtk_window_set_default_size(GTK_WINDOW(dialog), 1100, 650);

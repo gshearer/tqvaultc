@@ -621,6 +621,162 @@ bool item_can_modify_affixes(const char *base_name) {
     return is_equipment;
 }
 
+/* ── Forge eligibility check ─────────────────────────────────────── */
+
+bool item_can_forge_affixes(const char *base_name) {
+    if (!base_name || !base_name[0]) return false;
+
+    TQArzRecordData *dbr = asset_get_dbr(base_name);
+    if (!dbr) return false;
+
+    /* Must be Epic or Legendary */
+    char *classification = arz_record_get_string(dbr, "itemClassification", NULL);
+    if (!classification) return false;
+    bool is_epic_or_leg = (strcasecmp(classification, "Epic") == 0 ||
+                           strcasecmp(classification, "Legendary") == 0);
+    free(classification);
+    if (!is_epic_or_leg) return false;
+
+    /* Must be equipment */
+    char *class_name = arz_record_get_string(dbr, "Class", NULL);
+    if (!class_name) return false;
+
+    bool is_equipment =
+        strstr(class_name, "UpperBody") ||
+        strstr(class_name, "LowerBody") ||
+        strstr(class_name, "Head") ||
+        strstr(class_name, "Forearm") ||
+        strstr(class_name, "WeaponMelee") ||
+        strstr(class_name, "WeaponHunting") ||
+        strstr(class_name, "WeaponMagical") ||
+        strstr(class_name, "Shield") ||
+        strstr(class_name, "Amulet") ||
+        strstr(class_name, "Ring");
+    free(class_name);
+    return is_equipment;
+}
+
+/* ── Dvergr Forge affix resolution ──────────────────────────────── */
+
+/* Read a float variable from a DBR record by name (linear scan, for infrequent use) */
+static float dbr_get_float_simple(TQArzRecordData *dbr, const char *var_name) {
+    if (!dbr) return 0;
+    for (uint32_t i = 0; i < dbr->num_vars; i++) {
+        if (!dbr->vars[i].name) continue;
+        if (strcasecmp(dbr->vars[i].name, var_name) != 0) continue;
+        if (dbr->vars[i].type == TQ_VAR_FLOAT && dbr->vars[i].count > 0 &&
+            dbr->vars[i].value.f32)
+            return dbr->vars[i].value.f32[0];
+        if (dbr->vars[i].type == TQ_VAR_INT && dbr->vars[i].count > 0 &&
+            dbr->vars[i].value.i32)
+            return (float)dbr->vars[i].value.i32[0];
+        return 0;
+    }
+    return 0;
+}
+
+/* Read a string variable from a DBR (returns internal pointer, do NOT free) */
+static const char* dbr_get_string_internal(TQArzRecordData *dbr, const char *var_name) {
+    if (!dbr) return NULL;
+    for (uint32_t i = 0; i < dbr->num_vars; i++) {
+        if (!dbr->vars[i].name) continue;
+        if (strcasecmp(dbr->vars[i].name, var_name) != 0) continue;
+        if (dbr->vars[i].type == TQ_VAR_STRING && dbr->vars[i].count > 0)
+            return dbr->vars[i].value.str[0];
+        return NULL;
+    }
+    return NULL;
+}
+
+TQItemAffixes* affix_table_get_forge(const char *item_base_name, TQTranslation *tr) {
+    if (!item_base_name) return NULL;
+
+    /* Load the item's DBR to determine category */
+    TQArzRecordData *item_dbr = asset_get_dbr(item_base_name);
+    if (!item_dbr) return NULL;
+
+    char *class_name = arz_record_get_string(item_dbr, "Class", NULL);
+    if (!class_name) return NULL;
+
+    /* Determine Defensive vs Offensive */
+    bool is_defensive =
+        strstr(class_name, "UpperBody") || strstr(class_name, "LowerBody") ||
+        strstr(class_name, "Head") || strstr(class_name, "Forearm") ||
+        strstr(class_name, "Shield") || strstr(class_name, "Amulet") ||
+        strstr(class_name, "Ring");
+    bool is_offensive =
+        strstr(class_name, "WeaponMelee") || strstr(class_name, "WeaponHunting") ||
+        strstr(class_name, "WeaponMagical");
+
+    if (!is_defensive && !is_offensive) {
+        free(class_name);
+        return NULL;
+    }
+
+    /* Determine Int vs Str from stat requirements */
+    float int_req = dbr_get_float_simple(item_dbr, "intelligenceRequirement");
+    float str_req = dbr_get_float_simple(item_dbr, "strengthRequirement");
+    float dex_req = dbr_get_float_simple(item_dbr, "dexterityRequirement");
+
+    bool is_int;
+    if (int_req > 0 && int_req > (str_req + dex_req)) {
+        is_int = true;
+    } else if (str_req > 0 || dex_req > 0) {
+        is_int = false;
+    } else {
+        /* Fallback by Class: staves are Int, everything else is Str */
+        is_int = (strstr(class_name, "WeaponMagical_Staff") != NULL);
+    }
+    free(class_name);
+
+    /* Load Durin Upgrader NPC record */
+    static const char *DURIN_PATH =
+        "records/xpack2/creatures/npc/dvergr/speaking/durin_upgrader.dbr";
+    TQArzRecordData *durin = asset_get_dbr(DURIN_PATH);
+    if (!durin) return NULL;
+
+    /* Build the 6 variable names we need (3 prefix + 3 suffix tiers) */
+    const char *stat_str = is_int ? "Int" : "Str";
+    const char *slot_str = is_defensive ? "Defensive" : "Offensive";
+    static const char *tiers[] = { "Normal", "Epic", "Legendary" };
+
+    TQItemAffixes *result = calloc(1, sizeof(TQItemAffixes));
+
+    for (int t = 0; t < 3; t++) {
+        /* Prefix table variable: e.g. "ItemTable_IntDefensivePrefixNormal" */
+        char prefix_var[80], suffix_var[80];
+        snprintf(prefix_var, sizeof(prefix_var), "ItemTable_%s%sPrefix%s",
+                 stat_str, slot_str, tiers[t]);
+        snprintf(suffix_var, sizeof(suffix_var), "ItemTable_%s%sSufix%s",
+                 stat_str, slot_str, tiers[t]);
+
+        const char *prefix_table = dbr_get_string_internal(durin, prefix_var);
+        const char *suffix_table = dbr_get_string_internal(durin, suffix_var);
+
+        if (prefix_table && prefix_table[0])
+            resolve_randomizer_table(prefix_table, tr,
+                                     &result->prefixes.entries, &result->prefixes.count);
+        if (suffix_table && suffix_table[0])
+            resolve_randomizer_table(suffix_table, tr,
+                                     &result->suffixes.entries, &result->suffixes.count);
+    }
+
+    /* Sort by translation */
+    if (result->prefixes.count > 0)
+        qsort(result->prefixes.entries, result->prefixes.count,
+              sizeof(TQAffixEntry), compare_affix_entries);
+    if (result->suffixes.count > 0)
+        qsort(result->suffixes.entries, result->suffixes.count,
+              sizeof(TQAffixEntry), compare_affix_entries);
+
+    if (result->prefixes.count == 0 && result->suffixes.count == 0) {
+        free(result);
+        return NULL;
+    }
+
+    return result;
+}
+
 /* ── Cleanup ─────────────────────────────────────────────────────── */
 
 void affix_result_free(TQItemAffixes *affixes) {

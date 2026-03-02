@@ -356,6 +356,8 @@ void show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
                                   : (item ? item->base_name : NULL);
     if (base && item_can_modify_affixes(base))
         g_menu_append(model, "Modify Affixes\u2026", "app.modify-affixes");
+    if (base && item_can_forge_affixes(base))
+        g_menu_append(model, "Forge Affixes\u2026", "app.forge-affixes");
 
     /* Completion Bonus submenus */
     {
@@ -824,7 +826,23 @@ static void on_set_relic_bonus2(GSimpleAction *action, GVariant *param, gpointer
 static void on_modify_affixes(GSimpleAction *action, GVariant *param, gpointer data) {
     (void)action; (void)param;
     AppWidgets *widgets = data;
-    show_affix_dialog(widgets);
+    show_affix_dialog(widgets, NULL, NULL);
+}
+
+static void on_forge_affixes(GSimpleAction *action, GVariant *param, gpointer data) {
+    (void)action; (void)param;
+    AppWidgets *widgets = data;
+    const char *base = NULL;
+    if (widgets->context_equip_item)
+        base = widgets->context_equip_item->base_name;
+    else if (widgets->context_item)
+        base = widgets->context_item->base_name;
+    if (!base) return;
+
+    TQItemAffixes *forge_affixes = affix_table_get_forge(base, widgets->translations);
+    if (!forge_affixes) return;
+
+    show_affix_dialog(widgets, forge_affixes, "Forge Affixes");
 }
 
 /* ── Set Quantity dialog ─────────────────────────────────────────────────── */
@@ -952,6 +970,7 @@ void register_context_actions(GtkApplication *app, AppWidgets *widgets) {
         { "set-suffix",           G_CALLBACK(on_set_suffix),           G_VARIANT_TYPE_STRING },
         { "remove-suffix",        G_CALLBACK(on_remove_suffix),        NULL },
         { "modify-affixes",       G_CALLBACK(on_modify_affixes),       NULL },
+        { "forge-affixes",        G_CALLBACK(on_forge_affixes),        NULL },
         { "set-relic-bonus",      G_CALLBACK(on_set_relic_bonus),      G_VARIANT_TYPE_STRING },
         { "set-relic-bonus2",     G_CALLBACK(on_set_relic_bonus2),     G_VARIANT_TYPE_STRING },
         { "copy-dbr-path",        G_CALLBACK(on_copy_dbr_path),        NULL },

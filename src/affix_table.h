@@ -15,7 +15,7 @@ typedef struct {
     int count;
 } TQAffixList;
 
-typedef struct {
+typedef struct TQItemAffixes_tag {
     TQAffixList prefixes;
     TQAffixList suffixes;
 } TQItemAffixes;
@@ -31,6 +31,14 @@ TQItemAffixes* affix_table_get(const char *item_base_name, TQTranslation *tr);
 
 /* Check if an item can have its affixes modified */
 bool item_can_modify_affixes(const char *base_name);
+
+/* Check if an Epic/Legendary item can have forge affixes applied */
+bool item_can_forge_affixes(const char *base_name);
+
+/* Get forge-specific affixes for an Epic/Legendary item from the Dvergr Master Forge tables.
+ * Returns NULL if item is ineligible or no forge tables found.
+ * Caller must call affix_result_free() when done. */
+TQItemAffixes* affix_table_get_forge(const char *item_base_name, TQTranslation *tr);
 
 void affix_result_free(TQItemAffixes *affixes);
 void affix_table_free(void);
