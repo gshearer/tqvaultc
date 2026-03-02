@@ -77,7 +77,7 @@ static AttributeMap attr_maps[] = {
     {"offensivePoisonModifier", "+%d%% Poison Damage", true, NULL},
     {"offensivePierceModifier", "+%d%% Pierce Damage", true, NULL},
     {"offensiveElementalModifier", "+%d%% Elemental Damage", true, NULL},
-    {"offensiveTotalDamageModifier", "+%d%% Total Damage", true, NULL},
+    /* offensiveTotalDamageModifier handled in dedicated block (has Chance) */
 
     /* Offensive DoT modifiers */
     {"offensiveSlowFireModifier", "+%d%% Burn Damage", true, NULL},
@@ -125,8 +125,7 @@ static AttributeMap attr_maps[] = {
     {"offensiveManaBurnDrainMin", "%d Energy Burned", false, NULL},
     {"offensiveManaBurnDrainRatioMin", "%.0f%% Energy Burned", false, NULL},
 
-    /* Percent current life (Reduction to Enemy's Health) */
-    {"offensivePercentCurrentLifeMin", "%.0f%% Reduction to Enemy's Health", false, NULL},
+    /* offensivePercentCurrentLifeMin handled in dedicated block (has Chance) */
 
     /* Flat damage (non-range, for bonus summaries) */
     {"offensivePierceMin", "%d Pierce Damage", false, NULL},
@@ -209,6 +208,8 @@ static const char *INT_offensivePetrifyMin, *INT_offensivePetrifyDurationMin, *I
 static const char *INT_offensiveConfusionMin, *INT_offensiveConfusionDurationMin, *INT_offensiveConfusionChance;
 static const char *INT_offensiveFearMin, *INT_offensiveFearMax, *INT_offensiveFearChance;
 static const char *INT_offensiveConvertMin;
+static const char *INT_offensiveTotalDamageModifier, *INT_offensiveTotalDamageModifierChance;
+static const char *INT_offensivePercentCurrentLifeMin, *INT_offensivePercentCurrentLifeChance;
 static const char *INT_offensiveTotalDamageReductionPercentMin, *INT_offensiveTotalDamageReductionPercentChance;
 static const char *INT_offensiveTotalDamageReductionPercentDurationMin;
 static const char *INT_racialBonusPercentDamage, *INT_racialBonusPercentDefense, *INT_racialBonusRace;
@@ -266,6 +267,8 @@ void item_stats_init(void) {
         "offensiveConvertMin",
         "offensiveTotalDamageReductionPercentMin", "offensiveTotalDamageReductionPercentChance",
         "offensiveTotalDamageReductionPercentDurationMin",
+        "offensiveTotalDamageModifier", "offensiveTotalDamageModifierChance",
+        "offensivePercentCurrentLifeMin", "offensivePercentCurrentLifeChance",
         "offensiveGlobalChance",
         "offensiveBasePhysicalMin", "offensiveBasePhysicalMax",
         "offensiveBaseColdMin", "offensiveBaseColdMax",
@@ -322,6 +325,8 @@ void item_stats_init(void) {
     INTERN(offensiveConfusionMin); INTERN(offensiveConfusionDurationMin); INTERN(offensiveConfusionChance);
     INTERN(offensiveFearMin); INTERN(offensiveFearMax); INTERN(offensiveFearChance);
     INTERN(offensiveConvertMin);
+    INTERN(offensiveTotalDamageModifier); INTERN(offensiveTotalDamageModifierChance);
+    INTERN(offensivePercentCurrentLifeMin); INTERN(offensivePercentCurrentLifeChance);
     INTERN(offensiveTotalDamageReductionPercentMin); INTERN(offensiveTotalDamageReductionPercentChance);
     INTERN(offensiveTotalDamageReductionPercentDurationMin);
     INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
@@ -723,14 +728,22 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
             buf_write(w, "<span color='%s'>+%d%% Bleeding Damage</span>\n", color, (int)round(mod));
     }
 
+    /* Reduced Armor (value + duration) */
+    {
+        float val = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionMin, shard_index);
+        float dur = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionDurationMin, shard_index);
+        if (val > 0 && dur > 0)
+            buf_write(w, "<span color='%s'>%.0f Reduced Armor for %.1f Second(s)</span>\n", color, val, dur);
+        else if (val > 0)
+            buf_write(w, "<span color='%s'>%.0f Reduced Armor</span>\n", color, val);
+    }
+
     /* Skill disruption (chance + duration) */
     {
-        float chance = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionMin, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionDurationMin, shard_index);
-        if (chance <= 0) chance = dbr_get_float_fast(data, INT_defensiveDisruption, shard_index);
-        if (dur <= 0) dur = dbr_get_float_fast(data, INT_defensiveDisruptionDuration, shard_index);
+        float chance = dbr_get_float_fast(data, INT_defensiveDisruption, shard_index);
+        float dur = dbr_get_float_fast(data, INT_defensiveDisruptionDuration, shard_index);
         if (chance > 0 && dur > 0)
-            buf_write(w, "<span color='%s'>%.1f%% Chance of %.1f second(s) of Skill Disruption</span>\n", color, chance, dur);
+            buf_write(w, "<span color='%s'>%.1f%% Chance of %.1f Second(s) of Skill Disruption</span>\n", color, chance, dur);
         else if (chance > 0)
             buf_write(w, "<span color='%s'>%.1f%% Skill Disruption</span>\n", color, chance);
     }
@@ -860,6 +873,30 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
             snprintf(line, sizeof(line), am->format, val);
         }
         buf_write(w, "<span color='%s'>%s</span>\n", color, line);
+    }
+
+    /* Offensive total damage modifier (may have chance) */
+    {
+        float tdm = dbr_get_float_fast(data, INT_offensiveTotalDamageModifier, shard_index);
+        if (fabs(tdm) > 0.001f) {
+            float tdm_chance = dbr_get_float_fast(data, INT_offensiveTotalDamageModifierChance, shard_index);
+            if (tdm_chance > 0 && tdm_chance < 100)
+                buf_write(w, "<span color='%s'>%.0f%% Chance of +%d%% Total Damage</span>\n", color, tdm_chance, (int)round(tdm));
+            else
+                buf_write(w, "<span color='%s'>+%d%% Total Damage</span>\n", color, (int)round(tdm));
+        }
+    }
+
+    /* Percent current life reduction (may have chance) */
+    {
+        float pcl = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMin, shard_index);
+        if (fabs(pcl) > 0.001f) {
+            float pcl_chance = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeChance, shard_index);
+            if (pcl_chance > 0 && pcl_chance < 100)
+                buf_write(w, "<span color='%s'>%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, pcl_chance, pcl);
+            else
+                buf_write(w, "<span color='%s'>%.0f%% Reduction to Enemy's Health</span>\n", color, pcl);
+        }
     }
 
     /* Skill parameters: cooldown/recharge time */
