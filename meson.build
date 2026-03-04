@@ -48,7 +48,10 @@ app_sources = [
   'src/ui_stats.c',
   'src/ui_settings.c',
   'src/prefetch.c',
-  'src/stash.c'
+  'src/stash.c',
+  'src/quest_tokens.c',
+  'src/ui_quest_dialog.c',
+  'src/ui_checklist_dialog.c'
 ]
 
 # 4. Build the GUI Application
@@ -75,7 +78,12 @@ executable('tq-chr-tool',
   dependencies: [m_dep],
   install: true)
 
-# 7. Build the Texture Extractor
+# 7. Build the Quest Token Inspection Tool
+executable('tq-quest-tool',
+  ['src/utils/tq_quest_tool.c', 'src/quest_tokens.c'],
+  install: true)
+
+# 8. Build the Texture Extractor
 executable('extract-textures',
   ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c'],
   dependencies: [gtk_dep, json_dep, zlib_dep, magick_dep],

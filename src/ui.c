@@ -610,6 +610,18 @@ static void on_save_char_clicked(GtkButton *btn, gpointer user_data) {
     save_character_if_dirty(widgets);
 }
 
+static void on_quest_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    AppWidgets *widgets = (AppWidgets *)user_data;
+    show_quest_dialog(widgets);
+}
+
+static void on_checklist_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    AppWidgets *widgets = (AppWidgets *)user_data;
+    show_checklist_dialog(widgets);
+}
+
 static void on_refresh_char_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     AppWidgets *widgets = (AppWidgets *)user_data;
@@ -1196,6 +1208,16 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     GtkWidget *view_build_btn = gtk_button_new_with_label("View Build");
     g_signal_connect(view_build_btn, "clicked", G_CALLBACK(on_view_build_clicked), widgets);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), view_build_btn);
+
+    widgets->quest_btn = gtk_button_new_with_label("Manage Quests");
+    g_signal_connect(widgets->quest_btn, "clicked", G_CALLBACK(on_quest_btn_clicked), widgets);
+    gtk_widget_set_sensitive(widgets->quest_btn, FALSE);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->quest_btn);
+
+    widgets->checklist_btn = gtk_button_new_with_label("Checklist");
+    g_signal_connect(widgets->checklist_btn, "clicked", G_CALLBACK(on_checklist_btn_clicked), widgets);
+    gtk_widget_set_sensitive(widgets->checklist_btn, FALSE);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->checklist_btn);
 
     /* Save Character button — grayed out when no unsaved changes */
     widgets->save_char_btn = gtk_button_new_with_label("Save Character");

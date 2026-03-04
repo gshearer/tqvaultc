@@ -242,17 +242,29 @@ static int cmd_arctxt(const char *arc_path, const char *search_term) {
 
         /* Convert to UTF-8 if UTF-16LE BOM detected */
         char *content = NULL;
+        bool content_is_glib = false;
         if (size >= 2 && data[0] == 0xFF && data[1] == 0xFE) {
+            GError *err = NULL;
             gsize bw;
             content = g_convert((const gchar*)(data+2), size-2,
-                                "UTF-8", "UTF-16LE", NULL, &bw, NULL);
+                                "UTF-8", "UTF-16LE", NULL, &bw, &err);
+            if (!content) {
+                if (err) {
+                    fprintf(stderr, "Warning: encoding error in %s: %s\n",
+                            arc->entries[i].path, err->message);
+                    g_error_free(err);
+                }
+                free(data);
+                continue;
+            }
+            content_is_glib = true;
         } else {
             content = malloc(size + 1);
+            if (!content) { free(data); continue; }
             memcpy(content, data, size);
             content[size] = '\0';
         }
         free(data);
-        if (!content) continue;
 
         /* Case-insensitive search */
         char *lower = g_ascii_strdown(content, -1);
@@ -270,7 +282,10 @@ static int cmd_arctxt(const char *arc_path, const char *search_term) {
         }
 
         g_free(lower);
-        free(content);
+        if (content_is_glib)
+            g_free(content);
+        else
+            free(content);
     }
     printf("\n%d matches found.\n", total_matches);
 

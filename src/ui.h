@@ -162,8 +162,10 @@ typedef struct {
     GtkWidget *tooltip_label;
     GtkWidget *tooltip_parent;       /* current parent drawing area */
 
-    /* Save/Refresh buttons */
+    /* Save/Refresh/Quest/Checklist buttons */
     GtkWidget *save_char_btn;
+    GtkWidget *quest_btn;
+    GtkWidget *checklist_btn;
 
     /* Search */
     GtkWidget *search_entry;
@@ -299,6 +301,14 @@ struct TQItemAffixes_tag;  /* forward declaration (defined in affix_table.h) */
  * use it as the dialog title instead of "Modify Affixes". */
 void show_affix_dialog(AppWidgets *widgets, struct TQItemAffixes_tag *override_affixes,
                        const char *override_title);
+
+/* ── Entry points in ui_quest_dialog.c ─────────────────────────────────── */
+
+void show_quest_dialog(AppWidgets *widgets);
+
+/* ── Entry points in ui_checklist_dialog.c ─────────────────────────────── */
+
+void show_checklist_dialog(AppWidgets *widgets);
 
 /* ── Entry points in ui_context_menu.c ─────────────────────────────────── */
 

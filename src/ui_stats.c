@@ -456,6 +456,10 @@ void update_ui(AppWidgets *widgets, TQCharacter *chr) {
     widgets->current_character = chr;
     widgets->char_dirty = false;
     update_save_button_sensitivity(widgets);
+    if (widgets->quest_btn)
+        gtk_widget_set_sensitive(widgets->quest_btn, chr != NULL);
+    if (widgets->checklist_btn)
+        gtk_widget_set_sensitive(widgets->checklist_btn, chr != NULL);
 
     gtk_label_set_text(GTK_LABEL(widgets->name_label), chr->character_name);
 
