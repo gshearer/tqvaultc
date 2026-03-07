@@ -172,7 +172,7 @@ static const char *INT_offensiveFireMin, *INT_offensiveFireMax;
 static const char *INT_offensiveColdMin, *INT_offensiveColdMax;
 static const char *INT_offensiveLightningMin, *INT_offensiveLightningMax;
 static const char *INT_offensivePoisonMin, *INT_offensivePoisonMax;
-static const char *INT_offensivePierceMin, *INT_offensivePierceMax;
+static const char *INT_offensivePierceMin, *INT_offensivePierceMax, *INT_offensivePierceChance;
 static const char *INT_offensiveElementalMin, *INT_offensiveElementalMax;
 static const char *INT_offensiveManaLeechMin, *INT_offensiveManaLeechMax;
 static const char *INT_offensiveBasePhysicalMin, *INT_offensiveBasePhysicalMax;
@@ -181,6 +181,7 @@ static const char *INT_offensiveBaseFireMin, *INT_offensiveBaseFireMax;
 static const char *INT_offensiveBaseLightningMin, *INT_offensiveBaseLightningMax;
 static const char *INT_offensiveBasePoisonMin, *INT_offensiveBasePoisonMax;
 static const char *INT_offensiveBaseLifeMin, *INT_offensiveBaseLifeMax;
+static const char *INT_offensiveBonusPhysicalMin, *INT_offensiveBonusPhysicalMax;
 static const char *INT_offensiveLifeLeechMin, *INT_offensiveLifeLeechMax;
 static const char *INT_offensiveSlowFireMin, *INT_offensiveSlowFireMax, *INT_offensiveSlowFireDurationMin;
 static const char *INT_offensiveSlowLightningMin, *INT_offensiveSlowLightningMax, *INT_offensiveSlowLightningDurationMin;
@@ -255,7 +256,7 @@ void item_stats_init(void) {
         "offensiveColdMin", "offensiveColdMax",
         "offensiveLightningMin", "offensiveLightningMax",
         "offensivePoisonMin", "offensivePoisonMax",
-        "offensivePierceMin", "offensivePierceMax",
+        "offensivePierceMin", "offensivePierceMax", "offensivePierceChance",
         "offensiveElementalMin", "offensiveElementalMax",
         "offensiveLifeLeechMin", "offensiveLifeLeechMax",
         "offensiveManaLeechMin", "offensiveManaLeechMax",
@@ -286,6 +287,7 @@ void item_stats_init(void) {
         "offensiveBaseLightningMin", "offensiveBaseLightningMax",
         "offensiveBasePoisonMin", "offensiveBasePoisonMax",
         "offensiveBaseLifeMin", "offensiveBaseLifeMax",
+        "offensiveBonusPhysicalMin", "offensiveBonusPhysicalMax",
         "defensivePhysical", "defensivePhysicalChance",
         "defensiveFire", "defensiveFireChance",
         "defensiveCold", "defensiveColdChance",
@@ -321,7 +323,7 @@ void item_stats_init(void) {
     INTERN(offensiveColdMin); INTERN(offensiveColdMax);
     INTERN(offensiveLightningMin); INTERN(offensiveLightningMax);
     INTERN(offensivePoisonMin); INTERN(offensivePoisonMax);
-    INTERN(offensivePierceMin); INTERN(offensivePierceMax);
+    INTERN(offensivePierceMin); INTERN(offensivePierceMax); INTERN(offensivePierceChance);
     INTERN(offensiveElementalMin); INTERN(offensiveElementalMax);
     INTERN(offensiveManaLeechMin); INTERN(offensiveManaLeechMax);
     INTERN(offensiveBasePhysicalMin); INTERN(offensiveBasePhysicalMax);
@@ -330,6 +332,7 @@ void item_stats_init(void) {
     INTERN(offensiveBaseLightningMin); INTERN(offensiveBaseLightningMax);
     INTERN(offensiveBasePoisonMin); INTERN(offensiveBasePoisonMax);
     INTERN(offensiveBaseLifeMin); INTERN(offensiveBaseLifeMax);
+    INTERN(offensiveBonusPhysicalMin); INTERN(offensiveBonusPhysicalMax);
     INTERN(offensiveLifeLeechMin); INTERN(offensiveLifeLeechMax);
     INTERN(offensiveSlowFireMin); INTERN(offensiveSlowFireMax); INTERN(offensiveSlowFireDurationMin);
     INTERN(offensiveSlowLightningMin); INTERN(offensiveSlowLightningMax); INTERN(offensiveSlowLightningDurationMin);
@@ -742,33 +745,43 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         indent = "    ";
     }
 
-    /* Flat damage ranges (min-max) */
+    /* Flat damage ranges (min-max), with optional chance qualifier */
     {
-        static struct { const char **min_int; const char **max_int; const char *label; } damage_types[] = {
-            {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, "Physical Damage"},
-            {&INT_offensiveFireMin, &INT_offensiveFireMax, "Fire Damage"},
-            {&INT_offensiveColdMin, &INT_offensiveColdMax, "Cold Damage"},
-            {&INT_offensiveLightningMin, &INT_offensiveLightningMax, "Lightning Damage"},
-            {&INT_offensivePoisonMin, &INT_offensivePoisonMax, "Poison Damage"},
-            {&INT_offensivePierceMin, &INT_offensivePierceMax, "Pierce Damage"},
-            {&INT_offensiveElementalMin, &INT_offensiveElementalMax, "Elemental Damage"},
-            {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, "Mana Leech"},
-            {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, "Physical Damage"},
-            {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, "Cold Damage"},
-            {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, "Fire Damage"},
-            {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, "Lightning Damage"},
-            {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, "Poison Damage"},
-            {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, "Vitality Damage"},
-            {NULL, NULL, NULL}
+        static struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; } damage_types[] = {
+            {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, NULL, "Physical Damage"},
+            {&INT_offensiveFireMin, &INT_offensiveFireMax, NULL, "Fire Damage"},
+            {&INT_offensiveColdMin, &INT_offensiveColdMax, NULL, "Cold Damage"},
+            {&INT_offensiveLightningMin, &INT_offensiveLightningMax, NULL, "Lightning Damage"},
+            {&INT_offensivePoisonMin, &INT_offensivePoisonMax, NULL, "Poison Damage"},
+            {&INT_offensivePierceMin, &INT_offensivePierceMax, &INT_offensivePierceChance, "Piercing Damage"},
+            {&INT_offensiveElementalMin, &INT_offensiveElementalMax, NULL, "Elemental Damage"},
+            {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech"},
+            {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Physical Damage"},
+            {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, NULL, "Cold Damage"},
+            {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, NULL, "Fire Damage"},
+            {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, NULL, "Lightning Damage"},
+            {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage"},
+            {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage"},
+            {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, NULL, "Physical Damage"},
+            {NULL, NULL, NULL, NULL}
         };
         for (int d = 0; damage_types[d].min_int; d++) {
             float mn = dbr_get_float_fast(data, *damage_types[d].min_int, shard_index);
             float mx = dbr_get_float_fast(data, *damage_types[d].max_int, shard_index);
             if (mn > 0) {
-                if (mx > mn)
-                    buf_write(w, "<span color='%s'>%d - %d %s</span>\n", color, (int)round(mn), (int)round(mx), damage_types[d].label);
-                else
-                    buf_write(w, "<span color='%s'>%d %s</span>\n", color, (int)round(mn), damage_types[d].label);
+                float chance = damage_types[d].chance_int ? dbr_get_float_fast(data, *damage_types[d].chance_int, shard_index) : 0;
+                const char *dmg_label = damage_types[d].label;
+                if (chance > 0) {
+                    if (mx > mn)
+                        buf_write(w, "<span color='%s'>%.1f%% Chance of %d - %d %s</span>\n", color, chance, (int)round(mn), (int)round(mx), dmg_label);
+                    else
+                        buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n", color, chance, (int)round(mn), dmg_label);
+                } else {
+                    if (mx > mn)
+                        buf_write(w, "<span color='%s'>%d - %d %s</span>\n", color, (int)round(mn), (int)round(mx), dmg_label);
+                    else
+                        buf_write(w, "<span color='%s'>%d %s</span>\n", color, (int)round(mn), dmg_label);
+                }
             }
         }
     }
