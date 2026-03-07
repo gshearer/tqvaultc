@@ -120,10 +120,32 @@ void parse_character(const char *filepath) {
     free(data);
 }
 
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s <path_to_player.chr>\n"
+        "\n"
+        "Titan Quest character file raw parser. Reads a .chr binary save file\n"
+        "and dumps all length-prefixed key-value pairs found in the data.\n"
+        "\n"
+        "This is a low-level inspection tool — it walks the binary data byte\n"
+        "by byte, printing every recognizable key and its associated value\n"
+        "(integer, hex, or string). Useful for understanding the raw structure\n"
+        "of character saves.\n"
+        "\n"
+        "For higher-level character inspection with structured output, use\n"
+        "tq-chr-tool instead.\n"
+        "\n"
+        "Examples:\n"
+        "  %s testdata/saves/_soothie/Player.chr\n"
+        "  %s testdata/saves/_soothie/Player.chr | grep -i skill\n"
+        "  %s testdata/saves/_kayana/Player.chr | head -100\n",
+        prog, prog, prog, prog);
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <path_to_player.chr>\n", argv[0]);
-        return 1;
+    if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+        usage(argv[0]);
+        return argc < 2 ? 1 : 0;
     }
 
     parse_character(argv[1]);

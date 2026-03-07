@@ -137,6 +137,8 @@ typedef struct {
     HeldItem *held_item;
     double cursor_x, cursor_y;
     GtkWidget *cursor_widget;   /* which drawing area the cursor is over */
+    GtkWidget *held_overlay;    /* transparent overlay for held item between panes */
+    double win_cursor_x, win_cursor_y;  /* cursor pos in overlay coordinates */
     bool vault_dirty;
     bool char_dirty;
 
@@ -162,10 +164,11 @@ typedef struct {
     GtkWidget *tooltip_label;
     GtkWidget *tooltip_parent;       /* current parent drawing area */
 
-    /* Save/Refresh/Quest/Checklist buttons */
+    /* Save/Refresh/Checklist/Stats/Skills buttons */
     GtkWidget *save_char_btn;
-    GtkWidget *quest_btn;
     GtkWidget *checklist_btn;
+    GtkWidget *stats_btn;
+    GtkWidget *skills_btn;
 
     /* Search */
     GtkWidget *search_entry;
@@ -241,6 +244,7 @@ void draw_sack_items(cairo_t *cr, AppWidgets *widgets,
 void stash_transfer_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
 void stash_player_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
 void stash_relic_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
+void held_overlay_draw_cb(GtkDrawingArea *da, cairo_t *cr, int w, int h, gpointer ud);
 
 /* ── Entry points in ui_tooltip.c ──────────────────────────────────────── */
 
@@ -302,9 +306,17 @@ struct TQItemAffixes_tag;  /* forward declaration (defined in affix_table.h) */
 void show_affix_dialog(AppWidgets *widgets, struct TQItemAffixes_tag *override_affixes,
                        const char *override_title);
 
-/* ── Entry points in ui_quest_dialog.c ─────────────────────────────────── */
+/* ── Entry points in ui_stats_dialog.c ──────────────────────────────────── */
 
-void show_quest_dialog(AppWidgets *widgets);
+void show_stats_dialog(AppWidgets *widgets);
+
+/* ── Entry points in ui_skills_dialog.c ─────────────────────────────────── */
+
+void show_skills_dialog(AppWidgets *widgets);
+
+/* ── Entry points in ui_database_dialog.c ──────────────────────────────── */
+
+void show_database_dialog(AppWidgets *widgets);
 
 /* ── Entry points in ui_checklist_dialog.c ─────────────────────────────── */
 

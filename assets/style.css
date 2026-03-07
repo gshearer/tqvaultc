@@ -2,6 +2,8 @@
 .bag-button-search-match { outline: 2px solid red; outline-offset: -2px; }
 .affix-current { font-weight: bold; }
 .affix-preview { background: #1a1a2e; padding: 16px; }
+.affix-group-header { font-weight: bold; font-size: 0.85em; opacity: 0.7; }
+.affix-lower-tier { opacity: 0.55; }
 
 /* Character stats grid */
 .stats-frame { background: alpha(@theme_fg_color, 0.03);

@@ -59,7 +59,7 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
         for (int c = 0; c < 9; c++) {
             float val = 0.0f;
             if (chr->equipment[idx]) {
-                val = item_get_resistance(chr->equipment[idx], resist_attrs[c]);
+                val = item_get_guaranteed_stat(chr->equipment[idx], resist_attrs[c]);
             }
             slot_vals[r][c] = val;
             GtkWidget *cell_w = widgets->resist_cells[r][c];
@@ -120,7 +120,7 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
         for (int c = 0; c < 8; c++) {
             float val = 0.0f;
             if (chr->equipment[idx])
-                val = item_get_resistance(chr->equipment[idx], secresist_attrs[c]);
+                val = item_get_guaranteed_stat(chr->equipment[idx], secresist_attrs[c]);
             sr_vals[r][c] = val;
             GtkWidget *cw = widgets->secresist_cells[r][c];
             gtk_widget_remove_css_class(cw, "resist-cell-pos");
@@ -173,7 +173,7 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
         for (int c = 0; c < 11; c++) {
             float pct = 0.0f;
             if (chr->equipment[idx])
-                pct = item_get_resistance(chr->equipment[idx], bdmg_pct_attrs[c]);
+                pct = item_get_guaranteed_stat(chr->equipment[idx], bdmg_pct_attrs[c]);
             bd_pct[r][c] = pct;
             GtkWidget *cw = widgets->bdmg_cells[r][c];
             gtk_widget_remove_css_class(cw, "dmg-total-pos");
@@ -301,7 +301,7 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
         for (int c = 0; c < 6; c++) {
             float pct = 0.0f;
             if (chr->equipment[idx])
-                pct = item_get_resistance(chr->equipment[idx], bspd_attrs[c]);
+                pct = item_get_guaranteed_stat(chr->equipment[idx], bspd_attrs[c]);
             bs_pct[r][c] = pct;
         }
         /* Column 6: Pet Total Speed from petBonusName sub-records */
@@ -402,7 +402,7 @@ void update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr) {
         for (int c = 0; c < 10; c++) {
             float val = 0.0f;
             if (chr->equipment[idx])
-                val = item_get_resistance(chr->equipment[idx], hea_attrs[c]);
+                val = item_get_guaranteed_stat(chr->equipment[idx], hea_attrs[c]);
             hea_vals[r][c] = val;
             GtkWidget *cw = widgets->hea_cells[r][c];
             gtk_widget_remove_css_class(cw, "dmg-total-pos");
@@ -456,10 +456,12 @@ void update_ui(AppWidgets *widgets, TQCharacter *chr) {
     widgets->current_character = chr;
     widgets->char_dirty = false;
     update_save_button_sensitivity(widgets);
-    if (widgets->quest_btn)
-        gtk_widget_set_sensitive(widgets->quest_btn, chr != NULL);
     if (widgets->checklist_btn)
         gtk_widget_set_sensitive(widgets->checklist_btn, chr != NULL);
+    if (widgets->stats_btn)
+        gtk_widget_set_sensitive(widgets->stats_btn, chr != NULL);
+    if (widgets->skills_btn)
+        gtk_widget_set_sensitive(widgets->skills_btn, chr != NULL);
 
     gtk_label_set_text(GTK_LABEL(widgets->name_label), chr->character_name);
 

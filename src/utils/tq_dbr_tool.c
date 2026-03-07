@@ -14,6 +14,7 @@
  *   stats   <arz> <pattern>                Show non-zero numeric variables for matching records
  *   arctxt  <arc> <search_term>            Search for text in arc text files (UTF-16 aware)
  *   arcls   <arc>                          List all files in an arc archive
+ *   archex  <arc> <file_pattern>           Extract and hex-dump a file from an arc archive
  *   bonus   <arz> <item_path>              Follow bonus table chain for a relic/charm/artifact
  */
 
@@ -22,6 +23,7 @@
 #include <string.h>
 #include <strings.h>
 #include <stdbool.h>
+#include <ctype.h>
 #include <math.h>
 #include <glib.h>
 #include "../arz.h"
@@ -46,6 +48,7 @@ static void usage(const char *prog) {
         "  stats   <arz> <pattern>              Show non-zero numeric vars for matching records\n"
         "  arctxt  <arc> <search_term>          Search text in arc files (UTF-16 aware)\n"
         "  arcls   <arc>                        List all files in an arc archive\n"
+        "  archex  <arc> <file_pattern>         Extract and hex-dump a file from an arc archive\n"
         "  bonus   <arz> <item_path>            Follow bonus table chain for relic/charm/artifact\n"
         "\n"
         "Examples:\n"
@@ -55,8 +58,9 @@ static void usage(const char *prog) {
         "  %s stats testdata/database.arz xpack4/item/lootmagicalaffixes/x4_relic05\n"
         "  %s arctxt /path/to/Text_EN.arc x4tagU_Relic\n"
         "  %s arcls /path/to/Text_EN.arc\n"
+        "  %s archex testdata/gamefiles/Resources/Items.arc items/equipmenthead\n"
         "  %s bonus testdata/database.arz records/xpack4/item/relics/x4_relic05.dbr\n",
-        prog, prog, prog, prog, prog, prog, prog, prog);
+        prog, prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
 static void print_variable(TQVariable *v) {
@@ -307,6 +311,88 @@ static int cmd_arcls(const char *arc_path) {
     return 0;
 }
 
+/* ---- cmd_archex: extract and hex-dump a file from an arc archive ---- */
+static int cmd_archex(const char *arc_path, const char *file_pattern) {
+    TQArcFile *arc = arc_load(arc_path);
+    if (!arc) { fprintf(stderr, "Failed to load ARC: %s\n", arc_path); return 1; }
+
+    /* Case-insensitive substring match (normalize / to \ for arc paths) */
+    char *lower_pattern = g_ascii_strdown(file_pattern, -1);
+    for (char *p = lower_pattern; *p; p++)
+        if (*p == '/') *p = '\\';
+
+    int match_idx = -1;
+    for (uint32_t i = 0; i < arc->num_files; i++) {
+        char *lower_path = g_ascii_strdown(arc->entries[i].path, -1);
+        if (strstr(lower_path, lower_pattern)) {
+            if (match_idx >= 0) {
+                fprintf(stderr, "Pattern '%s' matches multiple files:\n", file_pattern);
+                /* Print the previous match */
+                fprintf(stderr, "  %s\n", arc->entries[match_idx].path);
+                /* Print this match and all remaining */
+                fprintf(stderr, "  %s\n", arc->entries[i].path);
+                g_free(lower_path);
+                for (uint32_t j = i + 1; j < arc->num_files; j++) {
+                    char *lp = g_ascii_strdown(arc->entries[j].path, -1);
+                    if (strstr(lp, lower_pattern))
+                        fprintf(stderr, "  %s\n", arc->entries[j].path);
+                    g_free(lp);
+                }
+                fprintf(stderr, "Use a more specific pattern.\n");
+                g_free(lower_pattern);
+                arc_free(arc);
+                return 1;
+            }
+            match_idx = i;
+        }
+        g_free(lower_path);
+    }
+
+    if (match_idx < 0) {
+        fprintf(stderr, "No file matching '%s' in %s\n", file_pattern, arc_path);
+        g_free(lower_pattern);
+        arc_free(arc);
+        return 1;
+    }
+
+    printf("File: %s (%u bytes)\n\n", arc->entries[match_idx].path,
+           arc->entries[match_idx].real_size);
+
+    size_t size;
+    uint8_t *data = arc_extract_file(arc, match_idx, &size);
+    if (!data) {
+        fprintf(stderr, "Failed to extract file\n");
+        g_free(lower_pattern);
+        arc_free(arc);
+        return 1;
+    }
+
+    /* Hex dump: 16 bytes per line with ASCII sidebar */
+    for (size_t off = 0; off < size; off += 16) {
+        printf("%08zx  ", off);
+        size_t n = (size - off < 16) ? size - off : 16;
+        for (size_t j = 0; j < 16; j++) {
+            if (j < n)
+                printf("%02x ", data[off + j]);
+            else
+                printf("   ");
+            if (j == 7) printf(" ");
+        }
+        printf(" |");
+        for (size_t j = 0; j < n; j++) {
+            uint8_t c = data[off + j];
+            printf("%c", (c >= 0x20 && c <= 0x7e) ? c : '.');
+        }
+        printf("|\n");
+    }
+    printf("\n%zu bytes total.\n", size);
+
+    free(data);
+    g_free(lower_pattern);
+    arc_free(arc);
+    return 0;
+}
+
 /* ---- cmd_bonus: follow bonus table chain for a relic/charm/artifact ---- */
 static int cmd_bonus(const char *arz_path, const char *item_path) {
     TQArzFile *arz = arz_load(arz_path);
@@ -463,6 +549,11 @@ int main(int argc, char **argv) {
 
     const char *cmd = argv[1];
 
+    if (strcmp(cmd, "--help") == 0 || strcmp(cmd, "-h") == 0) {
+        usage(argv[0]);
+        return 0;
+    }
+
     if (strcmp(cmd, "dump") == 0) {
         if (argc < 4) { fprintf(stderr, "Usage: %s dump <arz> <record_path>\n", argv[0]); return 1; }
         return cmd_dump(argv[2], argv[3]);
@@ -486,6 +577,10 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "arcls") == 0) {
         if (argc < 3) { fprintf(stderr, "Usage: %s arcls <arc>\n", argv[0]); return 1; }
         return cmd_arcls(argv[2]);
+    }
+    if (strcmp(cmd, "archex") == 0) {
+        if (argc < 4) { fprintf(stderr, "Usage: %s archex <arc> <file_pattern>\n", argv[0]); return 1; }
+        return cmd_archex(argv[2], argv[3]);
     }
     if (strcmp(cmd, "bonus") == 0) {
         if (argc < 4) { fprintf(stderr, "Usage: %s bonus <arz> <item_path>\n", argv[0]); return 1; }

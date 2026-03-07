@@ -1,11 +1,30 @@
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "src/character.h"
 
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s <chr_file>\n"
+        "\n"
+        "Load a .chr character save file and display the character name\n"
+        "and equipment in all 12 slots (base, prefix, suffix, relics).\n"
+        "Uses character_load() from the main codebase.\n"
+        "\n"
+        "NOTE: For more detailed character inspection, use tq-chr-tool\n"
+        "which has dump, inv, equip, compare, validate, hex, and roundtrip\n"
+        "commands.\n"
+        "\n"
+        "Examples:\n"
+        "  %s testdata/saves/_soothie/Player.chr\n"
+        "  %s testdata/saves/_kayana/Player.chr\n",
+        prog, prog, prog);
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        printf("Usage: %s <chr_file>\n", argv[0]);
-        return 1;
+    if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+        usage(argv[0]);
+        return argc < 2 ? 1 : 0;
     }
     TQCharacter *character = character_load(argv[1]);
     if (!character) {

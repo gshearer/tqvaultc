@@ -8,6 +8,11 @@ typedef struct {
     char *affix_path;       /* DBR path to individual affix record */
     char *translation;      /* Resolved display name */
     float weight;           /* Drop weight from randomizer table */
+    char *effect_family;    /* Family key: filename with trailing _NN stripped */
+    int tier;               /* Numeric tier from trailing _NN (0 if none) */
+    char *stat_summary;     /* Human-readable stat summary (e.g. "+33 Strength") */
+    char *stat_category;    /* Stat type names only (e.g. "Strength", "Pets: Elemental Damage") */
+    char *stat_values;      /* Compact numeric values (e.g. "+33", "60 / +12%") */
 } TQAffixEntry;
 
 typedef struct {

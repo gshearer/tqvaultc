@@ -1,9 +1,9 @@
 /**
  * ui_checklist_dialog.c — Read-only completion checklist dialog
  *
- * Shows non-quest achievements (boss chests, exploration, NPCs, misc)
- * organized by category tabs, with checkboxes reflecting the character's
- * current QuestToken.myw state.
+ * Shows quest completion and non-quest achievements (boss chests, exploration,
+ * NPCs, misc) organized by category tabs, with checkboxes reflecting the
+ * character's current QuestToken.myw state.
  */
 
 #include "ui.h"
@@ -24,6 +24,9 @@ typedef struct {
 
     GtkWidget **check_buttons;   /* one per checklist extra entry */
     int extra_count;
+
+    GtkWidget **quest_check_buttons;  /* one per quest def entry */
+    int quest_count;
 } ChecklistDialogState;
 
 static void checklist_state_free(gpointer data) {
@@ -33,6 +36,7 @@ static void checklist_state_free(gpointer data) {
             quest_token_set_free(&st->sets[d]);
     }
     free(st->check_buttons);
+    free(st->quest_check_buttons);
     g_free(st);
 }
 
@@ -76,18 +80,29 @@ static void update_checkboxes(ChecklistDialogState *st) {
 
         if (!loaded) {
             gtk_check_button_set_active(GTK_CHECK_BUTTON(cb), FALSE);
-            gtk_widget_set_sensitive(cb, FALSE);
             continue;
         }
 
         const char *tok = extra_token_for_diff(&extras[i], d);
         if (!tok) {
-            /* No token on this difficulty (e.g. IT-only bosses on Normal) */
             gtk_check_button_set_active(GTK_CHECK_BUTTON(cb), FALSE);
-            gtk_widget_set_sensitive(cb, FALSE);
         } else {
-            gtk_widget_set_sensitive(cb, TRUE);
             bool found = quest_token_set_contains(&st->sets[d], tok);
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(cb), found);
+        }
+    }
+
+    /* Update quest checkboxes */
+    int qcount;
+    const QuestDef *qdefs = quest_get_defs(&qcount);
+    for (int i = 0; i < qcount && i < st->quest_count; i++) {
+        GtkWidget *cb = st->quest_check_buttons[i];
+        if (!cb) continue;
+
+        if (!loaded) {
+            gtk_check_button_set_active(GTK_CHECK_BUTTON(cb), FALSE);
+        } else {
+            bool found = quest_token_set_contains(&st->sets[d], qdefs[i].completion_token);
             gtk_check_button_set_active(GTK_CHECK_BUTTON(cb), found);
         }
     }
@@ -159,6 +174,72 @@ static GtkWidget *build_category_tab(ChecklistDialogState *st, ChecklistCategory
     return scroll;
 }
 
+/* ── Build a quest tab (Main Quests or Side Quests) ──────────────────── */
+
+static GtkWidget *build_quest_tab(ChecklistDialogState *st, bool is_main) {
+    int qcount;
+    const QuestDef *qdefs = quest_get_defs(&qcount);
+
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                    GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_widget_set_vexpand(scroll, TRUE);
+
+    GtkWidget *listbox = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(listbox), GTK_SELECTION_NONE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), listbox);
+
+    QuestAct last_act = -1;
+    const char *last_area = NULL;
+    bool first = true;
+
+    for (int i = 0; i < qcount; i++) {
+        if (qdefs[i].is_main != is_main) continue;
+
+        /* Act header when act changes */
+        if (qdefs[i].act != last_act) {
+            last_act = qdefs[i].act;
+            last_area = NULL;
+            char markup[128];
+            snprintf(markup, sizeof(markup), "<b>%s</b>", quest_act_name(last_act));
+            GtkWidget *lbl = gtk_label_new(NULL);
+            gtk_label_set_markup(GTK_LABEL(lbl), markup);
+            gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+            gtk_widget_set_margin_start(lbl, 8);
+            gtk_widget_set_margin_top(lbl, first ? 4 : 10);
+            gtk_widget_set_margin_bottom(lbl, 2);
+            gtk_list_box_append(GTK_LIST_BOX(listbox), lbl);
+            first = false;
+        }
+
+        /* Area sub-header for side quests */
+        if (!is_main && qdefs[i].area &&
+            (!last_area || strcmp(qdefs[i].area, last_area) != 0)) {
+            last_area = qdefs[i].area;
+            char markup[128];
+            snprintf(markup, sizeof(markup), "<i>%s</i>", last_area);
+            GtkWidget *lbl = gtk_label_new(NULL);
+            gtk_label_set_markup(GTK_LABEL(lbl), markup);
+            gtk_widget_set_halign(lbl, GTK_ALIGN_START);
+            gtk_widget_set_margin_start(lbl, 16);
+            gtk_widget_set_margin_top(lbl, 4);
+            gtk_list_box_append(GTK_LIST_BOX(listbox), lbl);
+        }
+
+        GtkWidget *cb = gtk_check_button_new_with_label(qdefs[i].name);
+        gtk_widget_set_margin_start(cb, is_main ? 24 : 32);
+        gtk_widget_set_sensitive(cb, FALSE);  /* read-only */
+
+        if (qdefs[i].completion_token)
+            gtk_widget_set_tooltip_text(cb, qdefs[i].completion_token);
+
+        st->quest_check_buttons[i] = cb;
+        gtk_list_box_append(GTK_LIST_BOX(listbox), cb);
+    }
+
+    return scroll;
+}
+
 /* ── Public entry point ───────────────────────────────────────────────── */
 
 void show_checklist_dialog(AppWidgets *widgets) {
@@ -171,6 +252,11 @@ void show_checklist_dialog(AppWidgets *widgets) {
     checklist_get_extras(&ecount);
     st->extra_count = ecount;
     st->check_buttons = calloc(ecount, sizeof(GtkWidget *));
+
+    int qcount;
+    quest_get_defs(&qcount);
+    st->quest_count = qcount;
+    st->quest_check_buttons = calloc(qcount, sizeof(GtkWidget *));
 
     load_all_difficulties(st);
 
@@ -239,6 +325,15 @@ void show_checklist_dialog(AppWidgets *widgets) {
     gtk_widget_set_vexpand(notebook, TRUE);
     gtk_box_append(GTK_BOX(vbox), notebook);
 
+    /* Quest tabs first */
+    GtkWidget *main_tab = build_quest_tab(st, true);
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), main_tab,
+                              gtk_label_new("Main Quests"));
+    GtkWidget *side_tab = build_quest_tab(st, false);
+    gtk_notebook_append_page(GTK_NOTEBOOK(notebook), side_tab,
+                              gtk_label_new("Side Quests"));
+
+    /* Non-quest category tabs */
     for (int c = 0; c < NUM_CHECK_CATEGORIES; c++) {
         GtkWidget *tab = build_category_tab(st, (ChecklistCategory)c);
         gtk_notebook_append_page(GTK_NOTEBOOK(notebook), tab,

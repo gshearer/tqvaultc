@@ -21,7 +21,27 @@ void vault_item_free_strings(TQVaultItem *item) {
 
 int tqvc_debug = 1;
 
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s [chr_file]\n"
+        "\n"
+        "Test harness for character_load()/character_save() round-tripping.\n"
+        "Loads a .chr file, saves it to /tmp/test_chr_resave.chr, then\n"
+        "compares structural keys in the inventory section.\n"
+        "\n"
+        "If no file is specified, defaults to 'Player_working.chr'.\n"
+        "\n"
+        "Examples:\n"
+        "  %s testdata/saves/_soothie/Player.chr\n"
+        "  %s\n",
+        prog, prog, prog);
+}
+
 int main(int argc, char **argv) {
+    if (argc > 1 && (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)) {
+        usage(argv[0]);
+        return 0;
+    }
     const char *path = argc > 1 ? argv[1] : "Player_working.chr";
     TQCharacter *chr = character_load(path);
     if (!chr) { fprintf(stderr, "Failed to load\n"); return 1; }

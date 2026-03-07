@@ -48,12 +48,35 @@ bool quest_token_set_contains(const QuestTokenSet *set, const char *token);
 void quest_token_set_add(QuestTokenSet *set, const char *token);
 void quest_token_set_remove(QuestTokenSet *set, const char *token);
 
-/* ── Path helper ──────────────────────────────────────────────────────── */
+/* ── Path helpers ─────────────────────────────────────────────────────── */
 
 /* Returns malloc'd path to QuestToken.myw for a given character + difficulty.
  * char_filepath is the path to Player.chr (e.g. .../SaveData/Main/_soothie/Player.chr).
  * Caller must free the returned string. Returns NULL on error. */
 char *quest_token_path(const char *char_filepath, QuestDifficulty diff);
+
+/* Returns malloc'd path to the quest state directory for a given character + difficulty.
+ * e.g. .../SaveData/Main/_soothie/Levels_World_World01.map/Legendary/
+ * Caller must free the returned string. Returns NULL on error. */
+char *quest_state_dir(const char *char_filepath, QuestDifficulty diff);
+
+/* ── Quest state file operations ─────────────────────────────────────── */
+
+/* Backup a file to <filepath>.bak. Returns 0 on success, -1 on error.
+ * If the source file doesn't exist, returns 0 (nothing to backup). */
+int quest_backup_file(const char *filepath);
+
+/* Zero all hasFired/isPendingFire flags in all .que files in quest_dir.
+ * Returns number of modified files, or -1 on error. */
+int quest_que_clear_all(const char *quest_dir);
+
+/* Write a minimal empty Quest.myw to quest_dir (backs up existing).
+ * Returns 0 on success, -1 on error. */
+int quest_myw_clear(const char *quest_dir);
+
+/* Copy all .que files + Quest.myw from src_dir to dst_dir (backs up dst files).
+ * Returns 0 on success, -1 on error. */
+int quest_copy_state_from(const char *src_dir, const char *dst_dir);
 
 /* ── Quest definition table access ────────────────────────────────────── */
 

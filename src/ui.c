@@ -277,6 +277,8 @@ void queue_redraw_all(AppWidgets *widgets) {
         gtk_widget_queue_draw(widgets->stash_player_da);
     if (widgets->stash_relic_da)
         gtk_widget_queue_draw(widgets->stash_relic_da);
+    if (widgets->held_overlay)
+        gtk_widget_queue_draw(widgets->held_overlay);
 }
 
 /* ── Search logic ────────────────────────────────────────────────────────── */
@@ -356,6 +358,9 @@ static void on_search_changed(GtkSearchEntry *entry, gpointer user_data) {
         for (char *p = widgets->search_text; *p; p++) *p = (char)tolower((unsigned char)*p);
     } else {
         widgets->search_text[0] = '\0';
+        /* Release focus from the search box when text is cleared (e.g. via
+         * the clear button) so keyboard shortcuts become accessible again. */
+        gtk_widget_grab_focus(widgets->vault_drawing_area);
     }
     run_search(widgets);
 }
@@ -365,7 +370,21 @@ static void on_search_stop(GtkSearchEntry *entry, gpointer user_data) {
     AppWidgets *widgets = (AppWidgets *)user_data;
     widgets->search_text[0] = '\0';
     gtk_editable_set_text(GTK_EDITABLE(widgets->search_entry), "");
+    gtk_widget_grab_focus(widgets->vault_drawing_area);
     run_search(widgets);
+}
+
+/* Escape in the search box: clear text + release focus in a single keypress. */
+static gboolean on_search_key(GtkEventControllerKey *ctrl, guint keyval,
+                               guint keycode, GdkModifierType state, gpointer user_data) {
+    (void)ctrl; (void)keycode; (void)state;
+    if (keyval != GDK_KEY_Escape) return FALSE;
+    AppWidgets *widgets = (AppWidgets *)user_data;
+    widgets->search_text[0] = '\0';
+    gtk_editable_set_text(GTK_EDITABLE(widgets->search_entry), "");
+    gtk_widget_grab_focus(widgets->vault_drawing_area);
+    run_search(widgets);
+    return TRUE;  /* stop further handling */
 }
 
 /* ── Copy/Duplicate helpers ──────────────────────────────────────────────── */
@@ -610,16 +629,28 @@ static void on_save_char_clicked(GtkButton *btn, gpointer user_data) {
     save_character_if_dirty(widgets);
 }
 
-static void on_quest_btn_clicked(GtkButton *btn, gpointer user_data) {
+static void on_database_btn_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     AppWidgets *widgets = (AppWidgets *)user_data;
-    show_quest_dialog(widgets);
+    show_database_dialog(widgets);
 }
 
 static void on_checklist_btn_clicked(GtkButton *btn, gpointer user_data) {
     (void)btn;
     AppWidgets *widgets = (AppWidgets *)user_data;
     show_checklist_dialog(widgets);
+}
+
+static void on_stats_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    AppWidgets *widgets = (AppWidgets *)user_data;
+    show_stats_dialog(widgets);
+}
+
+static void on_skills_btn_clicked(GtkButton *btn, gpointer user_data) {
+    (void)btn;
+    AppWidgets *widgets = (AppWidgets *)user_data;
+    show_skills_dialog(widgets);
 }
 
 static void on_refresh_char_clicked(GtkButton *btn, gpointer user_data) {
@@ -759,8 +790,12 @@ static void on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data
     char path[1024];
     snprintf(path, sizeof(path), "%s/TQVaultData/%s.vault.json", global_config.save_folder, name);
 
+    /* Reset bag to 0 only when switching to a different vault */
+    bool same_vault = global_config.last_vault_name &&
+                      strcmp(global_config.last_vault_name, name) == 0;
     config_set_last_vault(name);
-    config_set_last_vault_bag(0);
+    if (!same_vault)
+        config_set_last_vault_bag(0);
     config_save();
     g_free(name);
 
@@ -1094,6 +1129,18 @@ static void on_settings_btn_clicked(GtkButton *btn, gpointer user_data) {
     on_settings_action(NULL, NULL, user_data);
 }
 
+/* Capture-phase motion on the overlay: tracks cursor in overlay coordinates
+ * so the held item stays visible even between drawing areas. */
+static void on_overlay_motion(GtkEventControllerMotion *ctrl,
+                               double x, double y, gpointer user_data) {
+    (void)ctrl;
+    AppWidgets *widgets = (AppWidgets *)user_data;
+    widgets->win_cursor_x = x;
+    widgets->win_cursor_y = y;
+    if (widgets->held_item && widgets->held_overlay)
+        gtk_widget_queue_draw(widgets->held_overlay);
+}
+
 /* ── Application window layout ──────────────────────────────────────────── */
 
 void ui_app_activate(GtkApplication *app, gpointer user_data) {
@@ -1139,7 +1186,15 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_margin_end(widgets->tooltip_label, 6);
     gtk_widget_set_margin_top(widgets->tooltip_label, 4);
     gtk_widget_set_margin_bottom(widgets->tooltip_label, 4);
-    gtk_popover_set_child(GTK_POPOVER(widgets->tooltip_popover), widgets->tooltip_label);
+    GtkWidget *tip_scroll = gtk_scrolled_window_new();
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tip_scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(tip_scroll), 600);
+    gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(tip_scroll), TRUE);
+    gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(tip_scroll), 350);
+    gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(tip_scroll), TRUE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(tip_scroll), widgets->tooltip_label);
+    gtk_popover_set_child(GTK_POPOVER(widgets->tooltip_popover), tip_scroll);
     gtk_widget_add_css_class(widgets->tooltip_popover, "item-tooltip");
     widgets->tooltip_parent = NULL;
 
@@ -1182,6 +1237,10 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about_btn_clicked), widgets);
     gtk_header_bar_pack_start(GTK_HEADER_BAR(header), about_btn);
 
+    GtkWidget *database_btn = gtk_button_new_with_label("Database");
+    g_signal_connect(database_btn, "clicked", G_CALLBACK(on_database_btn_clicked), widgets);
+    gtk_header_bar_pack_start(GTK_HEADER_BAR(header), database_btn);
+
     /* ── Manage Vaults dropdown ── */
     GMenu *vault_menu = g_menu_new();
     g_menu_append(vault_menu, "Duplicate current vault", "win.dup-vault");
@@ -1209,15 +1268,20 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     g_signal_connect(view_build_btn, "clicked", G_CALLBACK(on_view_build_clicked), widgets);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), view_build_btn);
 
-    widgets->quest_btn = gtk_button_new_with_label("Manage Quests");
-    g_signal_connect(widgets->quest_btn, "clicked", G_CALLBACK(on_quest_btn_clicked), widgets);
-    gtk_widget_set_sensitive(widgets->quest_btn, FALSE);
-    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->quest_btn);
-
     widgets->checklist_btn = gtk_button_new_with_label("Checklist");
     g_signal_connect(widgets->checklist_btn, "clicked", G_CALLBACK(on_checklist_btn_clicked), widgets);
     gtk_widget_set_sensitive(widgets->checklist_btn, FALSE);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->checklist_btn);
+
+    widgets->skills_btn = gtk_button_new_with_label("Skills");
+    g_signal_connect(widgets->skills_btn, "clicked", G_CALLBACK(on_skills_btn_clicked), widgets);
+    gtk_widget_set_sensitive(widgets->skills_btn, FALSE);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->skills_btn);
+
+    widgets->stats_btn = gtk_button_new_with_label("Attributes");
+    g_signal_connect(widgets->stats_btn, "clicked", G_CALLBACK(on_stats_btn_clicked), widgets);
+    gtk_widget_set_sensitive(widgets->stats_btn, FALSE);
+    gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->stats_btn);
 
     /* Save Character button — grayed out when no unsaved changes */
     widgets->save_char_btn = gtk_button_new_with_label("Save Character");
@@ -1234,16 +1298,40 @@ void ui_app_activate(GtkApplication *app, gpointer user_data) {
     gtk_widget_set_size_request(widgets->search_entry, 200, -1);
     g_signal_connect(widgets->search_entry, "search-changed", G_CALLBACK(on_search_changed), widgets);
     g_signal_connect(widgets->search_entry, "stop-search", G_CALLBACK(on_search_stop), widgets);
+    GtkEventController *search_key = gtk_event_controller_key_new();
+    g_signal_connect(search_key, "key-pressed", G_CALLBACK(on_search_key), widgets);
+    gtk_widget_add_controller(widgets->search_entry, search_key);
     gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->search_entry);
 
     gtk_window_set_titlebar(GTK_WINDOW(window), header);
+
+    /* ── Top-level overlay: holds main_hbox + transparent held-item layer ── */
+    GtkWidget *overlay = gtk_overlay_new();
+    gtk_widget_set_hexpand(overlay, TRUE);
+    gtk_widget_set_vexpand(overlay, TRUE);
+    gtk_window_set_child(GTK_WINDOW(window), overlay);
 
     /* ── Top-level horizontal split: vault (left) | char panel (right) ── */
     GtkWidget *main_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
     widgets->main_hbox = main_hbox;
     gtk_widget_set_hexpand(main_hbox, TRUE);
     gtk_widget_set_vexpand(main_hbox, TRUE);
-    gtk_window_set_child(GTK_WINDOW(window), main_hbox);
+    gtk_overlay_set_child(GTK_OVERLAY(overlay), main_hbox);
+
+    /* Transparent overlay drawing area: renders held item between panes */
+    widgets->held_overlay = gtk_drawing_area_new();
+    gtk_widget_set_hexpand(widgets->held_overlay, TRUE);
+    gtk_widget_set_vexpand(widgets->held_overlay, TRUE);
+    gtk_widget_set_can_target(widgets->held_overlay, FALSE);
+    gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widgets->held_overlay),
+                                   held_overlay_draw_cb, widgets, NULL);
+    gtk_overlay_add_overlay(GTK_OVERLAY(overlay), widgets->held_overlay);
+
+    /* Capture-phase motion on the overlay: tracks cursor globally */
+    GtkEventController *overlay_motion = gtk_event_controller_motion_new();
+    gtk_event_controller_set_propagation_phase(overlay_motion, GTK_PHASE_CAPTURE);
+    g_signal_connect(overlay_motion, "motion", G_CALLBACK(on_overlay_motion), widgets);
+    gtk_widget_add_controller(overlay, overlay_motion);
 
     /* ── Left: vault area ── */
     GtkWidget *main_area = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);

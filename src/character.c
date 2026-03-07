@@ -308,6 +308,7 @@ TQCharacter* character_load(const char *filepath) {
     int inv_items_expected = 0;  /* from "size" key */
     int inv_items_read    = 0;   /* items fully parsed in current sack */
     TQVaultItem *cur_inv_item = NULL;
+    char *pending_skill_name = NULL;  /* tracks skillName for next skillLevel */
 
     while (offset + 4 <= (size_t)size) {
         size_t pre_key_offset = offset;  /* save offset before key length */
@@ -578,19 +579,33 @@ TQCharacter* character_load(const char *filepath) {
                     free(character->class_name);
                     character->class_name = read_string(character->raw_data, offset, &offset);
 
+                } else if (strcmp(key, "modifierPoints") == 0) {
+                    character->modifier_points = read_u32(character->raw_data, offset);
+                    character->off_modifier_points = offset;
+                    offset += 4;
+
+                } else if (strcmp(key, "masteriesAllowed") == 0) {
+                    character->masteries_allowed = read_u32(character->raw_data, offset);
+                    offset += 4;
+
                 } else if (strcmp(key, "temp") == 0) {
                     temp_count++;
                     float fval;
                     memcpy(&fval, character->raw_data + offset, 4);
-                    offset += 4;
                     switch (temp_count) {
-                        case 2: character->strength     = fval; break;
-                        case 3: character->dexterity    = fval; break;
-                        case 4: character->intelligence = fval; break;
-                        case 5: character->health       = fval; break;
-                        case 6: character->mana         = fval; break;
+                        case 2: character->strength     = fval;
+                                character->off_strength = offset; break;
+                        case 3: character->dexterity    = fval;
+                                character->off_dexterity = offset; break;
+                        case 4: character->intelligence = fval;
+                                character->off_intelligence = offset; break;
+                        case 5: character->health       = fval;
+                                character->off_health = offset; break;
+                        case 6: character->mana         = fval;
+                                character->off_mana = offset; break;
                         default: break;
                     }
+                    offset += 4;
 
                 } else if (strcmp(key, "playerLevel") == 0 ||
                            strcmp(key, "currentStats.charLevel") == 0) {
@@ -609,13 +624,59 @@ TQCharacter* character_load(const char *filepath) {
                     character->deaths = read_u32(character->raw_data, offset);
                     offset += 4;
 
+                } else if (strcmp(key, "skillPoints") == 0) {
+                    character->skill_points = read_u32(character->raw_data, offset);
+                    character->off_skill_points = offset;
+                    offset += 4;
+
                 } else if (strcmp(key, "skillName") == 0) {
                     char *skill = read_string(character->raw_data, offset, &offset);
                     if (skill && strstr(skill, "Mastery.dbr")) {
                         if (!character->mastery1) character->mastery1 = strdup(skill);
                         else if (!character->mastery2) character->mastery2 = strdup(skill);
                     }
-                    free(skill);
+                    /* Save as pending skill for the next skillLevel */
+                    free(pending_skill_name);
+                    pending_skill_name = skill; /* take ownership */
+
+                } else if (strcmp(key, "skillLevel") == 0) {
+                    uint32_t v = read_u32(character->raw_data, offset);
+                    if (pending_skill_name) {
+                        int idx = character->num_skills;
+                        character->skills = realloc(character->skills,
+                            (idx + 1) * sizeof(TQCharSkill));
+                        memset(&character->skills[idx], 0, sizeof(TQCharSkill));
+                        character->skills[idx].skill_name = pending_skill_name;
+                        character->skills[idx].skill_level = v;
+                        character->skills[idx].off_skill_level = offset;
+                        character->num_skills++;
+                        pending_skill_name = NULL; /* ownership transferred */
+                    }
+                    offset += 4;
+
+                } else if (strcmp(key, "skillEnabled") == 0) {
+                    uint32_t v = read_u32(character->raw_data, offset);
+                    if (character->num_skills > 0)
+                        character->skills[character->num_skills - 1].skill_enabled = v;
+                    offset += 4;
+
+                } else if (strcmp(key, "skillActive") == 0) {
+                    uint32_t v = read_u32(character->raw_data, offset);
+                    if (character->num_skills > 0)
+                        character->skills[character->num_skills - 1].skill_active = v;
+                    offset += 4;
+
+                } else if (strcmp(key, "skillSubLevel") == 0) {
+                    uint32_t v = read_u32(character->raw_data, offset);
+                    if (character->num_skills > 0)
+                        character->skills[character->num_skills - 1].skill_sublevel = v;
+                    offset += 4;
+
+                } else if (strcmp(key, "skillTransition") == 0) {
+                    uint32_t v = read_u32(character->raw_data, offset);
+                    if (character->num_skills > 0)
+                        character->skills[character->num_skills - 1].skill_transition = v;
+                    offset += 4;
 
                 /* ── Default: skip value ──────────────────────────────── */
                 } else {
@@ -644,6 +705,7 @@ TQCharacter* character_load(const char *filepath) {
         vault_item_free_strings(cur_inv_item);
         free(cur_inv_item);
     }
+    free(pending_skill_name);
 
     if (!character->character_name) character->character_name = strdup("Unknown");
 
@@ -655,6 +717,8 @@ TQCharacter* character_load(const char *filepath) {
                character->equip_block_start, character->equip_block_end);
         for (int s = 0; s < character->num_inv_sacks; s++)
             printf("  inv_sack[%d]: %d items\n", s, character->inv_sacks[s].num_items);
+        printf("  skills: %d parsed, skill_points=%u, off_skill_points=%zu\n",
+               character->num_skills, character->skill_points, character->off_skill_points);
     }
     return character;
 }
@@ -667,6 +731,9 @@ void character_free(TQCharacter *character) {
     free(character->class_name);
     free(character->mastery1);
     free(character->mastery2);
+    for (int i = 0; i < character->num_skills; i++)
+        free(character->skills[i].skill_name);
+    free(character->skills);
     for (int i = 0; i < 12; i++) {
         if (character->equipment[i]) {
             free(character->equipment[i]->base_name);
@@ -685,6 +752,101 @@ void character_free(TQCharacter *character) {
         free(character->inv_sacks[s].items);
     }
     free(character);
+}
+
+static void write_float_at(uint8_t *data, size_t offset, float val) {
+    memcpy(data + offset, &val, 4);
+}
+
+static void write_u32_at(uint8_t *data, size_t offset, uint32_t val) {
+    memcpy(data + offset, &val, 4);
+}
+
+int character_save_stats(TQCharacter *character) {
+    if (!character || !character->raw_data) return -1;
+
+    /* Verify all required offsets were found during parsing */
+    if (!character->off_strength || !character->off_dexterity ||
+        !character->off_intelligence || !character->off_health ||
+        !character->off_mana || !character->off_modifier_points) {
+        fprintf(stderr, "character_save_stats: missing offsets\n");
+        return -1;
+    }
+
+    /* All stat offsets are within the prefix region (before inv_block_start),
+     * so they remain valid even after splice saves. */
+
+    /* Create backup on first save */
+    char bak_path[1024];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", character->filepath);
+    if (access(bak_path, F_OK) != 0) {
+        FILE *bak = fopen(bak_path, "wb");
+        if (bak) {
+            fwrite(character->raw_data, 1, character->data_size, bak);
+            fclose(bak);
+        }
+    }
+
+    /* In-place writes at recorded offsets */
+    write_float_at(character->raw_data, character->off_strength, character->strength);
+    write_float_at(character->raw_data, character->off_dexterity, character->dexterity);
+    write_float_at(character->raw_data, character->off_intelligence, character->intelligence);
+    write_float_at(character->raw_data, character->off_health, character->health);
+    write_float_at(character->raw_data, character->off_mana, character->mana);
+    write_u32_at(character->raw_data, character->off_modifier_points, character->modifier_points);
+
+    /* Write to disk */
+    FILE *file = fopen(character->filepath, "wb");
+    if (!file) return -1;
+    size_t written = fwrite(character->raw_data, 1, character->data_size, file);
+    fclose(file);
+    if (written != character->data_size) return -1;
+
+    if (tqvc_debug)
+        printf("character_save_stats: wrote %zu bytes to %s\n",
+               character->data_size, character->filepath);
+
+    return 0;
+}
+
+int character_save_skills(TQCharacter *character) {
+    if (!character || !character->raw_data) return -1;
+    if (!character->off_skill_points) {
+        fprintf(stderr, "character_save_skills: missing skillPoints offset\n");
+        return -1;
+    }
+
+    /* Create backup on first save */
+    char bak_path[1024];
+    snprintf(bak_path, sizeof(bak_path), "%s.bak", character->filepath);
+    if (access(bak_path, F_OK) != 0) {
+        FILE *bak = fopen(bak_path, "wb");
+        if (bak) {
+            fwrite(character->raw_data, 1, character->data_size, bak);
+            fclose(bak);
+        }
+    }
+
+    /* In-place writes: skill levels at recorded offsets */
+    for (int i = 0; i < character->num_skills; i++) {
+        if (character->skills[i].off_skill_level)
+            write_u32_at(character->raw_data,
+                         character->skills[i].off_skill_level,
+                         character->skills[i].skill_level);
+    }
+    write_u32_at(character->raw_data, character->off_skill_points,
+                 character->skill_points);
+
+    FILE *file = fopen(character->filepath, "wb");
+    if (!file) return -1;
+    size_t written = fwrite(character->raw_data, 1, character->data_size, file);
+    fclose(file);
+    if (written != character->data_size) return -1;
+
+    if (tqvc_debug)
+        printf("character_save_skills: wrote %zu bytes to %s\n",
+               character->data_size, character->filepath);
+    return 0;
 }
 
 int character_save(TQCharacter *character, const char *filepath) {

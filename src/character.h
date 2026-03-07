@@ -25,6 +25,17 @@ typedef struct {
     uint32_t var2;   /* relic/charm slot 2 shard count */
 } TQItem;
 
+/* Skill block from the character save */
+typedef struct {
+    char *skill_name;       /* DBR path */
+    uint32_t skill_level;
+    uint32_t skill_enabled;
+    uint32_t skill_active;
+    uint32_t skill_sublevel;
+    uint32_t skill_transition;
+    size_t off_skill_level; /* byte offset for in-place write */
+} TQCharSkill;
+
 /**
  * TQCharacter - Represents a Titan Quest player character (.chr)
  */
@@ -50,6 +61,24 @@ typedef struct {
     char *mastery1;
     char *mastery2;
 
+    /* Stat editing support */
+    uint32_t modifier_points;   /* unspent attribute points */
+    uint32_t skill_points;      /* unspent skill points */
+    uint32_t masteries_allowed; /* 0, 1, or 2 */
+
+    /* Byte offsets for in-place stat writes (0 = not found) */
+    size_t off_strength;
+    size_t off_dexterity;
+    size_t off_intelligence;
+    size_t off_health;
+    size_t off_mana;
+    size_t off_modifier_points;
+    size_t off_skill_points;
+
+    /* Parsed skill list */
+    TQCharSkill *skills;
+    int num_skills;
+
     TQItem *equipment[12]; // Head, Neck, Chest, Legs, Arms, Ring1, Ring2, Wep1, Shld1, Wep2, Shld2, Artifact
     uint32_t equip_slot_var2[12]; /* per-slot var2, even for empty slots */
     int equip_attached[12];       /* per-slot itemAttached flag */
@@ -72,5 +101,7 @@ typedef struct {
 TQCharacter* character_load(const char *filepath);
 void character_free(TQCharacter *character);
 int character_save(TQCharacter *character, const char *filepath);
+int character_save_stats(TQCharacter *character);
+int character_save_skills(TQCharacter *character);
 
 #endif

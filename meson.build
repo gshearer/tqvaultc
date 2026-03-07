@@ -50,8 +50,10 @@ app_sources = [
   'src/prefetch.c',
   'src/stash.c',
   'src/quest_tokens.c',
-  'src/ui_quest_dialog.c',
-  'src/ui_checklist_dialog.c'
+  'src/ui_checklist_dialog.c',
+  'src/ui_stats_dialog.c',
+  'src/ui_skills_dialog.c',
+  'src/ui_database_dialog.c'
 ]
 
 # 4. Build the GUI Application

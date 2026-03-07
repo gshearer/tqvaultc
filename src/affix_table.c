@@ -2,6 +2,7 @@
 #include "arz.h"
 #include "asset_lookup.h"
 #include "config.h"
+#include "item_stats.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -29,11 +30,6 @@ static GHashTable *g_affix_map = NULL;
 /* Cache of resolved affix results: normalized item path -> TQItemAffixes* */
 static GHashTable *g_affix_cache = NULL;
 
-/* Expansion sibling groups: category_key -> GPtrArray of normalized record paths.
- * Groups LootRandomizerTable records by gear-type category so that expansion
- * variant tables (e.g. xpack3's armmelee_l04.dbr) can be found as siblings of
- * the base table (armmelee_l01.dbr). */
-static GHashTable *g_randomizer_groups = NULL;
 
 /* ── Helpers ─────────────────────────────────────────────────────── */
 
@@ -73,36 +69,129 @@ static char* pretty_filename(const char *path) {
     return copy;
 }
 
-/* Extract a category key from a LootRandomizerTable path.
- * E.g. "Records/Item/LootMagicalAffixes/Suffix/TablesArmor/ArmMelee_L01.dbr"
- *    → "lootmagicalaffixes\\suffix\\tablesarmor\\armmelee_l"
- * The key covers everything from "lootmagicalaffixes" onward, lowercased, with
- * trailing digits and extension stripped — so base and expansion variants share
- * the same key. Returns a g_malloc'd string or NULL. */
-static char* extract_randomizer_key(const char *path) {
-    if (!path) return NULL;
-    const char *anchor = strcasestr(path, "lootmagicalaffixes");
-    if (!anchor) return NULL;
+/* Extract effect family and tier from an affix DBR path.
+ * E.g. "records/.../character_attributestrength_05.dbr"
+ *    → family "character attributestrength", tier 5
+ * If no trailing _NN, tier=0 and family is the full basename. */
+static void extract_affix_family(const char *path, char **out_family, int *out_tier) {
+    *out_family = NULL;
+    *out_tier = 0;
+    if (!path) return;
 
-    char *lower = g_ascii_strdown(anchor, -1);
-    for (char *p = lower; *p; p++)
-        if (*p == '/') *p = '\\';
+    const char *last_sep = strrchr(path, '\\');
+    if (!last_sep) last_sep = strrchr(path, '/');
+    const char *name = last_sep ? last_sep + 1 : path;
+    char *copy = strdup(name);
 
     /* Strip .dbr extension */
-    char *dot = strrchr(lower, '.');
+    char *dot = strrchr(copy, '.');
     if (dot) *dot = '\0';
 
-    /* Strip trailing digits from filename (e.g. "armmelee_l01" → "armmelee_l") */
-    size_t len = strlen(lower);
-    while (len > 0 && lower[len - 1] >= '0' && lower[len - 1] <= '9')
-        len--;
-    lower[len] = '\0';
+    /* Check for trailing _NN (1-3 digits) */
+    char *last_us = strrchr(copy, '_');
+    if (last_us && last_us[1] >= '0' && last_us[1] <= '9') {
+        char *endp;
+        long tier = strtol(last_us + 1, &endp, 10);
+        if (*endp == '\0') {
+            *out_tier = (int)tier;
+            *last_us = '\0';  /* truncate the _NN */
+        }
+    }
 
-    return lower;
+    /* Replace underscores with spaces, lowercase */
+    for (char *p = copy; *p; p++) {
+        if (*p == '_') *p = ' ';
+        if (*p >= 'A' && *p <= 'Z') *p += 32;
+    }
+    *out_family = copy;
 }
 
-static void ptr_array_free_wrapper(gpointer data) {
-    g_ptr_array_free(data, TRUE);
+
+/* Split a stat summary string into category (names only) and compact values.
+ * E.g. "+33 Strength, +12% Dexterity" → category="Strength, Dexterity", values="+33 / +12%"
+ * Handles "Pets: " prefix. Caller must free() both outputs. */
+static void split_stat_summary(const char *summary, char **out_category, char **out_values) {
+    *out_category = NULL;
+    *out_values = NULL;
+    if (!summary || !summary[0]) return;
+
+    const char *prefix = "";
+    const char *s = summary;
+    if (strncasecmp(s, "Pets: ", 6) == 0) {
+        prefix = "Pets: ";
+        s += 6;
+    }
+
+    char names[3][128];
+    char vals[3][128];
+    int n = 0;
+
+    while (*s && n < 3) {
+        const char *comma = strstr(s, ", ");
+        size_t partlen = comma ? (size_t)(comma - s) : strlen(s);
+        char part[128];
+        size_t clen = partlen < sizeof(part) - 1 ? partlen : sizeof(part) - 1;
+        memcpy(part, s, clen);
+        part[clen] = '\0';
+
+        /* Split "value name" at first space followed by alpha */
+        const char *p = part;
+        while (*p) {
+            if (*p == ' ' && p[1] && ((p[1] >= 'A' && p[1] <= 'Z') ||
+                                       (p[1] >= 'a' && p[1] <= 'z'))) {
+                size_t vn = (size_t)(p - part);
+                if (vn >= sizeof(vals[0])) vn = sizeof(vals[0]) - 1;
+                memcpy(vals[n], part, vn);
+                vals[n][vn] = '\0';
+                snprintf(names[n], sizeof(names[0]), "%s", p + 1);
+                break;
+            }
+            p++;
+        }
+        if (!*p) {
+            /* No split found — entire part is the value */
+            snprintf(vals[n], sizeof(vals[0]), "%s", part);
+            names[n][0] = '\0';
+        }
+        n++;
+        if (comma) s = comma + 2; else break;
+    }
+
+    /* Build category (deduplicated names) */
+    char cat[256];
+    cat[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        if (!names[i][0]) continue;
+        bool dup = false;
+        for (int j = 0; j < i; j++) {
+            if (strcasecmp(names[i], names[j]) == 0) { dup = true; break; }
+        }
+        if (dup) continue;
+        if (cat[0]) { size_t cl = strlen(cat); if (cl < sizeof(cat) - 3) { cat[cl] = ','; cat[cl+1] = ' '; cat[cl+2] = '\0'; } }
+        size_t cl = strlen(cat), nl = strlen(names[i]);
+        if (cl + nl < sizeof(cat) - 1) memcpy(cat + cl, names[i], nl + 1);
+    }
+
+    /* Build compact values */
+    char valstr[128];
+    valstr[0] = '\0';
+    for (int i = 0; i < n; i++) {
+        if (i > 0) {
+            size_t vl = strlen(valstr);
+            if (vl < sizeof(valstr) - 4) { memcpy(valstr + vl, " / ", 4); }
+        }
+        size_t vl = strlen(valstr), pl = strlen(vals[i]);
+        if (vl + pl < sizeof(valstr) - 1) memcpy(valstr + vl, vals[i], pl + 1);
+    }
+
+    if (prefix[0]) {
+        char tmp[256];
+        snprintf(tmp, sizeof(tmp), "%s%s", prefix, cat);
+        *out_category = strdup(tmp);
+    } else {
+        *out_category = strdup(cat);
+    }
+    *out_values = strdup(valstr);
 }
 
 /* ── Free helpers ────────────────────────────────────────────────── */
@@ -290,12 +379,10 @@ void affix_table_init(TQTranslation *tr) {
 
     g_affix_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, affix_table_list_free);
     g_affix_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, affix_result_free_internal);
-    g_randomizer_groups = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, ptr_array_free_wrapper);
 
     int num_files = asset_get_num_files();
     int records_scanned = 0;
     int tables_found = 0;
-    int randomizer_groups = 0;
 
     for (int fid = 0; fid < num_files; fid++) {
         const char *fpath = asset_get_file_path((uint16_t)fid);
@@ -311,24 +398,7 @@ void affix_table_init(TQTranslation *tr) {
             const char *rpath = arz->records[ri].path;
             if (!rpath) continue;
 
-            /* Phase 1: Index LootRandomizerTable records by gear-type category.
-             * This lets us find expansion sibling tables later. */
-            if (path_contains_ci(rpath, "lootmagicalaffixes")) {
-                char *cat_key = extract_randomizer_key(rpath);
-                if (cat_key) {
-                    GPtrArray *arr = g_hash_table_lookup(g_randomizer_groups, cat_key);
-                    if (!arr) {
-                        arr = g_ptr_array_new_with_free_func(g_free);
-                        g_hash_table_insert(g_randomizer_groups, cat_key, arr);
-                        randomizer_groups++;
-                    } else {
-                        g_free(cat_key);
-                    }
-                    g_ptr_array_add(arr, normalize_path(rpath));
-                }
-            }
-
-            /* Phase 2: Process LootItemTable records (existing logic) */
+            /* Process LootItemTable records */
             if (!path_contains_ci(rpath, "loottables") &&
                 !path_contains_ci(rpath, "merchantloottables"))
                 continue;
@@ -358,9 +428,9 @@ void affix_table_init(TQTranslation *tr) {
 
     if (tqvc_debug) {
         fprintf(stderr, "Affix table init: scanned %d loot records, found %d tables, "
-                "%d items mapped, %d randomizer groups in %.1f ms\n",
+                "%d items mapped in %.1f ms\n",
                 records_scanned, tables_found,
-                g_hash_table_size(g_affix_map), randomizer_groups, ms);
+                g_hash_table_size(g_affix_map), ms);
     }
 }
 
@@ -369,6 +439,14 @@ void affix_table_init(TQTranslation *tr) {
 static int compare_affix_entries(const void *a, const void *b) {
     const TQAffixEntry *ea = a;
     const TQAffixEntry *eb = b;
+    /* Primary: effect_family (alphabetical) */
+    const char *fa = ea->effect_family ? ea->effect_family : "";
+    const char *fb = eb->effect_family ? eb->effect_family : "";
+    int cmp = strcasecmp(fa, fb);
+    if (cmp != 0) return cmp;
+    /* Secondary: tier (ascending) */
+    if (ea->tier != eb->tier) return ea->tier - eb->tier;
+    /* Tertiary: translation */
     return strcasecmp(ea->translation, eb->translation);
 }
 
@@ -478,9 +556,27 @@ static void resolve_randomizer_table(const char *table_path, TQTranslation *tr,
         }
         if (!translation) translation = pretty_filename(rp->path);
 
+        /* Extract family/tier from affix path */
+        char *family = NULL;
+        int tier = 0;
+        extract_affix_family(rp->path, &family, &tier);
+
+        /* Build stat summary from the affix DBR */
+        char *summary = item_bonus_stat_summary(rp->path);
+        if (!summary) summary = family ? strdup(family) : pretty_filename(rp->path);
+
+        /* Split summary into category (names) and compact values */
+        char *category = NULL, *values = NULL;
+        split_stat_summary(summary, &category, &values);
+
         entries[count].affix_path = rp->path;
         entries[count].translation = translation;
         entries[count].weight = rp->weight;
+        entries[count].effect_family = family;
+        entries[count].tier = tier;
+        entries[count].stat_summary = summary;
+        entries[count].stat_category = category;
+        entries[count].stat_values = values;
         rp->path = NULL;  /* ownership transferred */
         count++;
     }
@@ -522,7 +618,7 @@ TQItemAffixes* affix_table_get(const char *item_base_name, TQTranslation *tr) {
     /* Track which randomizer tables we've already resolved (avoid duplicates) */
     GHashTable *resolved = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
 
-    /* Resolve prefix and suffix tables, including expansion siblings */
+    /* Resolve prefix and suffix tables from direct loot table references */
     for (int i = 0; i < tbl->count; i++) {
         const char *tables[2] = { tbl->pairs[i].prefix_table, tbl->pairs[i].suffix_table };
         TQAffixEntry **lists[2] = { &result->prefixes.entries, &result->suffixes.entries };
@@ -531,32 +627,12 @@ TQItemAffixes* affix_table_get(const char *item_base_name, TQTranslation *tr) {
         for (int t = 0; t < 2; t++) {
             if (!tables[t] || !tables[t][0]) continue;
 
-            /* Resolve the base table */
             char *tnorm = normalize_path(tables[t]);
             if (!g_hash_table_contains(resolved, tnorm)) {
                 g_hash_table_add(resolved, tnorm);
                 resolve_randomizer_table(tables[t], tr, lists[t], counts[t]);
             } else {
                 g_free(tnorm);
-            }
-
-            /* Find and resolve expansion sibling tables in the same category */
-            char *cat_key = extract_randomizer_key(tables[t]);
-            if (cat_key && g_randomizer_groups) {
-                GPtrArray *siblings = g_hash_table_lookup(g_randomizer_groups, cat_key);
-                if (siblings) {
-                    for (guint s = 0; s < siblings->len; s++) {
-                        const char *sibling_path = g_ptr_array_index(siblings, s);
-                        char *snorm = g_strdup(sibling_path);  /* already normalized */
-                        if (!g_hash_table_contains(resolved, snorm)) {
-                            g_hash_table_add(resolved, snorm);
-                            resolve_randomizer_table(sibling_path, tr, lists[t], counts[t]);
-                        } else {
-                            g_free(snorm);
-                        }
-                    }
-                }
-                g_free(cat_key);
             }
         }
     }
@@ -784,11 +860,19 @@ void affix_result_free(TQItemAffixes *affixes) {
     for (int i = 0; i < affixes->prefixes.count; i++) {
         free(affixes->prefixes.entries[i].affix_path);
         free(affixes->prefixes.entries[i].translation);
+        free(affixes->prefixes.entries[i].effect_family);
+        free(affixes->prefixes.entries[i].stat_summary);
+        free(affixes->prefixes.entries[i].stat_category);
+        free(affixes->prefixes.entries[i].stat_values);
     }
     free(affixes->prefixes.entries);
     for (int i = 0; i < affixes->suffixes.count; i++) {
         free(affixes->suffixes.entries[i].affix_path);
         free(affixes->suffixes.entries[i].translation);
+        free(affixes->suffixes.entries[i].effect_family);
+        free(affixes->suffixes.entries[i].stat_summary);
+        free(affixes->suffixes.entries[i].stat_category);
+        free(affixes->suffixes.entries[i].stat_values);
     }
     free(affixes->suffixes.entries);
     free(affixes);
@@ -797,5 +881,4 @@ void affix_result_free(TQItemAffixes *affixes) {
 void affix_table_free(void) {
     if (g_affix_cache) { g_hash_table_destroy(g_affix_cache); g_affix_cache = NULL; }
     if (g_affix_map) { g_hash_table_destroy(g_affix_map); g_affix_map = NULL; }
-    if (g_randomizer_groups) { g_hash_table_destroy(g_randomizer_groups); g_randomizer_groups = NULL; }
 }

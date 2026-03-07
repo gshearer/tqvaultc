@@ -11,6 +11,28 @@
 #include <strings.h>
 #include <ctype.h>
 
+/* Returns true if the family at entries[idx] has more than one member */
+static bool family_has_siblings(const TQAffixEntry *entries, int count, int idx) {
+    const char *f = entries[idx].effect_family;
+    if (!f) return false;
+    if (idx > 0 && entries[idx-1].effect_family &&
+        strcasecmp(f, entries[idx-1].effect_family) == 0) return true;
+    if (idx + 1 < count && entries[idx+1].effect_family &&
+        strcasecmp(f, entries[idx+1].effect_family) == 0) return true;
+    return false;
+}
+
+/* Returns true if entries[idx] is the highest tier in its family group.
+ * Since entries are sorted by family then tier ascending, the last entry
+ * in a family run has the highest tier. */
+static bool is_max_tier_in_family(const TQAffixEntry *entries, int count, int idx) {
+    const char *f = entries[idx].effect_family;
+    if (!f) return true;
+    if (idx + 1 < count && entries[idx+1].effect_family &&
+        strcasecmp(f, entries[idx+1].effect_family) == 0) return false;
+    return true;
+}
+
 /* ── Affix dialog state ────────────────────────────────────────────────── */
 
 typedef struct {
@@ -114,22 +136,37 @@ static void on_suffix_row_selected(GtkListBox *box, GtkListBoxRow *row, gpointer
     update_affix_preview(st);
 }
 
+static bool ci_contains(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return false;
+    for (const char *s = haystack; *s; s++) {
+        const char *a = s, *b = needle;
+        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
+            a++; b++;
+        }
+        if (!*b) return true;
+    }
+    return false;
+}
+
 static gboolean affix_filter_func(GtkListBoxRow *row, gpointer data) {
     GtkSearchEntry *search = GTK_SEARCH_ENTRY(data);
     const char *query = gtk_editable_get_text(GTK_EDITABLE(search));
     if (!query || !query[0]) return TRUE;  /* no filter — show all */
 
+    /* Group header rows: show if any sibling matches (handled by GTK hiding all
+     * non-matching rows, so headers without visible children get hidden naturally).
+     * For simplicity, always show headers — they're small and provide context. */
+    if (g_object_get_data(G_OBJECT(row), "is-header")) return TRUE;
+
     const char *label = row_get_label_text(row);
     if (!label) return TRUE;  /* "(None)" row always visible */
 
-    /* Case-insensitive substring match */
-    for (const char *s = label; *s; s++) {
-        const char *a = s, *b = query;
-        while (*a && *b && tolower((unsigned char)*a) == tolower((unsigned char)*b)) {
-            a++; b++;
-        }
-        if (!*b) return TRUE;
-    }
+    /* Match against display name or stat summary */
+    if (ci_contains(label, query)) return TRUE;
+
+    const char *summary = g_object_get_data(G_OBJECT(row), "stat-summary");
+    if (ci_contains(summary, query)) return TRUE;
+
     return FALSE;
 }
 
@@ -182,10 +219,31 @@ static void on_affix_dialog_cancel(GtkButton *btn, gpointer data) {
     gtk_window_destroy(GTK_WINDOW(st->dialog));
 }
 
-/* Create a single listbox row for an affix entry */
-static GtkWidget *make_affix_row(const char *name, const char *affix_path,
-                                  float pct, bool is_current,
-                                  bool has_sibling, const char *affix_path_raw) {
+/* Create a non-selectable group header row */
+static GtkWidget *make_group_header(const char *stat_summary) {
+    GtkWidget *row = gtk_list_box_row_new();
+    gtk_list_box_row_set_activatable(GTK_LIST_BOX_ROW(row), FALSE);
+    gtk_list_box_row_set_selectable(GTK_LIST_BOX_ROW(row), FALSE);
+
+    GtkWidget *label = gtk_label_new(stat_summary);
+    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+    gtk_widget_set_margin_start(label, 4);
+    gtk_widget_set_margin_top(label, 6);
+    gtk_widget_set_margin_bottom(label, 2);
+    gtk_widget_add_css_class(label, "affix-group-header");
+    gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), label);
+
+    g_object_set_data(G_OBJECT(row), "is-header", GINT_TO_POINTER(1));
+    return row;
+}
+
+/* Create a single listbox row for an affix entry.
+ * Tiered rows: "[T5] Name - compact_values (Pct%)"
+ * Singleton rows: "Name - full_stat_summary"
+ * is_lower_tier: true if this is not the highest tier in its family (dimmed). */
+static GtkWidget *make_affix_row(const TQAffixEntry *entry, float pct,
+                                  bool is_current, bool show_tier,
+                                  bool is_lower_tier) {
     GtkWidget *row = gtk_list_box_row_new();
     GtkWidget *hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_margin_start(hbox, 4);
@@ -193,29 +251,39 @@ static GtkWidget *make_affix_row(const char *name, const char *affix_path,
     gtk_widget_set_margin_top(hbox, 2);
     gtk_widget_set_margin_bottom(hbox, 2);
 
-    char label_buf[256];
-    if (name) {
-        if (has_sibling && affix_path_raw) {
-            const char *last_sep = strrchr(affix_path_raw, '\\');
-            const char *fname = last_sep ? last_sep + 1 : affix_path_raw;
-            int flen = (int)strlen(fname);
-            if (flen > 4) flen -= 4;  /* strip .dbr */
-            snprintf(label_buf, sizeof(label_buf), "%s [%.*s]", name, flen, fname);
-        } else {
-            snprintf(label_buf, sizeof(label_buf), "%s", name);
-        }
-    } else {
+    char label_buf[512];
+    if (!entry) {
         snprintf(label_buf, sizeof(label_buf), "(None)");
+    } else if (show_tier && entry->tier > 0) {
+        /* Tiered row: show compact values (stats are in the group header) */
+        if (entry->stat_values && entry->stat_values[0])
+            snprintf(label_buf, sizeof(label_buf), "[T%d] %s - %s",
+                     entry->tier, entry->translation, entry->stat_values);
+        else
+            snprintf(label_buf, sizeof(label_buf), "[T%d] %s",
+                     entry->tier, entry->translation);
+    } else {
+        /* Singleton row: show full stat summary */
+        if (entry->stat_summary && entry->stat_summary[0])
+            snprintf(label_buf, sizeof(label_buf), "%s - %s",
+                     entry->translation, entry->stat_summary);
+        else
+            snprintf(label_buf, sizeof(label_buf), "%s", entry->translation);
     }
 
     GtkWidget *name_label = gtk_label_new(label_buf);
-    gtk_label_set_xalign(GTK_LABEL(name_label), 0.1f);
+    gtk_label_set_xalign(GTK_LABEL(name_label), 0.0f);
+    gtk_label_set_ellipsize(GTK_LABEL(name_label), PANGO_ELLIPSIZE_END);
     gtk_widget_set_hexpand(name_label, TRUE);
     if (is_current)
         gtk_widget_add_css_class(name_label, "affix-current");
+    if (is_lower_tier)
+        gtk_widget_add_css_class(name_label, "affix-lower-tier");
+    if (entry && show_tier && entry->tier > 0)
+        gtk_widget_set_tooltip_text(name_label, "Higher tier = stronger variant");
     gtk_box_append(GTK_BOX(hbox), name_label);
 
-    if (name && pct > 0) {
+    if (entry && pct > 0) {
         char wt[32];
         snprintf(wt, sizeof(wt), "%.1f%%", pct);
         GtkWidget *wt_label = gtk_label_new(wt);
@@ -226,11 +294,15 @@ static GtkWidget *make_affix_row(const char *name, const char *affix_path,
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), hbox);
 
     /* Store data on the row */
-    if (affix_path)
-        g_object_set_data_full(G_OBJECT(row), "affix-path", g_strdup(affix_path), g_free);
-    /* label-text for filtering (NULL for "(None)" — always shown) */
-    if (name)
-        g_object_set_data_full(G_OBJECT(row), "label-text", g_strdup(label_buf), g_free);
+    if (entry) {
+        g_object_set_data_full(G_OBJECT(row), "affix-path",
+                               g_strdup(entry->affix_path), g_free);
+        g_object_set_data_full(G_OBJECT(row), "label-text",
+                               g_strdup(label_buf), g_free);
+        if (entry->stat_summary)
+            g_object_set_data_full(G_OBJECT(row), "stat-summary",
+                                   g_strdup(entry->stat_summary), g_free);
+    }
 
     return row;
 }
@@ -418,31 +490,39 @@ void show_affix_dialog(AppWidgets *widgets, TQItemAffixes *override_affixes,
     for (int i = 0; i < affixes->prefixes.count; i++)
         prefix_total_w += affixes->prefixes.entries[i].weight;
 
-
     const char *cur_prefix = st->orig_prefix;
     bool none_is_current = !cur_prefix || !cur_prefix[0];
-    GtkWidget *none_row = make_affix_row(NULL, NULL, 0, none_is_current, false, NULL);
+    GtkWidget *none_row = make_affix_row(NULL, 0, none_is_current, false, false);
     gtk_list_box_append(GTK_LIST_BOX(prefix_listbox), none_row);
     GtkWidget *prefix_select_row = none_is_current ? none_row : NULL;
 
-
+    const char *prev_family = NULL;
     for (int i = 0; i < affixes->prefixes.count; i++) {
         TQAffixEntry *e = &affixes->prefixes.entries[i];
+        bool new_family = !prev_family || !e->effect_family ||
+                          strcasecmp(prev_family, e->effect_family) != 0;
+        bool has_siblings = family_has_siblings(affixes->prefixes.entries,
+                                                 affixes->prefixes.count, i);
+
+        /* Insert group header when family changes and there are multiple tiers */
+        if (new_family && has_siblings) {
+            const char *hdr_text = e->stat_category ? e->stat_category : e->stat_summary;
+            if (hdr_text) {
+                GtkWidget *hdr = make_group_header(hdr_text);
+                gtk_list_box_append(GTK_LIST_BOX(prefix_listbox), hdr);
+            }
+        }
+        prev_family = e->effect_family;
+
         bool is_cur = cur_prefix && strcasecmp(cur_prefix, e->affix_path) == 0;
         float pct = prefix_total_w > 0 ? (e->weight / prefix_total_w) * 100.0f : 0;
+        bool lower = has_siblings && !is_max_tier_in_family(
+            affixes->prefixes.entries, affixes->prefixes.count, i);
 
-        bool has_sibling =
-            (i > 0 && strcasecmp(e->translation,
-                affixes->prefixes.entries[i-1].translation) == 0) ||
-            (i + 1 < affixes->prefixes.count && strcasecmp(e->translation,
-                affixes->prefixes.entries[i+1].translation) == 0);
-
-        GtkWidget *r = make_affix_row(e->translation, e->affix_path, pct,
-                                       is_cur, has_sibling, e->affix_path);
+        GtkWidget *r = make_affix_row(e, pct, is_cur, has_siblings, lower);
         gtk_list_box_append(GTK_LIST_BOX(prefix_listbox), r);
         if (is_cur) prefix_select_row = r;
     }
-
 
     /* -- Populate suffix listbox -- */
     float suffix_total_w = 0;
@@ -451,24 +531,33 @@ void show_affix_dialog(AppWidgets *widgets, TQItemAffixes *override_affixes,
 
     const char *cur_suffix = st->orig_suffix;
     none_is_current = !cur_suffix || !cur_suffix[0];
-    none_row = make_affix_row(NULL, NULL, 0, none_is_current, false, NULL);
+    none_row = make_affix_row(NULL, 0, none_is_current, false, false);
     gtk_list_box_append(GTK_LIST_BOX(suffix_listbox), none_row);
     GtkWidget *suffix_select_row = none_is_current ? none_row : NULL;
 
-
+    prev_family = NULL;
     for (int i = 0; i < affixes->suffixes.count; i++) {
         TQAffixEntry *e = &affixes->suffixes.entries[i];
+        bool new_family = !prev_family || !e->effect_family ||
+                          strcasecmp(prev_family, e->effect_family) != 0;
+        bool has_siblings = family_has_siblings(affixes->suffixes.entries,
+                                                 affixes->suffixes.count, i);
+
+        if (new_family && has_siblings) {
+            const char *hdr_text = e->stat_category ? e->stat_category : e->stat_summary;
+            if (hdr_text) {
+                GtkWidget *hdr = make_group_header(hdr_text);
+                gtk_list_box_append(GTK_LIST_BOX(suffix_listbox), hdr);
+            }
+        }
+        prev_family = e->effect_family;
+
         bool is_cur = cur_suffix && strcasecmp(cur_suffix, e->affix_path) == 0;
         float pct = suffix_total_w > 0 ? (e->weight / suffix_total_w) * 100.0f : 0;
+        bool lower = has_siblings && !is_max_tier_in_family(
+            affixes->suffixes.entries, affixes->suffixes.count, i);
 
-        bool has_sibling =
-            (i > 0 && strcasecmp(e->translation,
-                affixes->suffixes.entries[i-1].translation) == 0) ||
-            (i + 1 < affixes->suffixes.count && strcasecmp(e->translation,
-                affixes->suffixes.entries[i+1].translation) == 0);
-
-        GtkWidget *r = make_affix_row(e->translation, e->affix_path, pct,
-                                       is_cur, has_sibling, e->affix_path);
+        GtkWidget *r = make_affix_row(e, pct, is_cur, has_siblings, lower);
         gtk_list_box_append(GTK_LIST_BOX(suffix_listbox), r);
         if (is_cur) suffix_select_row = r;
     }

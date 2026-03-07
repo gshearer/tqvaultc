@@ -164,12 +164,21 @@ static void process_arc(const char *path)
 
 int main(int argc, char **argv)
 {
-    if (argc < 2) {
-        fprintf(stderr, "Usage: %s <arc-file> [arc-file ...]\n", argv[0]);
-        fprintf(stderr, "\nSearches .arc files for XPack4 translation tags (x4tag).\n");
-        fprintf(stderr, "\nExample:\n");
-        fprintf(stderr, "  %s testdata/Text_EN.arc\n", argv[0]);
-        return 1;
+    if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+        fprintf(stderr,
+            "Usage: %s <arc-file> [arc-file ...]\n"
+            "\n"
+            "Load .arc files and search all entries for XPack4 translation tags\n"
+            "(strings matching 'x4tag', case-insensitive). Lists all arc entries,\n"
+            "then shows which .txt files contain matches with context lines.\n"
+            "\n"
+            "Accepts multiple arc files as arguments.\n"
+            "\n"
+            "Examples:\n"
+            "  %s testdata/gamefiles/Text/Text_EN.arc\n"
+            "  %s file1.arc file2.arc\n",
+            argv[0], argv[0], argv[0]);
+        return argc < 2 ? 1 : 0;
     }
 
     for (int i = 1; i < argc; i++) {

@@ -15,6 +15,9 @@ void vault_item_format_stats(TQVaultItem *item, TQTranslation *tr, char *buffer,
 // e.g. attr_name = "defensiveFire"
 float item_get_resistance(TQItem *item, const char *attr_name);
 
+// Like item_get_resistance but excludes stats that have an associated Chance < 100%.
+float item_get_guaranteed_stat(TQItem *item, const char *attr_name);
+
 // Returns the number of shards needed to complete a relic/charm.
 int relic_max_shards(const char *relic_path);
 

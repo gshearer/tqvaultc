@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
+#include <json-c/json.h>
 
 /* Set the appropriate dirty flag based on container type. */
 static void mark_context_dirty(AppWidgets *widgets) {
@@ -428,9 +429,11 @@ void show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
         }
     }
 
-    /* Copy DBR Path option */
-    if (base && base[0])
+    /* Copy options */
+    if (base && base[0]) {
         g_menu_append(model, "Copy DBR Path", "app.copy-dbr-path");
+        g_menu_append(model, "Copy item JSON", "app.copy-item-json");
+    }
 
     /* Re-parent the popover to the clicked drawing area */
     if (widgets->context_parent != drawing_area) {
@@ -467,6 +470,65 @@ static void on_copy_dbr_path(GSimpleAction *action, GVariant *param, gpointer da
         gdk_clipboard_set_text(clipboard, copy);
         free(copy);
     }
+}
+
+static void on_copy_item_json(GSimpleAction *action, GVariant *param, gpointer data) {
+    (void)action; (void)param;
+    AppWidgets *widgets = data;
+
+    /* Extract fields from either equip item or vault item */
+    const char *base_name = NULL, *prefix_name = NULL, *suffix_name = NULL;
+    const char *relic_name = NULL, *relic_bonus = NULL;
+    const char *relic_name2 = NULL, *relic_bonus2 = NULL;
+    uint32_t seed = 0, var1 = 0, var2 = 0;
+    int stack_size = 1;
+
+    if (widgets->context_equip_item) {
+        TQItem *eq = widgets->context_equip_item;
+        base_name = eq->base_name;  prefix_name = eq->prefix_name;
+        suffix_name = eq->suffix_name;  relic_name = eq->relic_name;
+        relic_bonus = eq->relic_bonus;  relic_name2 = eq->relic_name2;
+        relic_bonus2 = eq->relic_bonus2;
+        seed = eq->seed;  var1 = eq->var1;  var2 = eq->var2;
+    } else if (widgets->context_item) {
+        TQVaultItem *it = widgets->context_item;
+        base_name = it->base_name;  prefix_name = it->prefix_name;
+        suffix_name = it->suffix_name;  relic_name = it->relic_name;
+        relic_bonus = it->relic_bonus;  relic_name2 = it->relic_name2;
+        relic_bonus2 = it->relic_bonus2;
+        seed = it->seed;  var1 = it->var1;  var2 = it->var2;
+        stack_size = it->stack_size > 0 ? it->stack_size : 1;
+    }
+    if (!base_name || !base_name[0]) return;
+
+    struct json_object *obj = json_object_new_object();
+    json_object_object_add(obj, "stackSize", json_object_new_int(stack_size));
+    json_object_object_add(obj, "seed", json_object_new_int((int32_t)seed));
+    json_object_object_add(obj, "baseName",
+        json_object_new_string(base_name));
+    json_object_object_add(obj, "prefixName",
+        json_object_new_string(prefix_name ? prefix_name : ""));
+    json_object_object_add(obj, "suffixName",
+        json_object_new_string(suffix_name ? suffix_name : ""));
+    json_object_object_add(obj, "relicName",
+        json_object_new_string(relic_name ? relic_name : ""));
+    json_object_object_add(obj, "relicBonus",
+        json_object_new_string(relic_bonus ? relic_bonus : ""));
+    json_object_object_add(obj, "var1", json_object_new_int((int32_t)var1));
+    json_object_object_add(obj, "relicName2",
+        json_object_new_string(relic_name2 ? relic_name2 : ""));
+    json_object_object_add(obj, "relicBonus2",
+        json_object_new_string(relic_bonus2 ? relic_bonus2 : ""));
+    json_object_object_add(obj, "var2", json_object_new_int((int32_t)var2));
+
+    const char *json_str = json_object_to_json_string_ext(obj,
+        JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_SPACED);
+
+    GdkDisplay *display = gdk_display_get_default();
+    GdkClipboard *clipboard = gdk_display_get_clipboard(display);
+    gdk_clipboard_set_text(clipboard, json_str);
+
+    json_object_put(obj);
 }
 
 static void on_item_copy(GSimpleAction *action, GVariant *param, gpointer data) {
@@ -974,6 +1036,7 @@ void register_context_actions(GtkApplication *app, AppWidgets *widgets) {
         { "set-relic-bonus",      G_CALLBACK(on_set_relic_bonus),      G_VARIANT_TYPE_STRING },
         { "set-relic-bonus2",     G_CALLBACK(on_set_relic_bonus2),     G_VARIANT_TYPE_STRING },
         { "copy-dbr-path",        G_CALLBACK(on_copy_dbr_path),        NULL },
+        { "copy-item-json",       G_CALLBACK(on_copy_item_json),       NULL },
         { "set-stack-quantity",   G_CALLBACK(on_set_stack_quantity),    NULL },
     };
 

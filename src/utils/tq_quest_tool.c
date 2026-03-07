@@ -1,13 +1,15 @@
 /*
- * tq_quest_tool.c — QuestToken.myw inspection and manipulation tool
+ * tq_quest_tool.c — Universal quest data inspection and manipulation tool
  *
- * Works directly against QuestToken.myw files for development, debugging,
- * and testing the quest management feature.
+ * Parses and analyzes all three quest state file types:
+ *   - QuestToken.myw — flat token bag
+ *   - Quest.myw — trigger log + rewards section
+ *   - *.que files — per-quest state machines
  *
  * Usage:
  *   tq-quest-tool <command> [options]
  *
- * Commands:
+ * Token Commands:
  *   dump     <myw>                   List all tokens in a QuestToken.myw file
  *   count    <myw>                   Count tokens
  *   search   <myw> <pattern>         List tokens matching a substring (case-insensitive)
@@ -22,6 +24,14 @@
  *   defs                             List all quest definitions
  *   diff     <myw_a> <myw_b>        Show tokens present in one file but not the other
  *   coverage <myw>                   Report covered/orphaned/uncovered tokens vs quest_defs[]
+ *
+ * Quest State Commands:
+ *   dump-que      <file>             Full structural dump of .que file (all fields)
+ *   dump-quest-myw <file>            Full Quest.myw parser (triggers + rewards + MD5 mapping)
+ *   clear-que     <dir>              Zero all hasFired/isPendingFire in .que files
+ *   compare-que   <dir_a> <dir_b>    Compare .que flag differences between directories
+ *   que-info      <dir>              Identify/categorize all .que files (embedded paths, flags)
+ *   scan          <save_dir>         Full overview of a character's quest state across all files
  */
 
 #include <stdio.h>
@@ -31,6 +41,7 @@
 #include <stdbool.h>
 #include <ctype.h>
 #include <unistd.h>
+#include <dirent.h>
 #include "../quest_tokens.h"
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
@@ -39,7 +50,7 @@ static void usage(const char *prog) {
     fprintf(stderr,
         "Usage: %s <command> [options]\n"
         "\n"
-        "Commands:\n"
+        "Token Commands (QuestToken.myw):\n"
         "  dump     <myw>                 List all tokens in a QuestToken.myw file\n"
         "  count    <myw>                 Count tokens\n"
         "  search   <myw> <pattern>       List tokens matching substring (case-insensitive)\n"
@@ -55,13 +66,24 @@ static void usage(const char *prog) {
         "  diff     <myw_a> <myw_b>      Show tokens present in one file but not the other\n"
         "  coverage <myw>                 Report covered/orphaned/uncovered tokens vs quest_defs[]\n"
         "\n"
+        "Quest State Commands (.que files + Quest.myw):\n"
+        "  dump-que       <file>          Full structural dump of .que file (all fields)\n"
+        "  dump-quest-myw <file>          Full Quest.myw dump (triggers + rewards + MD5 mapping)\n"
+        "  clear-que      <dir>           Zero all hasFired/isPendingFire in .que files\n"
+        "  compare-que    <dir_a> <dir_b> Compare .que flag differences between directories\n"
+        "  que-info       <dir>           Identify/categorize all .que files in directory\n"
+        "\n"
+        "Analysis Commands:\n"
+        "  scan           <save_dir>      Full character quest state overview across all files\n"
+        "\n"
         "Examples:\n"
-        "  %s dump testdata/_soothie/Levels_World_World01.map/Legendary/QuestToken.myw\n"
-        "  %s search testdata/_soothie/.../QuestToken.myw x4MQ\n"
-        "  %s quests testdata/_soothie/.../QuestToken.myw\n"
-        "  %s defs\n"
-        "  %s roundtrip testdata/_soothie/.../QuestToken.myw\n",
-        prog, prog, prog, prog, prog, prog);
+        "  %s dump testdata/saves/_soothie/Levels_World_World01.map/Legendary/QuestToken.myw\n"
+        "  %s dump-que testdata/saves/_soothie/Levels_World_World01.map/Legendary/0273f539*.que\n"
+        "  %s dump-quest-myw testdata/saves/_soothie/Levels_World_World01.map/Legendary/Quest.myw\n"
+        "  %s que-info testdata/saves/_soothie/Levels_World_World01.map/Legendary/\n"
+        "  %s scan testdata/saves/_soothie/\n"
+        "  %s defs\n",
+        prog, prog, prog, prog, prog, prog, prog);
 }
 
 /* Case-insensitive substring search */
@@ -644,6 +666,726 @@ static int cmd_coverage(const char *path) {
     return 0;
 }
 
+/* ── .que file helpers ─────────────────────────────────────────────────── */
+
+/* Read a length-prefixed key from a .que/.myw binary blob.
+ * Returns the key string (malloc'd) and advances *off past key + value.
+ * Returns NULL on EOF/error. Does NOT skip the value — caller does that. */
+static char *que_read_key(const uint8_t *data, size_t len, size_t *off) {
+    if (*off + 4 > len) return NULL;
+    uint32_t slen;
+    memcpy(&slen, data + *off, 4);
+    *off += 4;
+    if (slen == 0 || *off + slen > len) return NULL;
+    char *s = malloc(slen + 1);
+    memcpy(s, data + *off, slen);
+    s[slen] = '\0';
+    *off += slen;
+    return s;
+}
+
+static uint32_t que_read_u32(const uint8_t *data, size_t *off) {
+    uint32_t val;
+    memcpy(&val, data + *off, 4);
+    *off += 4;
+    return val;
+}
+
+/* Read file into malloc'd buffer, set *out_size. Returns NULL on error. */
+static uint8_t *read_file(const char *path, long *out_size) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long fsize = ftell(f);
+    if (fsize <= 0) { fclose(f); return NULL; }
+    rewind(f);
+    uint8_t *data = malloc(fsize);
+    if (fread(data, 1, fsize, f) != (size_t)fsize) {
+        free(data); fclose(f); return NULL;
+    }
+    fclose(f);
+    *out_size = fsize;
+    return data;
+}
+
+static int cmd_dump_que(const char *path) {
+    long fsize;
+    uint8_t *data = read_file(path, &fsize);
+    if (!data) { fprintf(stderr, "Error: cannot read %s\n", path); return 1; }
+
+    int depth = 0;
+    int has_fired_count = 0, pending_fire_count = 0;
+    int trigger_count = 0, condition_count = 0, action_count = 0;
+    size_t off = 0;
+
+    while (off + 4 <= (size_t)fsize) {
+        char *key = que_read_key(data, fsize, &off);
+        if (!key) break;
+
+        if (strcmp(key, "begin_block") == 0) {
+            if (off + 4 <= (size_t)fsize) {
+                uint32_t marker = que_read_u32(data, &off);
+                printf("%*s{ (0x%08X)\n", depth * 2, "", marker);
+            }
+            depth++;
+            free(key);
+            continue;
+        }
+        if (strcmp(key, "end_block") == 0) {
+            depth--;
+            if (off + 4 <= (size_t)fsize) off += 4; /* skip marker */
+            printf("%*s}\n", depth * 2, "");
+            free(key);
+            continue;
+        }
+
+        /* "comments" has a string value (LP-string) */
+        if (strcmp(key, "comments") == 0) {
+            if (off + 4 > (size_t)fsize) { free(key); break; }
+            uint32_t slen = que_read_u32(data, &off);
+            if (slen > 0 && off + slen <= (size_t)fsize) {
+                char *s = malloc(slen + 1);
+                memcpy(s, data + off, slen);
+                s[slen] = '\0';
+                printf("%*scomments = \"%s\"\n", depth * 2, "", s);
+                free(s);
+            } else {
+                printf("%*scomments = \"\"\n", depth * 2, "");
+            }
+            off += slen;
+            free(key);
+            continue;
+        }
+
+        if (off + 4 > (size_t)fsize) { free(key); break; }
+        uint32_t val = que_read_u32(data, &off);
+
+        printf("%*s%s = %u", depth * 2, "", key, val);
+
+        if (strcmp(key, "hasFired") == 0) {
+            has_fired_count++;
+            trigger_count++;
+        } else if (strcmp(key, "isPendingFire") == 0) {
+            pending_fire_count++;
+        } else if (strcmp(key, "conditionCount") == 0) {
+            condition_count += val;
+        } else if (strcmp(key, "actionCount") == 0) {
+            action_count += val;
+        } else if (strcmp(key, "crcFile") == 0) {
+            printf(" (0x%08X)", val);
+        }
+        printf("\n");
+        free(key);
+    }
+
+    printf("\n--- Summary: %d triggers, %d hasFired, %d isPendingFire, "
+           "%d conditions, %d actions\n",
+           trigger_count, has_fired_count, pending_fire_count,
+           condition_count, action_count);
+    printf("--- File: %s (%ld bytes)\n", path, fsize);
+    free(data);
+    return 0;
+}
+
+/* Format 4 MD5 chunks as a hex filename string (e.g. "0273f539854b76b9...").
+ * Each chunk is stored as a LE u32, but .que filenames use BE byte order per chunk. */
+static void md5_chunks_to_hex(const uint32_t chunks[4], char hex[33]) {
+    for (int i = 0; i < 4; i++) {
+        uint8_t b[4];
+        memcpy(b, &chunks[i], 4);
+        /* Reverse byte order within each chunk (LE→BE) */
+        sprintf(hex + i * 8, "%02x%02x%02x%02x", b[3], b[2], b[1], b[0]);
+    }
+    hex[32] = '\0';
+}
+
+/* Read a Quest.myw LP-key and skip it. Returns true if it matches expected. */
+static bool qmyw_expect_key(const uint8_t *data, size_t len, size_t *off, const char *expected) {
+    if (*off + 4 > len) return false;
+    uint32_t slen;
+    memcpy(&slen, data + *off, 4);
+    *off += 4;
+    if (*off + slen > len) return false;
+    bool match = (slen == strlen(expected) && memcmp(data + *off, expected, slen) == 0);
+    *off += slen;
+    return match;
+}
+
+static int cmd_dump_quest_myw(const char *path) {
+    long fsize;
+    uint8_t *data = read_file(path, &fsize);
+    if (!data) { fprintf(stderr, "Error: cannot read %s\n", path); return 1; }
+
+    size_t off = 0;
+
+    /* --- Triggers section --- */
+    if (!qmyw_expect_key(data, fsize, &off, "begin_block")) {
+        fprintf(stderr, "Error: bad format (expected begin_block)\n");
+        free(data); return 1;
+    }
+    off += 4; /* skip marker */
+
+    if (!qmyw_expect_key(data, fsize, &off, "numberOfTriggers")) {
+        fprintf(stderr, "Error: bad format (expected numberOfTriggers)\n");
+        free(data); return 1;
+    }
+    uint32_t num_triggers = que_read_u32(data, &off);
+    printf("=== Triggers (%u entries) ===\n", num_triggers);
+
+    /* Track unique MD5 hashes */
+    char (*md5s)[33] = malloc(num_triggers * sizeof(*md5s));
+    int unique_md5_count = 0;
+
+    for (uint32_t i = 0; i < num_triggers && off + 4 <= (size_t)fsize; i++) {
+        /* questName — just a key with no value (next key follows immediately) */
+        qmyw_expect_key(data, fsize, &off, "questName");
+
+        /* md5ChunkCount */
+        qmyw_expect_key(data, fsize, &off, "md5ChunkCount");
+        uint32_t chunk_count = que_read_u32(data, &off);
+
+        uint32_t chunks[4] = {0};
+        for (uint32_t c = 0; c < chunk_count && c < 4; c++) {
+            qmyw_expect_key(data, fsize, &off, "md5Chunk");
+            chunks[c] = que_read_u32(data, &off);
+        }
+
+        char hex[33];
+        md5_chunks_to_hex(chunks, hex);
+
+        /* stepIdx, triggerIdx, target */
+        qmyw_expect_key(data, fsize, &off, "stepIdx");
+        uint32_t step_idx = que_read_u32(data, &off);
+        qmyw_expect_key(data, fsize, &off, "triggerIdx");
+        uint32_t trigger_idx = que_read_u32(data, &off);
+        qmyw_expect_key(data, fsize, &off, "target");
+        uint32_t target = que_read_u32(data, &off);
+
+        printf("  [%4u] %s.que  step=%u trig=%u target=%u\n",
+               i, hex, step_idx, trigger_idx, target);
+
+        /* Track unique MD5s */
+        bool found = false;
+        for (int j = 0; j < unique_md5_count; j++) {
+            if (strcmp(md5s[j], hex) == 0) { found = true; break; }
+        }
+        if (!found) {
+            memcpy(md5s[unique_md5_count], hex, 33);
+            unique_md5_count++;
+        }
+    }
+
+    /* end_block for triggers */
+    qmyw_expect_key(data, fsize, &off, "end_block");
+    off += 4; /* skip marker */
+
+    printf("\n--- %u triggers, %d unique .que files\n\n", num_triggers, unique_md5_count);
+
+    /* --- Rewards section --- */
+    if (!qmyw_expect_key(data, fsize, &off, "begin_block")) {
+        printf("(No rewards section found)\n");
+        free(md5s); free(data);
+        return 0;
+    }
+    off += 4; /* skip marker */
+
+    if (!qmyw_expect_key(data, fsize, &off, "numRewards")) {
+        printf("(Expected numRewards)\n");
+        free(md5s); free(data);
+        return 0;
+    }
+    uint32_t num_rewards = que_read_u32(data, &off);
+    printf("=== Rewards (%u entries) ===\n", num_rewards);
+
+    for (uint32_t i = 0; i < num_rewards && off + 4 <= (size_t)fsize; i++) {
+        qmyw_expect_key(data, fsize, &off, "questName");
+
+        qmyw_expect_key(data, fsize, &off, "md5ChunkCount");
+        uint32_t chunk_count = que_read_u32(data, &off);
+        uint32_t chunks[4] = {0};
+        for (uint32_t c = 0; c < chunk_count && c < 4; c++) {
+            qmyw_expect_key(data, fsize, &off, "md5Chunk");
+            chunks[c] = que_read_u32(data, &off);
+        }
+        char hex[33];
+        md5_chunks_to_hex(chunks, hex);
+
+        /* region */
+        qmyw_expect_key(data, fsize, &off, "region");
+        uint32_t region = que_read_u32(data, &off);
+
+        /* locationTag (LP-string) */
+        qmyw_expect_key(data, fsize, &off, "locationTag");
+        if (off + 4 > (size_t)fsize) break;
+        uint32_t loc_len = que_read_u32(data, &off);
+        char *loc_tag = NULL;
+        if (loc_len > 0 && off + loc_len <= (size_t)fsize) {
+            loc_tag = malloc(loc_len + 1);
+            memcpy(loc_tag, data + off, loc_len);
+            loc_tag[loc_len] = '\0';
+        }
+        off += loc_len;
+
+        /* titleTag (LP-string) */
+        qmyw_expect_key(data, fsize, &off, "titleTag");
+        if (off + 4 > (size_t)fsize) { free(loc_tag); break; }
+        uint32_t title_len = que_read_u32(data, &off);
+        char *title_tag = NULL;
+        if (title_len > 0 && off + title_len <= (size_t)fsize) {
+            title_tag = malloc(title_len + 1);
+            memcpy(title_tag, data + off, title_len);
+            title_tag[title_len] = '\0';
+        }
+        off += title_len;
+
+        /* text (UTF-16LE string — LP value is CHARACTER count, bytes = count * 2) */
+        qmyw_expect_key(data, fsize, &off, "text");
+        if (off + 4 > (size_t)fsize) { free(loc_tag); free(title_tag); break; }
+        uint32_t text_chars = que_read_u32(data, &off);
+        uint32_t text_bytes = text_chars * 2;
+        /* Decode UTF-16LE to ASCII for display */
+        char *text_str = NULL;
+        if (text_bytes > 0 && off + text_bytes <= (size_t)fsize) {
+            text_str = malloc(text_chars + 1);
+            for (uint32_t c = 0; c < text_chars; c++) {
+                uint16_t ch;
+                memcpy(&ch, data + off + c * 2, 2);
+                text_str[c] = (ch < 128) ? (char)ch : '?';
+            }
+            text_str[text_chars] = '\0';
+        }
+        off += text_bytes;
+
+        const char *region_name = "?";
+        switch (region) {
+        case 1: region_name = "Greece"; break;
+        case 2: region_name = "Egypt"; break;
+        case 3: region_name = "Orient"; break;
+        case 4: region_name = "Hades"; break;
+        case 5: region_name = "Ragnarok"; break;
+        case 6: region_name = "Atlantis"; break;
+        case 7: region_name = "EternalEmbers"; break;
+        }
+
+        printf("  [%3u] %s.que  region=%u(%s)  loc=\"%s\"  title=\"%s\"  text=\"%s\"\n",
+               i, hex, region, region_name,
+               loc_tag ? loc_tag : "", title_tag ? title_tag : "",
+               text_str ? text_str : "");
+
+        free(loc_tag);
+        free(title_tag);
+        free(text_str);
+    }
+
+    printf("\n--- %u triggers, %d unique .que files, %u rewards\n",
+           num_triggers, unique_md5_count, num_rewards);
+    printf("--- File: %s (%ld bytes)\n", path, fsize);
+    free(md5s);
+    free(data);
+    return 0;
+}
+
+static int cmd_clear_que(const char *dir) {
+    int result = quest_que_clear_all(dir);
+    if (result < 0) {
+        fprintf(stderr, "Error: failed to clear .que files in %s\n", dir);
+        return 1;
+    }
+    printf("Modified %d .que files in %s\n", result, dir);
+
+    /* Also show Quest.myw clearing */
+    if (quest_myw_clear(dir) == 0)
+        printf("Wrote empty Quest.myw\n");
+    else
+        fprintf(stderr, "Warning: failed to clear Quest.myw\n");
+
+    return 0;
+}
+
+static int cmd_compare_que(const char *dir_a, const char *dir_b) {
+    DIR *d = opendir(dir_a);
+    if (!d) { fprintf(stderr, "Error: cannot open %s\n", dir_a); return 1; }
+
+    int files_compared = 0, files_differ = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t nlen = strlen(ent->d_name);
+        if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0)
+            continue;
+
+        char path_a[1024], path_b[1024];
+        snprintf(path_a, sizeof(path_a), "%s/%s", dir_a, ent->d_name);
+        snprintf(path_b, sizeof(path_b), "%s/%s", dir_b, ent->d_name);
+
+        FILE *fa = fopen(path_a, "rb");
+        FILE *fb = fopen(path_b, "rb");
+        if (!fa || !fb) {
+            if (fa) { printf("  %s: only in dir_a\n", ent->d_name); fclose(fa); }
+            else if (fb) { printf("  %s: only in dir_b\n", ent->d_name); fclose(fb); }
+            continue;
+        }
+
+        fseek(fa, 0, SEEK_END); long sa = ftell(fa); rewind(fa);
+        fseek(fb, 0, SEEK_END); long sb = ftell(fb); rewind(fb);
+
+        uint8_t *da = malloc(sa);
+        uint8_t *db = malloc(sb);
+        fread(da, 1, sa, fa);
+        fread(db, 1, sb, fb);
+        fclose(fa); fclose(fb);
+
+        if (sa != sb) {
+            printf("  %s: size differs (%ld vs %ld)\n", ent->d_name, sa, sb);
+            files_differ++;
+        } else {
+            /* Compare hasFired/isPendingFire values */
+            bool differ = false;
+            static const struct { const char *key; size_t klen; } targets[] = {
+                { "hasFired", 8 }, { "isPendingFire", 13 },
+            };
+
+            for (int t = 0; t < 2; t++) {
+                const char *key = targets[t].key;
+                size_t klen = targets[t].klen;
+                size_t oa = 0, ob = 0;
+                int idx = 0;
+
+                while (1) {
+                    /* Find next occurrence in each file */
+                    size_t pa = (size_t)-1, pb = (size_t)-1;
+                    for (size_t i = oa; i + 4 + klen + 4 <= (size_t)sa; i++) {
+                        uint32_t slen;
+                        memcpy(&slen, da + i, 4);
+                        if (slen == (uint32_t)klen && memcmp(da + i + 4, key, klen) == 0) {
+                            pa = i; break;
+                        }
+                    }
+                    for (size_t i = ob; i + 4 + klen + 4 <= (size_t)sb; i++) {
+                        uint32_t slen;
+                        memcpy(&slen, db + i, 4);
+                        if (slen == (uint32_t)klen && memcmp(db + i + 4, key, klen) == 0) {
+                            pb = i; break;
+                        }
+                    }
+                    if (pa == (size_t)-1 || pb == (size_t)-1) break;
+
+                    uint32_t va, vb;
+                    memcpy(&va, da + pa + 4 + klen, 4);
+                    memcpy(&vb, db + pb + 4 + klen, 4);
+                    if (va != vb) {
+                        if (!differ)
+                            printf("  %s:\n", ent->d_name);
+                        printf("    %s[%d]: %u vs %u\n", key, idx, va, vb);
+                        differ = true;
+                    }
+                    oa = pa + 4 + klen + 4;
+                    ob = pb + 4 + klen + 4;
+                    idx++;
+                }
+            }
+            if (differ) files_differ++;
+        }
+        files_compared++;
+        free(da); free(db);
+    }
+    closedir(d);
+
+    printf("\n--- %d files compared, %d differ\n", files_compared, files_differ);
+    return 0;
+}
+
+/* ── que-info: categorize all .que files in a directory ────────────────── */
+
+/* Extract embedded info from a .que file: comments strings, flag counts.
+ * Searches for LP-string patterns that look like .qst file paths. */
+static int cmd_que_info(const char *dir) {
+    DIR *d = opendir(dir);
+    if (!d) { fprintf(stderr, "Error: cannot open %s\n", dir); return 1; }
+
+    struct que_entry {
+        char filename[40];
+        int has_fired_total;
+        int has_fired_set;   /* count of hasFired=1 */
+        int pending_total;
+        int pending_set;     /* count of isPendingFire=1 */
+        int trigger_count;
+        char embedded_path[256]; /* first .qst path found, or "" */
+        long filesize;
+    };
+
+    struct que_entry *entries = NULL;
+    int nentries = 0, cap = 0;
+
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t nlen = strlen(ent->d_name);
+        if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0) continue;
+
+        char filepath[1024];
+        snprintf(filepath, sizeof(filepath), "%s/%s", dir, ent->d_name);
+
+        long fsize;
+        uint8_t *data = read_file(filepath, &fsize);
+        if (!data) continue;
+
+        if (nentries >= cap) {
+            cap = cap ? cap * 2 : 256;
+            entries = realloc(entries, cap * sizeof(*entries));
+        }
+        struct que_entry *e = &entries[nentries++];
+        memset(e, 0, sizeof(*e));
+        snprintf(e->filename, sizeof(e->filename), "%.*s", (int)(nlen - 4), ent->d_name);
+        e->filesize = fsize;
+
+        /* Scan for keys */
+        for (size_t off = 0; off + 8 <= (size_t)fsize; ) {
+            uint32_t slen;
+            memcpy(&slen, data + off, 4);
+            if (slen == 0 || slen > 256 || off + 4 + slen > (size_t)fsize) {
+                off++;
+                continue;
+            }
+
+            if (slen == 8 && memcmp(data + off + 4, "hasFired", 8) == 0) {
+                e->has_fired_total++;
+                if (off + 4 + 8 + 4 <= (size_t)fsize) {
+                    uint32_t val;
+                    memcpy(&val, data + off + 4 + 8, 4);
+                    if (val) e->has_fired_set++;
+                }
+                off += 4 + 8 + 4;
+            } else if (slen == 13 && memcmp(data + off + 4, "isPendingFire", 13) == 0) {
+                e->pending_total++;
+                if (off + 4 + 13 + 4 <= (size_t)fsize) {
+                    uint32_t val;
+                    memcpy(&val, data + off + 4 + 13, 4);
+                    if (val) e->pending_set++;
+                }
+                off += 4 + 13 + 4;
+            } else if (slen == 8 && memcmp(data + off + 4, "comments", 8) == 0) {
+                size_t coff = off + 4 + 8;
+                if (coff + 4 <= (size_t)fsize) {
+                    uint32_t clen;
+                    memcpy(&clen, data + coff, 4);
+                    coff += 4;
+                    if (clen > 0 && coff + clen <= (size_t)fsize && !e->embedded_path[0]) {
+                        /* Check if comment contains .qst path */
+                        char *tmp = malloc(clen + 1);
+                        memcpy(tmp, data + coff, clen);
+                        tmp[clen] = '\0';
+                        if (strstr(tmp, ".qst") || strstr(tmp, ".QST")) {
+                            snprintf(e->embedded_path, sizeof(e->embedded_path), "%s", tmp);
+                        }
+                        free(tmp);
+                    }
+                    off = coff + clen;
+                } else {
+                    off++;
+                }
+            } else {
+                off++;
+            }
+        }
+
+        /* Count triggers (each hasFired = one trigger) */
+        e->trigger_count = e->has_fired_total;
+        free(data);
+    }
+    closedir(d);
+
+    /* Sort by filename */
+    for (int i = 0; i < nentries - 1; i++)
+        for (int j = i + 1; j < nentries; j++)
+            if (strcmp(entries[i].filename, entries[j].filename) > 0) {
+                struct que_entry tmp = entries[i];
+                entries[i] = entries[j];
+                entries[j] = tmp;
+            }
+
+    /* Print results */
+    int with_path = 0, with_fired = 0, total_fired = 0, total_pending = 0;
+    printf("=== .que File Analysis (%d files) ===\n\n", nentries);
+
+    printf("%-34s %5s %8s %10s %s\n",
+           "MD5 Hash", "Trigs", "Fired", "Pending", "Embedded Path");
+    printf("%-34s %5s %8s %10s %s\n",
+           "──────────────────────────────────", "─────", "────────", "──────────",
+           "──────────────");
+
+    for (int i = 0; i < nentries; i++) {
+        struct que_entry *e = &entries[i];
+        printf("%-34s %5d %4d/%-3d %5d/%-4d %s\n",
+               e->filename,
+               e->trigger_count,
+               e->has_fired_set, e->has_fired_total,
+               e->pending_set, e->pending_total,
+               e->embedded_path[0] ? e->embedded_path : "-");
+        if (e->embedded_path[0]) with_path++;
+        if (e->has_fired_set > 0) with_fired++;
+        total_fired += e->has_fired_set;
+        total_pending += e->pending_set;
+    }
+
+    printf("\n--- Summary ---\n");
+    printf("  Total .que files:     %d\n", nentries);
+    printf("  With embedded paths:  %d\n", with_path);
+    printf("  With fired triggers:  %d\n", with_fired);
+    printf("  Total fired flags:    %d\n", total_fired);
+    printf("  Total pending flags:  %d\n", total_pending);
+
+    free(entries);
+    return 0;
+}
+
+/* ── scan: full character quest state overview ────────────────────────── */
+
+static int cmd_scan(const char *save_dir) {
+    static const char *diffs[] = { "Normal", "Epic", "Legendary" };
+    static const char *map_subdir = "Levels_World_World01.map";
+
+    /* Check if save_dir contains the map subdir directly or is a char dir */
+    char test_path[1024];
+    snprintf(test_path, sizeof(test_path), "%s/%s", save_dir, map_subdir);
+    bool has_map_dir = (access(test_path, F_OK) == 0);
+
+    if (!has_map_dir) {
+        fprintf(stderr, "Error: %s does not contain %s/\n", save_dir, map_subdir);
+        fprintf(stderr, "Expected a character save directory (e.g. testdata/saves/_soothie/)\n");
+        return 1;
+    }
+
+    printf("=== Character Quest State Scan ===\n");
+    printf("Directory: %s\n\n", save_dir);
+
+    for (int d = 0; d < 3; d++) {
+        char diff_dir[1024];
+        snprintf(diff_dir, sizeof(diff_dir), "%s/%s/%s", save_dir, map_subdir, diffs[d]);
+
+        if (access(diff_dir, F_OK) != 0) {
+            printf("--- %s: (not present)\n\n", diffs[d]);
+            continue;
+        }
+
+        printf("=== %s ===\n", diffs[d]);
+
+        /* QuestToken.myw */
+        char qt_path[1024];
+        snprintf(qt_path, sizeof(qt_path), "%s/QuestToken.myw", diff_dir);
+        if (access(qt_path, F_OK) == 0) {
+            QuestTokenSet set;
+            if (quest_tokens_load(qt_path, &set) == 0) {
+                /* Count quest completion */
+                int qcount;
+                const QuestDef *qdefs = quest_get_defs(&qcount);
+                int complete = 0;
+                for (int i = 0; i < qcount; i++) {
+                    if (quest_token_set_contains(&set, qdefs[i].completion_token))
+                        complete++;
+                }
+
+                /* Count by act */
+                int act_complete[NUM_ACTS] = {0};
+                int act_total[NUM_ACTS] = {0};
+                for (int i = 0; i < qcount; i++) {
+                    act_total[qdefs[i].act]++;
+                    if (quest_token_set_contains(&set, qdefs[i].completion_token))
+                        act_complete[qdefs[i].act]++;
+                }
+
+                printf("  QuestToken.myw: %d tokens, %d/%d quests complete\n",
+                       set.count, complete, qcount);
+                printf("    Per act:");
+                for (int a = 0; a < NUM_ACTS; a++) {
+                    printf(" %s=%d/%d", quest_act_name((QuestAct)a),
+                           act_complete[a], act_total[a]);
+                }
+                printf("\n");
+
+                quest_token_set_free(&set);
+            } else {
+                printf("  QuestToken.myw: (parse error)\n");
+            }
+        } else {
+            printf("  QuestToken.myw: (not present)\n");
+        }
+
+        /* Quest.myw */
+        char qm_path[1024];
+        snprintf(qm_path, sizeof(qm_path), "%s/Quest.myw", diff_dir);
+        if (access(qm_path, F_OK) == 0) {
+            long fsize;
+            uint8_t *data = read_file(qm_path, &fsize);
+            if (data) {
+                /* Quick parse: get trigger count and reward count */
+                size_t off = 0;
+                qmyw_expect_key(data, fsize, &off, "begin_block");
+                off += 4;
+                qmyw_expect_key(data, fsize, &off, "numberOfTriggers");
+                uint32_t num_trig = que_read_u32(data, &off);
+
+                /* Scan for numRewards */
+                uint32_t num_rew = 0;
+                const char *nr_key = "numRewards";
+                size_t nr_len = strlen(nr_key);
+                for (size_t i = 0; i + 4 + nr_len + 4 <= (size_t)fsize; i++) {
+                    uint32_t slen;
+                    memcpy(&slen, data + i, 4);
+                    if (slen == (uint32_t)nr_len && memcmp(data + i + 4, nr_key, nr_len) == 0) {
+                        memcpy(&num_rew, data + i + 4 + nr_len, 4);
+                        break;
+                    }
+                }
+
+                printf("  Quest.myw: %u triggers, %u rewards (%ld bytes)\n",
+                       num_trig, num_rew, fsize);
+                free(data);
+            }
+        } else {
+            printf("  Quest.myw: (not present)\n");
+        }
+
+        /* .que files */
+        DIR *dd = opendir(diff_dir);
+        if (dd) {
+            int que_count = 0, que_fired = 0;
+            long total_bytes = 0;
+            struct dirent *ent;
+            while ((ent = readdir(dd)) != NULL) {
+                size_t nlen = strlen(ent->d_name);
+                if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0) continue;
+                que_count++;
+
+                char fpath[1024];
+                snprintf(fpath, sizeof(fpath), "%s/%s", diff_dir, ent->d_name);
+                long fsz;
+                uint8_t *fdata = read_file(fpath, &fsz);
+                if (!fdata) continue;
+                total_bytes += fsz;
+
+                /* Quick scan for hasFired=1 */
+                bool any_fired = false;
+                for (size_t off = 0; off + 16 <= (size_t)fsz; off++) {
+                    uint32_t slen;
+                    memcpy(&slen, fdata + off, 4);
+                    if (slen == 8 && memcmp(fdata + off + 4, "hasFired", 8) == 0) {
+                        uint32_t val;
+                        memcpy(&val, fdata + off + 12, 4);
+                        if (val) { any_fired = true; break; }
+                    }
+                }
+                if (any_fired) que_fired++;
+                free(fdata);
+            }
+            closedir(dd);
+            printf("  .que files: %d total, %d with fired triggers (%ld KB)\n",
+                   que_count, que_fired, total_bytes / 1024);
+        }
+        printf("\n");
+    }
+
+    return 0;
+}
+
 /* ── Main ─────────────────────────────────────────────────────────────── */
 
 int main(int argc, char **argv) {
@@ -653,6 +1395,11 @@ int main(int argc, char **argv) {
     }
 
     const char *cmd = argv[1];
+
+    if (strcmp(cmd, "--help") == 0 || strcmp(cmd, "-h") == 0) {
+        usage(argv[0]);
+        return 0;
+    }
 
     if (strcmp(cmd, "dump") == 0) {
         if (argc < 3) { fprintf(stderr, "Usage: %s dump <myw>\n", argv[0]); return 1; }
@@ -708,6 +1455,31 @@ int main(int argc, char **argv) {
     if (strcmp(cmd, "coverage") == 0) {
         if (argc < 3) { fprintf(stderr, "Usage: %s coverage <myw>\n", argv[0]); return 1; }
         return cmd_coverage(argv[2]);
+    }
+
+    if (strcmp(cmd, "dump-que") == 0) {
+        if (argc < 3) { fprintf(stderr, "Usage: %s dump-que <file>\n", argv[0]); return 1; }
+        return cmd_dump_que(argv[2]);
+    }
+    if (strcmp(cmd, "dump-quest-myw") == 0) {
+        if (argc < 3) { fprintf(stderr, "Usage: %s dump-quest-myw <file>\n", argv[0]); return 1; }
+        return cmd_dump_quest_myw(argv[2]);
+    }
+    if (strcmp(cmd, "clear-que") == 0) {
+        if (argc < 3) { fprintf(stderr, "Usage: %s clear-que <dir>\n", argv[0]); return 1; }
+        return cmd_clear_que(argv[2]);
+    }
+    if (strcmp(cmd, "compare-que") == 0) {
+        if (argc < 4) { fprintf(stderr, "Usage: %s compare-que <dir_a> <dir_b>\n", argv[0]); return 1; }
+        return cmd_compare_que(argv[2], argv[3]);
+    }
+    if (strcmp(cmd, "que-info") == 0) {
+        if (argc < 3) { fprintf(stderr, "Usage: %s que-info <dir>\n", argv[0]); return 1; }
+        return cmd_que_info(argv[2]);
+    }
+    if (strcmp(cmd, "scan") == 0) {
+        if (argc < 3) { fprintf(stderr, "Usage: %s scan <save_dir>\n", argv[0]); return 1; }
+        return cmd_scan(argv[2]);
     }
 
     fprintf(stderr, "Unknown command: %s\n", cmd);

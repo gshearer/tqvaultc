@@ -19,6 +19,8 @@
 #include <string.h>
 #include <unistd.h>
 #include <libgen.h>
+#include <dirent.h>
+#include <sys/stat.h>
 
 /* ── ByteBuf: growable byte buffer ────────────────────────────────────── */
 
@@ -200,22 +202,7 @@ int quest_tokens_load(const char *filepath, QuestTokenSet *out) {
 /* ── Writer ───────────────────────────────────────────────────────────── */
 
 int quest_tokens_save(const char *filepath, const QuestTokenSet *set) {
-    /* Create .bak backup */
-    if (access(filepath, F_OK) == 0) {
-        char bak[1024];
-        snprintf(bak, sizeof(bak), "%s.bak", filepath);
-        /* Copy original to .bak (simple approach) */
-        FILE *src = fopen(filepath, "rb");
-        FILE *dst = fopen(bak, "wb");
-        if (src && dst) {
-            char buf[4096];
-            size_t n;
-            while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
-                fwrite(buf, 1, n, dst);
-        }
-        if (src) fclose(src);
-        if (dst) fclose(dst);
-    }
+    quest_backup_file(filepath);
 
     ByteBuf bb;
     bb_init(&bb, 65536);
@@ -269,6 +256,203 @@ char *quest_token_path(const char *char_filepath, QuestDifficulty diff) {
     sprintf(path, "%s/Levels_World_World01.map/%s/QuestToken.myw", dir, diff_dirs[diff]);
     free(copy);
     return path;
+}
+
+char *quest_state_dir(const char *char_filepath, QuestDifficulty diff) {
+    if (!char_filepath || diff < 0 || diff >= NUM_DIFFICULTIES) return NULL;
+
+    char *copy = strdup(char_filepath);
+    char *dir = dirname(copy);
+
+    char *path = malloc(strlen(dir) + 80);
+    sprintf(path, "%s/Levels_World_World01.map/%s", dir, diff_dirs[diff]);
+    free(copy);
+    return path;
+}
+
+/* ── Backup helper ────────────────────────────────────────────────────── */
+
+int quest_backup_file(const char *filepath) {
+    if (access(filepath, F_OK) != 0)
+        return 0;  /* nothing to backup */
+
+    char bak[1024];
+    snprintf(bak, sizeof(bak), "%s.bak", filepath);
+
+    FILE *src = fopen(filepath, "rb");
+    FILE *dst = fopen(bak, "wb");
+    if (!src || !dst) {
+        if (src) fclose(src);
+        if (dst) fclose(dst);
+        return -1;
+    }
+
+    char buf[4096];
+    size_t n;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0)
+        fwrite(buf, 1, n, dst);
+
+    fclose(src);
+    fclose(dst);
+    return 0;
+}
+
+/* ── Copy file helper ─────────────────────────────────────────────────── */
+
+static int copy_file(const char *src_path, const char *dst_path) {
+    FILE *src = fopen(src_path, "rb");
+    if (!src) return -1;
+
+    FILE *dst = fopen(dst_path, "wb");
+    if (!dst) { fclose(src); return -1; }
+
+    char buf[4096];
+    size_t n;
+    int err = 0;
+    while ((n = fread(buf, 1, sizeof(buf), src)) > 0) {
+        if (fwrite(buf, 1, n, dst) != n) { err = -1; break; }
+    }
+
+    fclose(src);
+    fclose(dst);
+    return err;
+}
+
+/* ── Quest state file operations ──────────────────────────────────────── */
+
+int quest_que_clear_all(const char *quest_dir) {
+    DIR *d = opendir(quest_dir);
+    if (!d) return -1;
+
+    int modified = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t nlen = strlen(ent->d_name);
+        if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0)
+            continue;
+
+        char filepath[1024];
+        snprintf(filepath, sizeof(filepath), "%s/%s", quest_dir, ent->d_name);
+
+        /* Read entire file */
+        FILE *f = fopen(filepath, "rb");
+        if (!f) continue;
+        fseek(f, 0, SEEK_END);
+        long fsize = ftell(f);
+        if (fsize <= 0) { fclose(f); continue; }
+        rewind(f);
+
+        uint8_t *data = malloc(fsize);
+        if (fread(data, 1, fsize, f) != (size_t)fsize) {
+            free(data); fclose(f); continue;
+        }
+        fclose(f);
+
+        /* Scan for hasFired and isPendingFire keys and zero their values */
+        bool changed = false;
+        static const struct { const char *key; size_t klen; } targets[] = {
+            { "hasFired",       8  },
+            { "isPendingFire",  13 },
+        };
+
+        for (int t = 0; t < 2; t++) {
+            const char *key = targets[t].key;
+            size_t klen = targets[t].klen;
+
+            /* Pattern: u32 length prefix == klen, then key bytes, then u32 value */
+            for (size_t off = 0; off + 4 + klen + 4 <= (size_t)fsize; off++) {
+                uint32_t slen;
+                memcpy(&slen, data + off, 4);
+                if (slen != (uint32_t)klen) continue;
+                if (memcmp(data + off + 4, key, klen) != 0) continue;
+
+                /* Found it — zero the u32 value that follows */
+                size_t val_off = off + 4 + klen;
+                uint32_t val;
+                memcpy(&val, data + val_off, 4);
+                if (val != 0) {
+                    uint32_t zero = 0;
+                    memcpy(data + val_off, &zero, 4);
+                    changed = true;
+                }
+                off = val_off + 3; /* skip past this match */
+            }
+        }
+
+        if (changed) {
+            quest_backup_file(filepath);
+            f = fopen(filepath, "wb");
+            if (f) {
+                fwrite(data, 1, fsize, f);
+                fclose(f);
+                modified++;
+            }
+        }
+        free(data);
+    }
+    closedir(d);
+    return modified;
+}
+
+int quest_myw_clear(const char *quest_dir) {
+    char filepath[1024];
+    snprintf(filepath, sizeof(filepath), "%s/Quest.myw", quest_dir);
+
+    quest_backup_file(filepath);
+
+    /* Write minimal Quest.myw:
+     * begin_block + CEFA1DB0 + numberOfTriggers(0) + end_block + DEADC0DE
+     * begin_block + CEFA1DB0 + numRewards(0) + end_block + DEADC0DE */
+    ByteBuf bb;
+    bb_init(&bb, 256);
+
+    /* Triggers section (empty) */
+    bb_write_str(&bb, "begin_block");
+    bb_write_u32(&bb, 0xB01DFACE);
+    bb_write_str(&bb, "numberOfTriggers");
+    bb_write_u32(&bb, 0);
+    bb_write_str(&bb, "end_block");
+    bb_write_u32(&bb, 0xDEADC0DE);
+
+    /* Rewards section (empty) */
+    bb_write_str(&bb, "begin_block");
+    bb_write_u32(&bb, 0xB01DFACE);
+    bb_write_str(&bb, "numRewards");
+    bb_write_u32(&bb, 0);
+    bb_write_str(&bb, "end_block");
+    bb_write_u32(&bb, 0xDEADC0DE);
+
+    FILE *f = fopen(filepath, "wb");
+    if (!f) { free(bb.data); return -1; }
+    size_t written = fwrite(bb.data, 1, bb.size, f);
+    fclose(f);
+    free(bb.data);
+
+    return (written == bb.size) ? 0 : -1;
+}
+
+int quest_copy_state_from(const char *src_dir, const char *dst_dir) {
+    DIR *d = opendir(src_dir);
+    if (!d) return -1;
+
+    int errors = 0;
+    struct dirent *ent;
+    while ((ent = readdir(d)) != NULL) {
+        size_t nlen = strlen(ent->d_name);
+        bool is_que = (nlen >= 5 && strcmp(ent->d_name + nlen - 4, ".que") == 0);
+        bool is_quest_myw = (strcmp(ent->d_name, "Quest.myw") == 0);
+        if (!is_que && !is_quest_myw) continue;
+
+        char src_path[1024], dst_path[1024];
+        snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, ent->d_name);
+        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, ent->d_name);
+
+        quest_backup_file(dst_path);
+        if (copy_file(src_path, dst_path) != 0)
+            errors++;
+    }
+    closedir(d);
+    return errors == 0 ? 0 : -1;
 }
 
 /* ── Name helpers ─────────────────────────────────────────────────────── */
@@ -1078,45 +1262,45 @@ const QuestDef *quest_get_defs(int *count_out) {
 
 static const ChecklistExtraDef checklist_extra_defs[] = {
     /* ── Boss Chests: Greece ── */
-    { "Satyr Shaman",          "BossChest_SatyrShaman",       "xBossChest_SatyrShaman",       CHECK_CAT_BOSS_CHEST, ACT_GREECE },
-    { "Nessus",                "BossChest_Nessus",            "xBossChest_Nessus",            CHECK_CAT_BOSS_CHEST, ACT_GREECE },
-    { "Gorgon Sisters",        "BossChest_Gorgons",           "xBossChest_Gorgons",           CHECK_CAT_BOSS_CHEST, ACT_GREECE },
-    { "Hydra",                 "BossChest_Hydra",             "xBossChest_Hydra",             CHECK_CAT_BOSS_CHEST, ACT_GREECE },
-    { "Cyclops",               "BossChest_Cyclops",           "xBossChest_Cyclops",           CHECK_CAT_BOSS_CHEST, ACT_GREECE },
-    { "Talos",                 "BossChest_Talos",             "xBossChest_Talos",             CHECK_CAT_BOSS_CHEST, ACT_GREECE },
+    { "Satyr Shaman \u2014 Laconia Hills Cave",           "BossChest_SatyrShaman",       "xBossChest_SatyrShaman",       CHECK_CAT_BOSS_CHEST, ACT_GREECE },
+    { "Nessus the Centaur \u2014 Olive Groves",           "BossChest_Nessus",            "xBossChest_Nessus",            CHECK_CAT_BOSS_CHEST, ACT_GREECE },
+    { "The Gorgon Sisters \u2014 Knossos Labyrinth",      "BossChest_Gorgons",           "xBossChest_Gorgons",           CHECK_CAT_BOSS_CHEST, ACT_GREECE },
+    { "Hydra \u2014 Athens Catacombs",                     "BossChest_Hydra",             "xBossChest_Hydra",             CHECK_CAT_BOSS_CHEST, ACT_GREECE },
+    { "Polyphemus the Cyclops \u2014 Monster Encampment",  "BossChest_Cyclops",           "xBossChest_Cyclops",           CHECK_CAT_BOSS_CHEST, ACT_GREECE },
+    { "Talos the Bronze Giant \u2014 Knossos Beach",       "BossChest_Talos",             "xBossChest_Talos",             CHECK_CAT_BOSS_CHEST, ACT_GREECE },
 
     /* ── Boss Chests: Egypt ── */
-    { "Scarabaeus the Desert King", "BossChest_Scarabaeus",   "xBossChest_Scarabaeus",        CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
-    { "Sand Wraith Lord",      "BossChest_SandWraithLord",    "xBossChest_SandWraithLord",    CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
-    { "Scorpos King",          "BossChest_ScorposKing",       "xBossChest_ScorposKing",       CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
-    { "Pharaoh Honor Guard",   "BossChest_PharaohHonorGuard", "xBossChest_PharaohHonorGuard", CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
-    { "Manticore",             "BossChest_Manticore",         "xBossChest_Manticore",         CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
+    { "Scarabaeus the Desert King \u2014 Fayum Desert",    "BossChest_Scarabaeus",   "xBossChest_Scarabaeus",        CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
+    { "Sand Wraith Lord \u2014 Tomb of Ramses",            "BossChest_SandWraithLord",    "xBossChest_SandWraithLord",    CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
+    { "Scorpos the Scorpion King \u2014 Giza Plateau",     "BossChest_ScorposKing",       "xBossChest_ScorposKing",       CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
+    { "Pharaoh's Honor Guard \u2014 The Great Pyramid",    "BossChest_PharaohHonorGuard", "xBossChest_PharaohHonorGuard", CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
+    { "Manticore \u2014 Valley of the Kings",              "BossChest_Manticore",         "xBossChest_Manticore",         CHECK_CAT_BOSS_CHEST, ACT_EGYPT },
 
     /* ── Boss Chests: Orient ── */
-    { "Bandari",               "BossChest_Bandari",           "xBossChest_Bandari",           CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
-    { "Barmanu",               "BossChest_Barmanu",           "xBossChest_Barmanu",           CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
-    { "Dragon Liche",          "BossChest_DragonLiche",       "xBossChest_DragonLiche",       CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
-    { "Giant Yeti",            "BossChest_GiantYeti",         "xBossChest_GiantYeti",         CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
-    { "Xiao",                  "BossChest_Xiao",              "xBossChest_Xiao",              CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
-    { "Yaoguai",               "BossChest_Yaoguai",           "xBossChest_Yaoguai",           CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
+    { "Bandari \u2014 Silk Road Highlands",                "BossChest_Bandari",           "xBossChest_Bandari",           CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
+    { "Barmanu the Yeti \u2014 Mountain Pass",             "BossChest_Barmanu",           "xBossChest_Barmanu",           CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
+    { "Dragon Liche \u2014 Great Wall",                    "BossChest_DragonLiche",       "xBossChest_DragonLiche",       CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
+    { "Giant Yeti \u2014 Mountain Cave",                   "BossChest_GiantYeti",         "xBossChest_GiantYeti",         CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
+    { "Xiao \u2014 Jade Palace",                           "BossChest_Xiao",              "xBossChest_Xiao",              CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
+    { "Yaoguai \u2014 Wusao Mountain",                     "BossChest_Yaoguai",           "xBossChest_Yaoguai",           CHECK_CAT_BOSS_CHEST, ACT_ORIENT },
 
     /* ── Boss Chests: Immortal Throne ── */
-    { "Alastor",               "BossChest_Alastor",           "xBossChest_Alastor",           CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
-    { "Arachne",               "BossChest_Arachne",           "xBossChest_Arachne",           CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
-    { "Chimera",               "BossChest_Chimera",           "xBossChest_Chimera",           CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
-    { "Cerberus",              NULL,                          "xBossChest_Cerberos",          CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
-    { "Skeletal Typhon",       NULL,                          "xBossChest_SkeletalTyphon",    CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
-    { "The Grey Sisters",      NULL,                          "xBossChest_Greys",             CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
+    { "Alastor \u2014 Medea's Grove",                      "BossChest_Alastor",           "xBossChest_Alastor",           CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
+    { "Arachne the Spider Queen \u2014 Spider Cavern",     "BossChest_Arachne",           "xBossChest_Arachne",           CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
+    { "Chimera \u2014 Tower of Judgment",                  "BossChest_Chimera",           "xBossChest_Chimera",           CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
+    { "Cerberus \u2014 River Styx",                        NULL,                          "xBossChest_Cerberos",          CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
+    { "Skeletal Typhon \u2014 Palace of Hades",            NULL,                          "xBossChest_SkeletalTyphon",    CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
+    { "The Grey Sisters \u2014 Fields of Elysium",         NULL,                          "xBossChest_Greys",             CHECK_CAT_BOSS_CHEST, ACT_IMMORTAL_THRONE },
 
     /* ── Boss Chests: Eternal Embers (no Normal/Epic split) ── */
-    { "Terracotta Elite",      "x4MQJC002_BossChest_TerracottaElite", NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Fa Hai",                "x4SQ102_BossChest_FaHai",             NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Sanshou",               "x4SQ104_BossChest_Sanshou",           NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Gorilla Shaman",        "x4SQ105_BossChest_GorillaShaman",     NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Li Qiang",              "x4SQ202_BossChest_LiQiang",           NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Mogwai Taskmaster",     "x4SQ203_BossChest_MogwaiTaskmaster",  NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Huoshen",               "x4SQ204_BossChest_Huoshen",           NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
-    { "Looter Leader",         "x4SQ303_BossChest_LooterLeader",      NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Terracotta Elite \u2014 Qin Shi Huang's Tomb",     "x4MQJC002_BossChest_TerracottaElite", NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Fa Hai the Sorcerer \u2014 Mainland China",         "x4SQ102_BossChest_FaHai",             NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Sanshou the Beast \u2014 Mainland China",           "x4SQ104_BossChest_Sanshou",           NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Gorilla Shaman \u2014 Mainland China",              "x4SQ105_BossChest_GorillaShaman",     NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Li Qiang the Bandit \u2014 Pingyang",               "x4SQ202_BossChest_LiQiang",           NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Mogwai Taskmaster \u2014 Pingyang",                 "x4SQ203_BossChest_MogwaiTaskmaster",  NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Huoshen the Fire Spirit \u2014 Pingyang",           "x4SQ204_BossChest_Huoshen",           NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
+    { "Looter Leader \u2014 Lower Egypt",                  "x4SQ303_BossChest_LooterLeader",      NULL,                   CHECK_CAT_BOSS_CHEST, ACT_ETERNAL_EMBERS },
 
     /* ── Exploration ── */
     { "1st Inventory Bag",         "1stBagGiven",              NULL, CHECK_CAT_EXPLORATION, ACT_GREECE },

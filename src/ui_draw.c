@@ -268,7 +268,8 @@ void equip_draw_cb(GtkDrawingArea *drawing_area, cairo_t *cr,
         y += (double)COL_RIGHT[i].box_h * cell_size + EQUIP_LABEL_H + EQUIP_SLOT_GAP;
     }
 
-    /* Held-item overlay on equip area: draw at cursor if hovering here */
+    /* Held-item slot highlight on equip area (placement preview only;
+     * the held item texture is drawn on the global overlay). */
     if (widgets->held_item && widgets->cursor_widget == widgets->equip_drawing_area) {
         HeldItem *hi = widgets->held_item;
 
@@ -290,21 +291,6 @@ void equip_draw_cb(GtkDrawingArea *drawing_area, cairo_t *cr,
                     cairo_fill(cr);
                 }
             }
-        }
-
-        if (hi->texture) {
-            int pw = gdk_pixbuf_get_width(hi->texture);
-            int ph = gdk_pixbuf_get_height(hi->texture);
-            double rw = (double)hi->item_w * cell_size;
-            double rh = (double)hi->item_h * cell_size;
-            double ix = widgets->cursor_x - rw / 2.0;
-            double iy = widgets->cursor_y - rh / 2.0;
-            cairo_save(cr);
-            cairo_translate(cr, ix, iy);
-            cairo_scale(cr, rw / (double)pw, rh / (double)ph);
-            gdk_cairo_set_source_pixbuf(cr, hi->texture, 0, 0);
-            cairo_paint_with_alpha(cr, 0.7);
-            cairo_restore(cr);
         }
     }
 }
@@ -553,21 +539,7 @@ void draw_sack_items(cairo_t *cr, AppWidgets *widgets,
             }
         }
 
-        /* Draw held item texture at cursor with transparency */
-        if (hi->texture) {
-            int pw = gdk_pixbuf_get_width(hi->texture);
-            int ph = gdk_pixbuf_get_height(hi->texture);
-            double rw = (double)hi->item_w * cell_width;
-            double rh = (double)hi->item_h * cell_height;
-            double ix = widgets->cursor_x - rw / 2.0;
-            double iy = widgets->cursor_y - rh / 2.0;
-            cairo_save(cr);
-            cairo_translate(cr, ix, iy);
-            cairo_scale(cr, rw / (double)pw, rh / (double)ph);
-            gdk_cairo_set_source_pixbuf(cr, hi->texture, 0, 0);
-            cairo_paint_with_alpha(cr, 0.7);
-            cairo_restore(cr);
-        }
+        /* Held item texture is drawn on the global overlay, not here. */
     }
 }
 
@@ -731,4 +703,33 @@ void stash_relic_draw_cb(GtkDrawingArea *da, cairo_t *cr,
     stash_draw_common(cr, widgets, widgets->relic_vault,
                       widgets->stash_relic_da, w, h,
                       "Relic vault not found");
+}
+
+/* Transparent overlay that always draws the held item texture at the cursor.
+ * This is the sole place the held-item texture is rendered, ensuring it stays
+ * visible even when the cursor crosses gaps between drawing areas. */
+void held_overlay_draw_cb(GtkDrawingArea *da, cairo_t *cr,
+                           int w, int h, gpointer ud) {
+    (void)da; (void)w; (void)h;
+    AppWidgets *widgets = (AppWidgets *)ud;
+    if (!widgets->held_item) return;
+
+    HeldItem *hi = widgets->held_item;
+    if (!hi->texture) return;
+
+    double cell = compute_cell_size(widgets);
+    if (cell <= 0.0) cell = 32.0;
+
+    int pw = gdk_pixbuf_get_width(hi->texture);
+    int ph = gdk_pixbuf_get_height(hi->texture);
+    double rw = (double)hi->item_w * cell;
+    double rh = (double)hi->item_h * cell;
+    double ix = widgets->win_cursor_x - rw / 2.0;
+    double iy = widgets->win_cursor_y - rh / 2.0;
+    cairo_save(cr);
+    cairo_translate(cr, ix, iy);
+    cairo_scale(cr, rw / (double)pw, rh / (double)ph);
+    gdk_cairo_set_source_pixbuf(cr, hi->texture, 0, 0);
+    cairo_paint_with_alpha(cr, 0.7);
+    cairo_restore(cr);
 }

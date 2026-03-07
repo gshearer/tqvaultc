@@ -2,13 +2,29 @@
 #include <stdlib.h>
 #include <string.h>
 #include "src/arz.h"
+
 #include "src/database_index.h"
 #include "src/config.h"
 
+static void usage(const char *prog) {
+    fprintf(stderr,
+        "Usage: %s <record_path>\n"
+        "\n"
+        "Dump all variables from a single DBR record in database.arz.\n"
+        "Requires a game config with game_folder set (uses resource index).\n"
+        "\n"
+        "NOTE: Prefer tq-dbr-tool which works directly against .arz files\n"
+        "without needing the resource index or game config.\n"
+        "\n"
+        "Examples:\n"
+        "  %s records/xpack4/item/relics/x4_relic05.dbr\n",
+        prog, prog);
+}
+
 int main(int argc, char **argv) {
-    if (argc < 2) {
-        printf("Usage: %s <record_path>\n", argv[0]);
-        return 1;
+    if (argc < 2 || strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+        usage(argv[0]);
+        return argc < 2 ? 1 : 0;
     }
 
     config_init(NULL);

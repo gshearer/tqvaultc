@@ -75,6 +75,7 @@ static AttributeMap attr_maps[] = {
     {"offensiveColdModifier", "+%d%% Cold Damage", true, NULL},
     {"offensiveLightningModifier", "+%d%% Lightning Damage", true, NULL},
     {"offensivePoisonModifier", "+%d%% Poison Damage", true, NULL},
+    {"offensiveLifeModifier", "+%d%% Vitality Damage", true, NULL},
     {"offensivePierceModifier", "+%d%% Pierce Damage", true, NULL},
     {"offensiveElementalModifier", "+%d%% Elemental Damage", true, NULL},
     /* offensiveTotalDamageModifier handled in dedicated block (has Chance) */
@@ -92,16 +93,9 @@ static AttributeMap attr_maps[] = {
     {"defensiveProtectionModifier", "+%d%% Armor", true, NULL},
     {"defensiveAbsorptionModifier", "+%d%% Armor Absorption", true, NULL},
 
-    /* Resistances */
-    {"defensiveFire", "%+d%% Fire Resistance", false, NULL},
-    {"defensiveCold", "%+d%% Cold Resistance", false, NULL},
-    {"defensiveLightning", "%+d%% Lightning Resistance", false, NULL},
-    {"defensivePoison", "%+d%% Poison Resistance", false, NULL},
-    {"defensivePierce", "%+d%% Pierce Resistance", false, NULL},
-    {"defensiveLife", "%+d%% Vitality Resistance", false, NULL},
-    {"defensiveBleeding", "%+d%% Bleeding Resistance", false, NULL},
-    {"defensivePhysical", "%+d%% Physical Resistance", false, NULL},
-    {"defensiveElementalResistance", "%+d%% Elemental Resistance", false, NULL},
+    /* Resistances — all handled in dedicated block (may have Chance) */
+    /* defensiveFire, defensiveCold, defensiveLightning, defensivePoison,
+       defensivePierce, defensiveLife, defensiveBleeding, defensivePhysical */
     {"defensiveStun", "%+d%% Stun Resistance", false, NULL},
     {"defensiveStunModifier", "+%d%% Reduced Stun Duration", true, NULL},
 
@@ -122,8 +116,7 @@ static AttributeMap attr_maps[] = {
     /* Misc offensive */
     {"offensivePierceRatioMin", "%.0f%% Pierce Ratio", false, NULL},
     {"piercingProjectile", "%d%% Chance to pass through Enemies", true, NULL},
-    {"offensiveManaBurnDrainMin", "%d Energy Burned", false, NULL},
-    {"offensiveManaBurnDrainRatioMin", "%.0f%% Energy Burned", false, NULL},
+    /* offensiveManaBurnDrain* handled in dedicated block (has DamageRatio qualifier) */
 
     /* offensivePercentCurrentLifeMin handled in dedicated block (has Chance) */
 
@@ -142,7 +135,7 @@ static AttributeMap attr_maps[] = {
     {"offensiveSlowTotalSpeedMin", "%.0f%% Reduced Total Speed", false, NULL},
 
     /* Retaliation DoT */
-    {"retaliationSlowLifeMin", "%d Vitality Decay Retaliation", false, NULL},
+    /* retaliationSlow* DoTs handled in dedicated blocks (have Duration + Chance) */
 
     /* Shield */
     {"defensiveBlockModifier", "+%d%% Shield Block Chance", true, NULL},
@@ -208,10 +201,26 @@ static const char *INT_offensivePetrifyMin, *INT_offensivePetrifyDurationMin, *I
 static const char *INT_offensiveConfusionMin, *INT_offensiveConfusionDurationMin, *INT_offensiveConfusionChance;
 static const char *INT_offensiveFearMin, *INT_offensiveFearMax, *INT_offensiveFearChance;
 static const char *INT_offensiveConvertMin;
+static const char *INT_retaliationSlowFireMin, *INT_retaliationSlowFireDurationMin, *INT_retaliationSlowFireChance;
+static const char *INT_retaliationSlowColdMin, *INT_retaliationSlowColdDurationMin, *INT_retaliationSlowColdChance;
+static const char *INT_retaliationSlowLightningMin, *INT_retaliationSlowLightningDurationMin, *INT_retaliationSlowLightningChance;
+static const char *INT_retaliationSlowPoisonMin, *INT_retaliationSlowPoisonDurationMin, *INT_retaliationSlowPoisonChance;
+static const char *INT_retaliationSlowLifeMin, *INT_retaliationSlowLifeDurationMin, *INT_retaliationSlowLifeChance;
+static const char *INT_retaliationSlowBleedingMin, *INT_retaliationSlowBleedingDurationMin, *INT_retaliationSlowBleedingChance;
 static const char *INT_offensiveTotalDamageModifier, *INT_offensiveTotalDamageModifierChance;
+static const char *INT_defensivePhysical, *INT_defensivePhysicalChance;
+static const char *INT_defensiveFire, *INT_defensiveFireChance;
+static const char *INT_defensiveCold, *INT_defensiveColdChance;
+static const char *INT_defensiveLightning, *INT_defensiveLightningChance;
+static const char *INT_defensivePoison, *INT_defensivePoisonChance;
+static const char *INT_defensivePierce, *INT_defensivePierceChance;
+static const char *INT_defensiveLife, *INT_defensiveLifeChance;
+static const char *INT_defensiveBleeding, *INT_defensiveBleedingChance;
+static const char *INT_defensiveElementalResistance, *INT_defensiveElementalResistanceChance;
 static const char *INT_offensivePercentCurrentLifeMin, *INT_offensivePercentCurrentLifeChance;
 static const char *INT_offensiveTotalDamageReductionPercentMin, *INT_offensiveTotalDamageReductionPercentChance;
 static const char *INT_offensiveTotalDamageReductionPercentDurationMin;
+static const char *INT_offensiveManaBurnDrainMin, *INT_offensiveManaBurnDrainRatioMin, *INT_offensiveManaBurnDamageRatio;
 static const char *INT_racialBonusPercentDamage, *INT_racialBonusPercentDefense, *INT_racialBonusRace;
 static const char *INT_petBonusName;
 static const char *INT_skillCooldownTime, *INT_refreshTime;
@@ -269,6 +278,7 @@ void item_stats_init(void) {
         "offensiveTotalDamageReductionPercentDurationMin",
         "offensiveTotalDamageModifier", "offensiveTotalDamageModifierChance",
         "offensivePercentCurrentLifeMin", "offensivePercentCurrentLifeChance",
+        "offensiveManaBurnDrainMin", "offensiveManaBurnDrainRatioMin", "offensiveManaBurnDamageRatio",
         "offensiveGlobalChance",
         "offensiveBasePhysicalMin", "offensiveBasePhysicalMax",
         "offensiveBaseColdMin", "offensiveBaseColdMax",
@@ -276,7 +286,22 @@ void item_stats_init(void) {
         "offensiveBaseLightningMin", "offensiveBaseLightningMax",
         "offensiveBasePoisonMin", "offensiveBasePoisonMax",
         "offensiveBaseLifeMin", "offensiveBaseLifeMax",
+        "defensivePhysical", "defensivePhysicalChance",
+        "defensiveFire", "defensiveFireChance",
+        "defensiveCold", "defensiveColdChance",
+        "defensiveLightning", "defensiveLightningChance",
+        "defensivePoison", "defensivePoisonChance",
+        "defensivePierce", "defensivePierceChance",
+        "defensiveLife", "defensiveLifeChance",
+        "defensiveBleeding", "defensiveBleedingChance",
+        "defensiveElementalResistance", "defensiveElementalResistanceChance",
         "defensiveDisruption", "defensiveDisruptionDuration",
+        "retaliationSlowFireMin", "retaliationSlowFireDurationMin", "retaliationSlowFireChance",
+        "retaliationSlowColdMin", "retaliationSlowColdDurationMin", "retaliationSlowColdChance",
+        "retaliationSlowLightningMin", "retaliationSlowLightningDurationMin", "retaliationSlowLightningChance",
+        "retaliationSlowPoisonMin", "retaliationSlowPoisonDurationMin", "retaliationSlowPoisonChance",
+        "retaliationSlowLifeMin", "retaliationSlowLifeDurationMin", "retaliationSlowLifeChance",
+        "retaliationSlowBleedingMin", "retaliationSlowBleedingDurationMin", "retaliationSlowBleedingChance",
         "racialBonusPercentDamage", "racialBonusPercentDefense", "racialBonusRace",
         NULL
     };
@@ -325,8 +350,24 @@ void item_stats_init(void) {
     INTERN(offensiveConfusionMin); INTERN(offensiveConfusionDurationMin); INTERN(offensiveConfusionChance);
     INTERN(offensiveFearMin); INTERN(offensiveFearMax); INTERN(offensiveFearChance);
     INTERN(offensiveConvertMin);
+    INTERN(retaliationSlowFireMin); INTERN(retaliationSlowFireDurationMin); INTERN(retaliationSlowFireChance);
+    INTERN(retaliationSlowColdMin); INTERN(retaliationSlowColdDurationMin); INTERN(retaliationSlowColdChance);
+    INTERN(retaliationSlowLightningMin); INTERN(retaliationSlowLightningDurationMin); INTERN(retaliationSlowLightningChance);
+    INTERN(retaliationSlowPoisonMin); INTERN(retaliationSlowPoisonDurationMin); INTERN(retaliationSlowPoisonChance);
+    INTERN(retaliationSlowLifeMin); INTERN(retaliationSlowLifeDurationMin); INTERN(retaliationSlowLifeChance);
+    INTERN(retaliationSlowBleedingMin); INTERN(retaliationSlowBleedingDurationMin); INTERN(retaliationSlowBleedingChance);
     INTERN(offensiveTotalDamageModifier); INTERN(offensiveTotalDamageModifierChance);
+    INTERN(defensivePhysical); INTERN(defensivePhysicalChance);
+    INTERN(defensiveFire); INTERN(defensiveFireChance);
+    INTERN(defensiveCold); INTERN(defensiveColdChance);
+    INTERN(defensiveLightning); INTERN(defensiveLightningChance);
+    INTERN(defensivePoison); INTERN(defensivePoisonChance);
+    INTERN(defensivePierce); INTERN(defensivePierceChance);
+    INTERN(defensiveLife); INTERN(defensiveLifeChance);
+    INTERN(defensiveBleeding); INTERN(defensiveBleedingChance);
+    INTERN(defensiveElementalResistance); INTERN(defensiveElementalResistanceChance);
     INTERN(offensivePercentCurrentLifeMin); INTERN(offensivePercentCurrentLifeChance);
+    INTERN(offensiveManaBurnDrainMin); INTERN(offensiveManaBurnDrainRatioMin); INTERN(offensiveManaBurnDamageRatio);
     INTERN(offensiveTotalDamageReductionPercentMin); INTERN(offensiveTotalDamageReductionPercentChance);
     INTERN(offensiveTotalDamageReductionPercentDurationMin);
     INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
@@ -554,6 +595,136 @@ char* item_bonus_stat_summary(const char *record_path) {
         found++;
     }
 
+    /* Also check stats handled in dedicated blocks (resistances, damage ranges) */
+    static const struct { const char **val; const char *fmt; } extra_simple[] = {
+        {&INT_defensiveFire, "%+d%% Fire Resistance"},
+        {&INT_defensiveCold, "%+d%% Cold Resistance"},
+        {&INT_defensiveLightning, "%+d%% Lightning Resistance"},
+        {&INT_defensivePoison, "%+d%% Poison Resistance"},
+        {&INT_defensivePierce, "%+d%% Pierce Resistance"},
+        {&INT_defensiveLife, "%+d%% Vitality Resistance"},
+        {&INT_defensiveBleeding, "%+d%% Bleeding Resistance"},
+        {&INT_defensivePhysical, "%+d%% Physical Resistance"},
+    };
+    for (int e = 0; e < (int)(sizeof extra_simple / sizeof extra_simple[0]) && found < 3; e++) {
+        float val = dbr_get_float_fast(data, *extra_simple[e].val, 0);
+        if (fabs(val) < 0.001f) continue;
+
+        if (found > 0) {
+            size_t len = strlen(buf);
+            if (len < sizeof(buf) - 3) { buf[len] = ','; buf[len+1] = ' '; buf[len+2] = '\0'; }
+        }
+        char part[80];
+        snprintf(part, sizeof(part), extra_simple[e].fmt, (int)roundf(val));
+        size_t cur = strlen(buf), plen = strlen(part);
+        if (cur + plen < sizeof(buf) - 1)
+            memcpy(buf + cur, part, plen + 1);
+        found++;
+    }
+
+    /* Damage ranges (min-max pairs from dedicated blocks) */
+    static const struct { const char **mn; const char **mx; const char *label; } extra_dmg[] = {
+        {&INT_offensivePhysicalMin,     &INT_offensivePhysicalMax,     "Physical Damage"},
+        {&INT_offensiveFireMin,         &INT_offensiveFireMax,         "Fire Damage"},
+        {&INT_offensiveColdMin,         &INT_offensiveColdMax,         "Cold Damage"},
+        {&INT_offensiveLightningMin,    &INT_offensiveLightningMax,    "Lightning Damage"},
+        {&INT_offensivePoisonMin,       &INT_offensivePoisonMax,      "Poison Damage"},
+        {&INT_offensivePierceMin,       &INT_offensivePierceMax,       "Pierce Damage"},
+        {&INT_offensiveElementalMin,    &INT_offensiveElementalMax,    "Elemental Damage"},
+        {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, "Physical Damage"},
+        {&INT_offensiveBaseLifeMin,     &INT_offensiveBaseLifeMax,     "Vitality Damage"},
+    };
+    for (int e = 0; e < (int)(sizeof extra_dmg / sizeof extra_dmg[0]) && found < 3; e++) {
+        float mn = dbr_get_float_fast(data, *extra_dmg[e].mn, 0);
+        if (mn < 0.001f) continue;
+        float mx = dbr_get_float_fast(data, *extra_dmg[e].mx, 0);
+
+        if (found > 0) {
+            size_t len = strlen(buf);
+            if (len < sizeof(buf) - 3) { buf[len] = ','; buf[len+1] = ' '; buf[len+2] = '\0'; }
+        }
+        char part[80];
+        if (mx > mn)
+            snprintf(part, sizeof(part), "%.0f-%.0f %s", mn, mx, extra_dmg[e].label);
+        else
+            snprintf(part, sizeof(part), "%.0f %s", mn, extra_dmg[e].label);
+        size_t cur = strlen(buf), plen = strlen(part);
+        if (cur + plen < sizeof(buf) - 1)
+            memcpy(buf + cur, part, plen + 1);
+        found++;
+    }
+
+    /* Energy drain (both DrainMin and DrainRatioMin are percentages) */
+    if (found < 3) {
+        float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, 0);
+        float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, 0);
+        float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, 0);
+        float val = (drain > 0.001f) ? drain : drain_ratio;
+        if (val > 0.001f) {
+            if (found > 0) {
+                size_t len = strlen(buf);
+                if (len < sizeof(buf) - 3) { buf[len] = ','; buf[len+1] = ' '; buf[len+2] = '\0'; }
+            }
+            char part[80];
+            if (dmg_ratio > 0.001f)
+                snprintf(part, sizeof(part), "%.0f%% Energy Drain (%.0f%% as damage)", val, dmg_ratio);
+            else
+                snprintf(part, sizeof(part), "%.0f%% Energy Drain", val);
+            size_t cur = strlen(buf), plen = strlen(part);
+            if (cur + plen < sizeof(buf) - 1) memcpy(buf + cur, part, plen + 1);
+            found++;
+        }
+    }
+
+    /* Racial bonus */
+    if (found < 3) {
+        const char *race = "Enemies";
+        TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
+        if (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
+            race = rv->value.str[0];
+
+        float rdmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, 0);
+        if (fabs(rdmg) > 0.001f && found < 3) {
+            if (found > 0) {
+                size_t len = strlen(buf);
+                if (len < sizeof(buf) - 3) { buf[len] = ','; buf[len+1] = ' '; buf[len+2] = '\0'; }
+            }
+            char part[80];
+            snprintf(part, sizeof(part), "+%d%% Damage to %ss", (int)roundf(rdmg), race);
+            size_t cur = strlen(buf), plen = strlen(part);
+            if (cur + plen < sizeof(buf) - 1) memcpy(buf + cur, part, plen + 1);
+            found++;
+        }
+        float rdef = dbr_get_float_fast(data, INT_racialBonusPercentDefense, 0);
+        if (fabs(rdef) > 0.001f && found < 3) {
+            if (found > 0) {
+                size_t len = strlen(buf);
+                if (len < sizeof(buf) - 3) { buf[len] = ','; buf[len+1] = ' '; buf[len+2] = '\0'; }
+            }
+            char part[80];
+            snprintf(part, sizeof(part), "%d%% less damage from %ss", (int)roundf(rdef), race);
+            size_t cur = strlen(buf), plen = strlen(part);
+            if (cur + plen < sizeof(buf) - 1) memcpy(buf + cur, part, plen + 1);
+            found++;
+        }
+    }
+
+    /* Pet bonus */
+    if (found == 0) {
+        const char *pet = record_get_string_fast(data, INT_petBonusName);
+        if (pet && pet[0]) {
+            char *pet_summary = item_bonus_stat_summary(pet);
+            if (pet_summary) {
+                snprintf(buf, sizeof(buf), "Pets: %s", pet_summary);
+                free(pet_summary);
+                found = 1;
+            } else {
+                snprintf(buf, sizeof(buf), "Bonus to All Pets");
+                found = 1;
+            }
+        }
+    }
+
     if (found == 0) return NULL;
     return strdup(buf);
 }
@@ -728,6 +899,32 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
             buf_write(w, "<span color='%s'>+%d%% Bleeding Damage</span>\n", color, (int)round(mod));
     }
 
+    /* Retaliation DoTs (damage over time triggered on retaliation, may have chance) */
+    {
+        static const struct {
+            const char **val; const char **dur; const char **chance; const char *label;
+        } retal_dots[] = {
+            {&INT_retaliationSlowFireMin,      &INT_retaliationSlowFireDurationMin,      &INT_retaliationSlowFireChance,      "Burn Retaliation"},
+            {&INT_retaliationSlowColdMin,      &INT_retaliationSlowColdDurationMin,      &INT_retaliationSlowColdChance,      "Frostburn Retaliation"},
+            {&INT_retaliationSlowLightningMin, &INT_retaliationSlowLightningDurationMin, &INT_retaliationSlowLightningChance, "Electrical Burn Retaliation"},
+            {&INT_retaliationSlowPoisonMin,    &INT_retaliationSlowPoisonDurationMin,    &INT_retaliationSlowPoisonChance,    "Poison Retaliation"},
+            {&INT_retaliationSlowLifeMin,      &INT_retaliationSlowLifeDurationMin,      &INT_retaliationSlowLifeChance,      "Vitality Decay Retaliation"},
+            {&INT_retaliationSlowBleedingMin,  &INT_retaliationSlowBleedingDurationMin,  &INT_retaliationSlowBleedingChance,  "Bleeding Retaliation"},
+        };
+        for (int ri = 0; ri < (int)(sizeof retal_dots / sizeof retal_dots[0]); ri++) {
+            float mn = dbr_get_float_fast(data, *retal_dots[ri].val, shard_index);
+            float dur = dbr_get_float_fast(data, *retal_dots[ri].dur, shard_index);
+            if (mn <= 0 || dur <= 0) continue;
+            float ch = dbr_get_float_fast(data, *retal_dots[ri].chance, shard_index);
+            if (ch > 0 && ch < 100)
+                buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f %s over %.1f Seconds</span>\n",
+                          color, ch, mn * dur, retal_dots[ri].label, dur);
+            else
+                buf_write(w, "<span color='%s'>%.0f %s over %.1f Seconds</span>\n",
+                          color, mn * dur, retal_dots[ri].label, dur);
+        }
+    }
+
     /* Reduced Armor (value + duration) */
     {
         float val = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionMin, shard_index);
@@ -799,14 +996,13 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
             const char *mastery_var_int = arz_intern(mastery_var);
             TQVariable *mv = arz_record_get_var(data, mastery_var_int);
             const char *mastery_path = (mv && mv->type == TQ_VAR_STRING && mv->count > 0) ? mv->value.str[0] : NULL;
+            if (!mastery_path || !mastery_path[0]) continue;
 
             const char *mastery_name = "Unknown Mastery";
-            if (mastery_path) {
-                const char *name_tag = get_record_variable_string(mastery_path, INT_skillDisplayName);
-                if (name_tag) {
-                    const char *translated = translation_get(tr, name_tag);
-                    if (translated) mastery_name = translated;
-                }
+            const char *name_tag = get_record_variable_string(mastery_path, INT_skillDisplayName);
+            if (name_tag) {
+                const char *translated = translation_get(tr, name_tag);
+                if (translated) mastery_name = translated;
             }
             buf_write(w, "<span color='%s'>+%d to all skills in %s</span>\n", color, (int)round(val), mastery_name);
         }
@@ -887,6 +1083,30 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         }
     }
 
+    /* Defensive resistances (may have chance) */
+    {
+        static const struct { const char **val; const char **chance; const char *label; } resist_defs[] = {
+            {&INT_defensiveFire,      &INT_defensiveFireChance,      "Fire"},
+            {&INT_defensiveCold,      &INT_defensiveColdChance,      "Cold"},
+            {&INT_defensiveLightning, &INT_defensiveLightningChance, "Lightning"},
+            {&INT_defensivePoison,    &INT_defensivePoisonChance,    "Poison"},
+            {&INT_defensivePierce,    &INT_defensivePierceChance,    "Pierce"},
+            {&INT_defensiveLife,      &INT_defensiveLifeChance,      "Vitality"},
+            {&INT_defensiveBleeding,  &INT_defensiveBleedingChance,  "Bleeding"},
+            {&INT_defensivePhysical,  &INT_defensivePhysicalChance,  "Physical"},
+            {&INT_defensiveElementalResistance, &INT_defensiveElementalResistanceChance, "Elemental"},
+        };
+        for (int ri = 0; ri < (int)(sizeof resist_defs / sizeof resist_defs[0]); ri++) {
+            float rv = dbr_get_float_fast(data, *resist_defs[ri].val, shard_index);
+            if (fabs(rv) < 0.001f) continue;
+            float rc = dbr_get_float_fast(data, *resist_defs[ri].chance, shard_index);
+            if (rc > 0 && rc < 100)
+                buf_write(w, "<span color='%s'>%.0f%% Chance of %+d%% %s Resistance</span>\n", color, rc, (int)round(rv), resist_defs[ri].label);
+            else
+                buf_write(w, "<span color='%s'>%+d%% %s Resistance</span>\n", color, (int)round(rv), resist_defs[ri].label);
+        }
+    }
+
     /* Percent current life reduction (may have chance) */
     {
         float pcl = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMin, shard_index);
@@ -896,6 +1116,21 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
                 buf_write(w, "<span color='%s'>%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, pcl_chance, pcl);
             else
                 buf_write(w, "<span color='%s'>%.0f%% Reduction to Enemy's Health</span>\n", color, pcl);
+        }
+    }
+
+    /* Energy drain / energy burn (both DrainMin and DrainRatioMin are percentages) */
+    {
+        float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, shard_index);
+        float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, shard_index);
+        float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, shard_index);
+        float val = (drain > 0.001f) ? drain : drain_ratio;
+
+        if (val > 0.001f) {
+            if (dmg_ratio > 0.001f)
+                buf_write(w, "<span color='%s'>%s%.0f%% Energy Drain (%.0f%% of lost energy as damage)</span>\n", color, indent, val, dmg_ratio);
+            else
+                buf_write(w, "<span color='%s'>%s%.0f%% Energy Drain</span>\n", color, indent, val);
         }
     }
 
@@ -1654,6 +1889,30 @@ static float get_dbr_resistance(const char *record_path, const char *attr_name, 
     return (v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx];
 }
 
+/* Like get_dbr_resistance but returns 0 if the stat has an associated Chance < 100% */
+static float get_dbr_guaranteed(const char *record_path, const char *attr_name, int shard_index) {
+    if (!record_path || !record_path[0]) return 0.0f;
+    TQArzRecordData *data = asset_get_dbr(record_path);
+    if (!data) return 0.0f;
+    const char *interned = arz_intern(attr_name);
+    TQVariable *v = arz_record_get_var(data, interned);
+    if (!v) return 0.0f;
+
+    /* Check for a corresponding Chance variable */
+    char chance_name[128];
+    snprintf(chance_name, sizeof(chance_name), "%sChance", attr_name);
+    const char *chance_interned = arz_intern(chance_name);
+    TQVariable *cv = arz_record_get_var(data, chance_interned);
+    if (cv && cv->count > 0) {
+        float chance = (cv->type == TQ_VAR_INT) ? (float)cv->value.i32[0] : cv->value.f32[0];
+        if (chance > 0 && chance < 100) return 0.0f;
+    }
+
+    int idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
+    if (idx < 0) idx = 0;
+    return (v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx];
+}
+
 float item_get_resistance(TQItem *item, const char *attr_name) {
     if (!item || !attr_name) return 0.0f;
     int si1 = item->var1 > 0 ? (int)item->var1 - 1 : 0;
@@ -1665,6 +1924,19 @@ float item_get_resistance(TQItem *item, const char *attr_name) {
          + get_dbr_resistance(item->relic_bonus, attr_name, 0)
          + get_dbr_resistance(item->relic_name2, attr_name, si2)
          + get_dbr_resistance(item->relic_bonus2, attr_name, 0);
+}
+
+float item_get_guaranteed_stat(TQItem *item, const char *attr_name) {
+    if (!item || !attr_name) return 0.0f;
+    int si1 = item->var1 > 0 ? (int)item->var1 - 1 : 0;
+    int si2 = item->var2 > 0 ? (int)item->var2 - 1 : 0;
+    return get_dbr_guaranteed(item->base_name, attr_name, 0)
+         + get_dbr_guaranteed(item->prefix_name, attr_name, 0)
+         + get_dbr_guaranteed(item->suffix_name, attr_name, 0)
+         + get_dbr_guaranteed(item->relic_name, attr_name, si1)
+         + get_dbr_guaranteed(item->relic_bonus, attr_name, 0)
+         + get_dbr_guaranteed(item->relic_name2, attr_name, si2)
+         + get_dbr_guaranteed(item->relic_bonus2, attr_name, 0);
 }
 
 /* ── public API ──────────────────────────────────────────────────── */
