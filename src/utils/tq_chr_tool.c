@@ -23,6 +23,7 @@
 #include <stdint.h>
 #include <stdbool.h>
 #include <ctype.h>
+#include <glib.h>
 
 
 // Stubs — character.c references these but we don't need them for analysis
@@ -1562,12 +1563,13 @@ static int cmd_roundtrip(const char *path) {
          chr->equip_block_start, chr->equip_block_end);
 
   // Save to temp file
-  const char *tmp_path = "/tmp/tq_chr_tool_roundtrip.chr";
+  char *tmp_path = g_build_filename(g_get_tmp_dir(), "tq_chr_tool_roundtrip.chr", NULL);
   int ret = character_save(chr, tmp_path);
   if (ret != 0) {
     fprintf(stderr, "error: character_save() returned %d\n", ret);
     character_free(chr);
     free(orig_data);
+    g_free(tmp_path);
     return 1;
   }
 
@@ -1577,7 +1579,9 @@ static int cmd_roundtrip(const char *path) {
 
   // Now compare original vs roundtripped using our independent parser
   printf("────────────────────────────────────────────────────────────\n\n");
-  return cmd_compare(path, tmp_path);
+  int cmp_ret = cmd_compare(path, tmp_path);
+  g_free(tmp_path);
+  return cmp_ret;
 }
 
 // ═══════════════════════════════════════════════════════════════════════════

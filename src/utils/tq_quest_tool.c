@@ -40,8 +40,7 @@
 #include <strings.h>
 #include <stdbool.h>
 #include <ctype.h>
-#include <unistd.h>
-#include <dirent.h>
+#include <glib.h>
 #include "../quest_tokens.h"
 
 /* ── Helpers ──────────────────────────────────────────────────────────── */
@@ -426,10 +425,11 @@ static int cmd_roundtrip(const char *path) {
     }
     printf("Loaded %d tokens from %s\n", set.count, path);
 
-    const char *tmp = "/tmp/tq_quest_roundtrip.myw";
+    char *tmp = g_build_filename(g_get_tmp_dir(), "tq_quest_roundtrip.myw", NULL);
     if (quest_tokens_save(tmp, &set) != 0) {
         fprintf(stderr, "Error: failed to save to %s\n", tmp);
         quest_token_set_free(&set);
+        g_free(tmp);
         return 1;
     }
 
@@ -441,6 +441,7 @@ static int cmd_roundtrip(const char *path) {
         if (fa) fclose(fa);
         if (fb) fclose(fb);
         quest_token_set_free(&set);
+        g_free(tmp);
         return 1;
     }
 
@@ -455,6 +456,7 @@ static int cmd_roundtrip(const char *path) {
         printf("DIFFER: size mismatch (%ld vs %ld bytes)\n", sa, sb);
         fclose(fa); fclose(fb);
         quest_token_set_free(&set);
+        g_free(tmp);
         return 1;
     }
 
@@ -474,6 +476,7 @@ static int cmd_roundtrip(const char *path) {
     } else {
         printf("FAIL: files differ!\n");
         quest_token_set_free(&set);
+        g_free(tmp);
         return 1;
     }
 
@@ -482,8 +485,10 @@ static int cmd_roundtrip(const char *path) {
     if (quest_tokens_load(tmp, &set2) != 0) {
         fprintf(stderr, "Error: failed to reload %s\n", tmp);
         quest_token_set_free(&set);
+        g_free(tmp);
         return 1;
     }
+    g_free(tmp);
     if (set.count != set2.count) {
         printf("FAIL: token count mismatch (%d vs %d)\n", set.count, set2.count);
         quest_token_set_free(&set);
@@ -1003,27 +1008,28 @@ static int cmd_clear_que(const char *dir) {
 }
 
 static int cmd_compare_que(const char *dir_a, const char *dir_b) {
-    DIR *d = opendir(dir_a);
+    GDir *d = g_dir_open(dir_a, 0, NULL);
     if (!d) { fprintf(stderr, "Error: cannot open %s\n", dir_a); return 1; }
 
     int files_compared = 0, files_differ = 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t nlen = strlen(ent->d_name);
-        if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0)
+    const gchar *ent_name;
+    while ((ent_name = g_dir_read_name(d)) != NULL) {
+        size_t nlen = strlen(ent_name);
+        if (nlen < 5 || strcmp(ent_name + nlen - 4, ".que") != 0)
             continue;
 
-        char path_a[1024], path_b[1024];
-        snprintf(path_a, sizeof(path_a), "%s/%s", dir_a, ent->d_name);
-        snprintf(path_b, sizeof(path_b), "%s/%s", dir_b, ent->d_name);
+        char *path_a = g_build_filename(dir_a, ent_name, NULL);
+        char *path_b = g_build_filename(dir_b, ent_name, NULL);
 
         FILE *fa = fopen(path_a, "rb");
         FILE *fb = fopen(path_b, "rb");
         if (!fa || !fb) {
-            if (fa) { printf("  %s: only in dir_a\n", ent->d_name); fclose(fa); }
-            else if (fb) { printf("  %s: only in dir_b\n", ent->d_name); fclose(fb); }
+            if (fa) { printf("  %s: only in dir_a\n", ent_name); fclose(fa); }
+            else if (fb) { printf("  %s: only in dir_b\n", ent_name); fclose(fb); }
+            g_free(path_a); g_free(path_b);
             continue;
         }
+        g_free(path_a); g_free(path_b);
 
         fseek(fa, 0, SEEK_END); long sa = ftell(fa); rewind(fa);
         fseek(fb, 0, SEEK_END); long sb = ftell(fb); rewind(fb);
@@ -1035,10 +1041,9 @@ static int cmd_compare_que(const char *dir_a, const char *dir_b) {
         fclose(fa); fclose(fb);
 
         if (sa != sb) {
-            printf("  %s: size differs (%ld vs %ld)\n", ent->d_name, sa, sb);
+            printf("  %s: size differs (%ld vs %ld)\n", ent_name, sa, sb);
             files_differ++;
         } else {
-            /* Compare hasFired/isPendingFire values */
             bool differ = false;
             static const struct { const char *key; size_t klen; } targets[] = {
                 { "hasFired", 8 }, { "isPendingFire", 13 },
@@ -1051,7 +1056,6 @@ static int cmd_compare_que(const char *dir_a, const char *dir_b) {
                 int idx = 0;
 
                 while (1) {
-                    /* Find next occurrence in each file */
                     size_t pa = (size_t)-1, pb = (size_t)-1;
                     for (size_t i = oa; i + 4 + klen + 4 <= (size_t)sa; i++) {
                         uint32_t slen;
@@ -1074,7 +1078,7 @@ static int cmd_compare_que(const char *dir_a, const char *dir_b) {
                     memcpy(&vb, db + pb + 4 + klen, 4);
                     if (va != vb) {
                         if (!differ)
-                            printf("  %s:\n", ent->d_name);
+                            printf("  %s:\n", ent_name);
                         printf("    %s[%d]: %u vs %u\n", key, idx, va, vb);
                         differ = true;
                     }
@@ -1088,7 +1092,7 @@ static int cmd_compare_que(const char *dir_a, const char *dir_b) {
         files_compared++;
         free(da); free(db);
     }
-    closedir(d);
+    g_dir_close(d);
 
     printf("\n--- %d files compared, %d differ\n", files_compared, files_differ);
     return 0;
@@ -1099,33 +1103,33 @@ static int cmd_compare_que(const char *dir_a, const char *dir_b) {
 /* Extract embedded info from a .que file: comments strings, flag counts.
  * Searches for LP-string patterns that look like .qst file paths. */
 static int cmd_que_info(const char *dir) {
-    DIR *d = opendir(dir);
+    GDir *d = g_dir_open(dir, 0, NULL);
     if (!d) { fprintf(stderr, "Error: cannot open %s\n", dir); return 1; }
 
     struct que_entry {
         char filename[40];
         int has_fired_total;
-        int has_fired_set;   /* count of hasFired=1 */
+        int has_fired_set;
         int pending_total;
-        int pending_set;     /* count of isPendingFire=1 */
+        int pending_set;
         int trigger_count;
-        char embedded_path[256]; /* first .qst path found, or "" */
+        char embedded_path[256];
         long filesize;
     };
 
     struct que_entry *entries = NULL;
     int nentries = 0, cap = 0;
 
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t nlen = strlen(ent->d_name);
-        if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0) continue;
+    const gchar *ent_name;
+    while ((ent_name = g_dir_read_name(d)) != NULL) {
+        size_t nlen = strlen(ent_name);
+        if (nlen < 5 || strcmp(ent_name + nlen - 4, ".que") != 0) continue;
 
-        char filepath[1024];
-        snprintf(filepath, sizeof(filepath), "%s/%s", dir, ent->d_name);
+        char *filepath = g_build_filename(dir, ent_name, NULL);
 
         long fsize;
         uint8_t *data = read_file(filepath, &fsize);
+        g_free(filepath);
         if (!data) continue;
 
         if (nentries >= cap) {
@@ -1134,7 +1138,7 @@ static int cmd_que_info(const char *dir) {
         }
         struct que_entry *e = &entries[nentries++];
         memset(e, 0, sizeof(*e));
-        snprintf(e->filename, sizeof(e->filename), "%.*s", (int)(nlen - 4), ent->d_name);
+        snprintf(e->filename, sizeof(e->filename), "%.*s", (int)(nlen - 4), ent_name);
         e->filesize = fsize;
 
         /* Scan for keys */
@@ -1191,7 +1195,7 @@ static int cmd_que_info(const char *dir) {
         e->trigger_count = e->has_fired_total;
         free(data);
     }
-    closedir(d);
+    g_dir_close(d);
 
     /* Sort by filename */
     for (int i = 0; i < nentries - 1; i++)
@@ -1243,10 +1247,9 @@ static int cmd_scan(const char *save_dir) {
     static const char *diffs[] = { "Normal", "Epic", "Legendary" };
     static const char *map_subdir = "Levels_World_World01.map";
 
-    /* Check if save_dir contains the map subdir directly or is a char dir */
-    char test_path[1024];
-    snprintf(test_path, sizeof(test_path), "%s/%s", save_dir, map_subdir);
-    bool has_map_dir = (access(test_path, F_OK) == 0);
+    char *test_path = g_build_filename(save_dir, map_subdir, NULL);
+    bool has_map_dir = g_file_test(test_path, G_FILE_TEST_EXISTS);
+    g_free(test_path);
 
     if (!has_map_dir) {
         fprintf(stderr, "Error: %s does not contain %s/\n", save_dir, map_subdir);
@@ -1257,24 +1260,21 @@ static int cmd_scan(const char *save_dir) {
     printf("=== Character Quest State Scan ===\n");
     printf("Directory: %s\n\n", save_dir);
 
-    for (int d = 0; d < 3; d++) {
-        char diff_dir[1024];
-        snprintf(diff_dir, sizeof(diff_dir), "%s/%s/%s", save_dir, map_subdir, diffs[d]);
+    for (int di = 0; di < 3; di++) {
+        char *diff_dir = g_build_filename(save_dir, map_subdir, diffs[di], NULL);
 
-        if (access(diff_dir, F_OK) != 0) {
-            printf("--- %s: (not present)\n\n", diffs[d]);
+        if (!g_file_test(diff_dir, G_FILE_TEST_EXISTS)) {
+            printf("--- %s: (not present)\n\n", diffs[di]);
+            g_free(diff_dir);
             continue;
         }
 
-        printf("=== %s ===\n", diffs[d]);
+        printf("=== %s ===\n", diffs[di]);
 
-        /* QuestToken.myw */
-        char qt_path[1024];
-        snprintf(qt_path, sizeof(qt_path), "%s/QuestToken.myw", diff_dir);
-        if (access(qt_path, F_OK) == 0) {
+        char *qt_path = g_build_filename(diff_dir, "QuestToken.myw", NULL);
+        if (g_file_test(qt_path, G_FILE_TEST_EXISTS)) {
             QuestTokenSet set;
             if (quest_tokens_load(qt_path, &set) == 0) {
-                /* Count quest completion */
                 int qcount;
                 const QuestDef *qdefs = quest_get_defs(&qcount);
                 int complete = 0;
@@ -1283,7 +1283,6 @@ static int cmd_scan(const char *save_dir) {
                         complete++;
                 }
 
-                /* Count by act */
                 int act_complete[NUM_ACTS] = {0};
                 int act_total[NUM_ACTS] = {0};
                 for (int i = 0; i < qcount; i++) {
@@ -1308,22 +1307,19 @@ static int cmd_scan(const char *save_dir) {
         } else {
             printf("  QuestToken.myw: (not present)\n");
         }
+        g_free(qt_path);
 
-        /* Quest.myw */
-        char qm_path[1024];
-        snprintf(qm_path, sizeof(qm_path), "%s/Quest.myw", diff_dir);
-        if (access(qm_path, F_OK) == 0) {
+        char *qm_path = g_build_filename(diff_dir, "Quest.myw", NULL);
+        if (g_file_test(qm_path, G_FILE_TEST_EXISTS)) {
             long fsize;
             uint8_t *data = read_file(qm_path, &fsize);
             if (data) {
-                /* Quick parse: get trigger count and reward count */
                 size_t off = 0;
                 qmyw_expect_key(data, fsize, &off, "begin_block");
                 off += 4;
                 qmyw_expect_key(data, fsize, &off, "numberOfTriggers");
                 uint32_t num_trig = que_read_u32(data, &off);
 
-                /* Scan for numRewards */
                 uint32_t num_rew = 0;
                 const char *nr_key = "numRewards";
                 size_t nr_len = strlen(nr_key);
@@ -1343,26 +1339,25 @@ static int cmd_scan(const char *save_dir) {
         } else {
             printf("  Quest.myw: (not present)\n");
         }
+        g_free(qm_path);
 
-        /* .que files */
-        DIR *dd = opendir(diff_dir);
+        GDir *dd = g_dir_open(diff_dir, 0, NULL);
         if (dd) {
             int que_count = 0, que_fired = 0;
             long total_bytes = 0;
-            struct dirent *ent;
-            while ((ent = readdir(dd)) != NULL) {
-                size_t nlen = strlen(ent->d_name);
-                if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0) continue;
+            const gchar *ent_name;
+            while ((ent_name = g_dir_read_name(dd)) != NULL) {
+                size_t nlen = strlen(ent_name);
+                if (nlen < 5 || strcmp(ent_name + nlen - 4, ".que") != 0) continue;
                 que_count++;
 
-                char fpath[1024];
-                snprintf(fpath, sizeof(fpath), "%s/%s", diff_dir, ent->d_name);
+                char *fpath = g_build_filename(diff_dir, ent_name, NULL);
                 long fsz;
                 uint8_t *fdata = read_file(fpath, &fsz);
+                g_free(fpath);
                 if (!fdata) continue;
                 total_bytes += fsz;
 
-                /* Quick scan for hasFired=1 */
                 bool any_fired = false;
                 for (size_t off = 0; off + 16 <= (size_t)fsz; off++) {
                     uint32_t slen;
@@ -1376,11 +1371,12 @@ static int cmd_scan(const char *save_dir) {
                 if (any_fired) que_fired++;
                 free(fdata);
             }
-            closedir(dd);
+            g_dir_close(dd);
             printf("  .que files: %d total, %d with fired triggers (%ld KB)\n",
                    que_count, que_fired, total_bytes / 1024);
         }
         printf("\n");
+        g_free(diff_dir);
     }
 
     return 0;

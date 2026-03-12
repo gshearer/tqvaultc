@@ -69,16 +69,7 @@ static AttributeMap attr_maps[] = {
     {"characterOffensiveAbilityModifier", "+%d%% Offensive Ability", true, NULL},
     {"characterDefensiveAbilityModifier", "+%d%% Defensive Ability", true, NULL},
 
-    /* Offensive percent modifiers */
-    {"offensivePhysicalModifier", "+%d%% Physical Damage", true, NULL},
-    {"offensiveFireModifier", "+%d%% Fire Damage", true, NULL},
-    {"offensiveColdModifier", "+%d%% Cold Damage", true, NULL},
-    {"offensiveLightningModifier", "+%d%% Lightning Damage", true, NULL},
-    {"offensivePoisonModifier", "+%d%% Poison Damage", true, NULL},
-    {"offensiveLifeModifier", "+%d%% Vitality Damage", true, NULL},
-    {"offensivePierceModifier", "+%d%% Pierce Damage", true, NULL},
-    {"offensiveElementalModifier", "+%d%% Elemental Damage", true, NULL},
-    /* offensiveTotalDamageModifier handled in dedicated block (has Chance) */
+    /* offensive*Modifier and offensiveTotalDamageModifier handled in dedicated block (may have Chance) */
 
     /* Offensive DoT modifiers */
     {"offensiveSlowFireModifier", "+%d%% Burn Damage", true, NULL},
@@ -98,6 +89,9 @@ static AttributeMap attr_maps[] = {
        defensivePierce, defensiveLife, defensiveBleeding, defensivePhysical */
     {"defensiveStun", "%+d%% Stun Resistance", false, NULL},
     {"defensiveStunModifier", "+%d%% Reduced Stun Duration", true, NULL},
+    {"defensiveConfusion", "%+d%% Confusion Resistance", false, NULL},
+    {"defensiveConvert", "%+d%% Convert Resistance", false, NULL},
+    {"defensiveReflect", "%d%% Damage Reflected", false, NULL},
 
     /* Duration reductions */
     {"defensiveFreeze", "%+d%% Reduced Freeze Duration", false, NULL},
@@ -133,6 +127,9 @@ static AttributeMap attr_maps[] = {
 
     /* Slow (total speed reduction) */
     {"offensiveSlowTotalSpeedMin", "%.0f%% Reduced Total Speed", false, NULL},
+
+    /* Taunt */
+    {"offensiveTauntMin", "%.0f%% Taunt", false, NULL},
 
     /* Retaliation DoT */
     /* retaliationSlow* DoTs handled in dedicated blocks (have Duration + Chance) */
@@ -183,14 +180,14 @@ static const char *INT_offensiveBasePoisonMin, *INT_offensiveBasePoisonMax;
 static const char *INT_offensiveBaseLifeMin, *INT_offensiveBaseLifeMax;
 static const char *INT_offensiveBonusPhysicalMin, *INT_offensiveBonusPhysicalMax;
 static const char *INT_offensiveLifeLeechMin, *INT_offensiveLifeLeechMax;
-static const char *INT_offensiveSlowFireMin, *INT_offensiveSlowFireMax, *INT_offensiveSlowFireDurationMin;
-static const char *INT_offensiveSlowLightningMin, *INT_offensiveSlowLightningMax, *INT_offensiveSlowLightningDurationMin;
-static const char *INT_offensiveSlowColdMin, *INT_offensiveSlowColdMax, *INT_offensiveSlowColdDurationMin;
-static const char *INT_offensiveSlowPoisonMin, *INT_offensiveSlowPoisonMax, *INT_offensiveSlowPoisonDurationMin;
-static const char *INT_offensiveSlowLifeLeachMin, *INT_offensiveSlowLifeLeachMax, *INT_offensiveSlowLifeLeachDurationMin;
-static const char *INT_offensiveSlowLifeMin, *INT_offensiveSlowLifeMax, *INT_offensiveSlowLifeDurationMin;
-static const char *INT_offensiveSlowManaLeachMin, *INT_offensiveSlowManaLeachMax, *INT_offensiveSlowManaLeachDurationMin;
-static const char *INT_offensiveSlowBleedingMin, *INT_offensiveSlowBleedingMax, *INT_offensiveSlowBleedingDurationMin;
+static const char *INT_offensiveSlowFireMin, *INT_offensiveSlowFireMax, *INT_offensiveSlowFireDurationMin, *INT_offensiveSlowFireChance;
+static const char *INT_offensiveSlowLightningMin, *INT_offensiveSlowLightningMax, *INT_offensiveSlowLightningDurationMin, *INT_offensiveSlowLightningChance;
+static const char *INT_offensiveSlowColdMin, *INT_offensiveSlowColdMax, *INT_offensiveSlowColdDurationMin, *INT_offensiveSlowColdChance;
+static const char *INT_offensiveSlowPoisonMin, *INT_offensiveSlowPoisonMax, *INT_offensiveSlowPoisonDurationMin, *INT_offensiveSlowPoisonChance;
+static const char *INT_offensiveSlowLifeLeachMin, *INT_offensiveSlowLifeLeachMax, *INT_offensiveSlowLifeLeachDurationMin, *INT_offensiveSlowLifeLeachChance;
+static const char *INT_offensiveSlowLifeMin, *INT_offensiveSlowLifeMax, *INT_offensiveSlowLifeDurationMin, *INT_offensiveSlowLifeChance;
+static const char *INT_offensiveSlowManaLeachMin, *INT_offensiveSlowManaLeachMax, *INT_offensiveSlowManaLeachDurationMin, *INT_offensiveSlowManaLeachChance;
+static const char *INT_offensiveSlowBleedingMin, *INT_offensiveSlowBleedingMax, *INT_offensiveSlowBleedingDurationMin, *INT_offensiveSlowBleedingChance;
 static const char *INT_offensiveSlowBleedingModifier, *INT_offensiveSlowBleedingModifierChance;
 static const char *INT_offensiveSlowDefensiveReductionMin, *INT_offensiveSlowDefensiveReductionDurationMin;
 static const char *INT_offensiveSlowAttackSpeedMin, *INT_offensiveSlowAttackSpeedDurationMin;
@@ -208,6 +205,14 @@ static const char *INT_retaliationSlowLightningMin, *INT_retaliationSlowLightnin
 static const char *INT_retaliationSlowPoisonMin, *INT_retaliationSlowPoisonDurationMin, *INT_retaliationSlowPoisonChance;
 static const char *INT_retaliationSlowLifeMin, *INT_retaliationSlowLifeDurationMin, *INT_retaliationSlowLifeChance;
 static const char *INT_retaliationSlowBleedingMin, *INT_retaliationSlowBleedingDurationMin, *INT_retaliationSlowBleedingChance;
+static const char *INT_offensivePhysicalModifier, *INT_offensivePhysicalModifierChance;
+static const char *INT_offensiveFireModifier, *INT_offensiveFireModifierChance;
+static const char *INT_offensiveColdModifier, *INT_offensiveColdModifierChance;
+static const char *INT_offensiveLightningModifier, *INT_offensiveLightningModifierChance;
+static const char *INT_offensivePoisonModifier, *INT_offensivePoisonModifierChance;
+static const char *INT_offensiveLifeModifier, *INT_offensiveLifeModifierChance;
+static const char *INT_offensivePierceModifier, *INT_offensivePierceModifierChance;
+static const char *INT_offensiveElementalModifier, *INT_offensiveElementalModifierChance;
 static const char *INT_offensiveTotalDamageModifier, *INT_offensiveTotalDamageModifierChance;
 static const char *INT_defensivePhysical, *INT_defensivePhysicalChance;
 static const char *INT_defensiveFire, *INT_defensiveFireChance;
@@ -260,14 +265,14 @@ void item_stats_init(void) {
         "offensiveElementalMin", "offensiveElementalMax",
         "offensiveLifeLeechMin", "offensiveLifeLeechMax",
         "offensiveManaLeechMin", "offensiveManaLeechMax",
-        "offensiveSlowFireMin", "offensiveSlowFireMax", "offensiveSlowFireDurationMin",
-        "offensiveSlowLightningMin", "offensiveSlowLightningMax", "offensiveSlowLightningDurationMin",
-        "offensiveSlowColdMin", "offensiveSlowColdMax", "offensiveSlowColdDurationMin",
-        "offensiveSlowPoisonMin", "offensiveSlowPoisonMax", "offensiveSlowPoisonDurationMin",
-        "offensiveSlowLifeLeachMin", "offensiveSlowLifeLeachMax", "offensiveSlowLifeLeachDurationMin",
-        "offensiveSlowLifeMin", "offensiveSlowLifeMax", "offensiveSlowLifeDurationMin",
-        "offensiveSlowBleedingMin", "offensiveSlowBleedingMax", "offensiveSlowBleedingDurationMin",
-        "offensiveSlowManaLeachMin", "offensiveSlowManaLeachMax", "offensiveSlowManaLeachDurationMin",
+        "offensiveSlowFireMin", "offensiveSlowFireMax", "offensiveSlowFireDurationMin", "offensiveSlowFireChance",
+        "offensiveSlowLightningMin", "offensiveSlowLightningMax", "offensiveSlowLightningDurationMin", "offensiveSlowLightningChance",
+        "offensiveSlowColdMin", "offensiveSlowColdMax", "offensiveSlowColdDurationMin", "offensiveSlowColdChance",
+        "offensiveSlowPoisonMin", "offensiveSlowPoisonMax", "offensiveSlowPoisonDurationMin", "offensiveSlowPoisonChance",
+        "offensiveSlowLifeLeachMin", "offensiveSlowLifeLeachMax", "offensiveSlowLifeLeachDurationMin", "offensiveSlowLifeLeachChance",
+        "offensiveSlowLifeMin", "offensiveSlowLifeMax", "offensiveSlowLifeDurationMin", "offensiveSlowLifeChance",
+        "offensiveSlowBleedingMin", "offensiveSlowBleedingMax", "offensiveSlowBleedingDurationMin", "offensiveSlowBleedingChance",
+        "offensiveSlowManaLeachMin", "offensiveSlowManaLeachMax", "offensiveSlowManaLeachDurationMin", "offensiveSlowManaLeachChance",
         "offensiveSlowBleedingModifier", "offensiveSlowBleedingModifierChance",
         "offensiveSlowDefensiveReductionMin", "offensiveSlowDefensiveReductionDurationMin",
         "offensiveSlowAttackSpeedMin", "offensiveSlowAttackSpeedDurationMin",
@@ -277,6 +282,14 @@ void item_stats_init(void) {
         "offensiveConvertMin",
         "offensiveTotalDamageReductionPercentMin", "offensiveTotalDamageReductionPercentChance",
         "offensiveTotalDamageReductionPercentDurationMin",
+        "offensivePhysicalModifier", "offensivePhysicalModifierChance",
+        "offensiveFireModifier", "offensiveFireModifierChance",
+        "offensiveColdModifier", "offensiveColdModifierChance",
+        "offensiveLightningModifier", "offensiveLightningModifierChance",
+        "offensivePoisonModifier", "offensivePoisonModifierChance",
+        "offensiveLifeModifier", "offensiveLifeModifierChance",
+        "offensivePierceModifier", "offensivePierceModifierChance",
+        "offensiveElementalModifier", "offensiveElementalModifierChance",
         "offensiveTotalDamageModifier", "offensiveTotalDamageModifierChance",
         "offensivePercentCurrentLifeMin", "offensivePercentCurrentLifeChance",
         "offensiveManaBurnDrainMin", "offensiveManaBurnDrainRatioMin", "offensiveManaBurnDamageRatio",
@@ -334,14 +347,14 @@ void item_stats_init(void) {
     INTERN(offensiveBaseLifeMin); INTERN(offensiveBaseLifeMax);
     INTERN(offensiveBonusPhysicalMin); INTERN(offensiveBonusPhysicalMax);
     INTERN(offensiveLifeLeechMin); INTERN(offensiveLifeLeechMax);
-    INTERN(offensiveSlowFireMin); INTERN(offensiveSlowFireMax); INTERN(offensiveSlowFireDurationMin);
-    INTERN(offensiveSlowLightningMin); INTERN(offensiveSlowLightningMax); INTERN(offensiveSlowLightningDurationMin);
-    INTERN(offensiveSlowColdMin); INTERN(offensiveSlowColdMax); INTERN(offensiveSlowColdDurationMin);
-    INTERN(offensiveSlowPoisonMin); INTERN(offensiveSlowPoisonMax); INTERN(offensiveSlowPoisonDurationMin);
-    INTERN(offensiveSlowLifeLeachMin); INTERN(offensiveSlowLifeLeachMax); INTERN(offensiveSlowLifeLeachDurationMin);
-    INTERN(offensiveSlowLifeMin); INTERN(offensiveSlowLifeMax); INTERN(offensiveSlowLifeDurationMin);
-    INTERN(offensiveSlowManaLeachMin); INTERN(offensiveSlowManaLeachMax); INTERN(offensiveSlowManaLeachDurationMin);
-    INTERN(offensiveSlowBleedingMin); INTERN(offensiveSlowBleedingMax); INTERN(offensiveSlowBleedingDurationMin);
+    INTERN(offensiveSlowFireMin); INTERN(offensiveSlowFireMax); INTERN(offensiveSlowFireDurationMin); INTERN(offensiveSlowFireChance);
+    INTERN(offensiveSlowLightningMin); INTERN(offensiveSlowLightningMax); INTERN(offensiveSlowLightningDurationMin); INTERN(offensiveSlowLightningChance);
+    INTERN(offensiveSlowColdMin); INTERN(offensiveSlowColdMax); INTERN(offensiveSlowColdDurationMin); INTERN(offensiveSlowColdChance);
+    INTERN(offensiveSlowPoisonMin); INTERN(offensiveSlowPoisonMax); INTERN(offensiveSlowPoisonDurationMin); INTERN(offensiveSlowPoisonChance);
+    INTERN(offensiveSlowLifeLeachMin); INTERN(offensiveSlowLifeLeachMax); INTERN(offensiveSlowLifeLeachDurationMin); INTERN(offensiveSlowLifeLeachChance);
+    INTERN(offensiveSlowLifeMin); INTERN(offensiveSlowLifeMax); INTERN(offensiveSlowLifeDurationMin); INTERN(offensiveSlowLifeChance);
+    INTERN(offensiveSlowManaLeachMin); INTERN(offensiveSlowManaLeachMax); INTERN(offensiveSlowManaLeachDurationMin); INTERN(offensiveSlowManaLeachChance);
+    INTERN(offensiveSlowBleedingMin); INTERN(offensiveSlowBleedingMax); INTERN(offensiveSlowBleedingDurationMin); INTERN(offensiveSlowBleedingChance);
     INTERN(offensiveSlowBleedingModifier); INTERN(offensiveSlowBleedingModifierChance);
     INTERN(offensiveSlowDefensiveReductionMin); INTERN(offensiveSlowDefensiveReductionDurationMin);
     INTERN(offensiveSlowAttackSpeedMin); INTERN(offensiveSlowAttackSpeedDurationMin);
@@ -359,6 +372,14 @@ void item_stats_init(void) {
     INTERN(retaliationSlowPoisonMin); INTERN(retaliationSlowPoisonDurationMin); INTERN(retaliationSlowPoisonChance);
     INTERN(retaliationSlowLifeMin); INTERN(retaliationSlowLifeDurationMin); INTERN(retaliationSlowLifeChance);
     INTERN(retaliationSlowBleedingMin); INTERN(retaliationSlowBleedingDurationMin); INTERN(retaliationSlowBleedingChance);
+    INTERN(offensivePhysicalModifier); INTERN(offensivePhysicalModifierChance);
+    INTERN(offensiveFireModifier); INTERN(offensiveFireModifierChance);
+    INTERN(offensiveColdModifier); INTERN(offensiveColdModifierChance);
+    INTERN(offensiveLightningModifier); INTERN(offensiveLightningModifierChance);
+    INTERN(offensivePoisonModifier); INTERN(offensivePoisonModifierChance);
+    INTERN(offensiveLifeModifier); INTERN(offensiveLifeModifierChance);
+    INTERN(offensivePierceModifier); INTERN(offensivePierceModifierChance);
+    INTERN(offensiveElementalModifier); INTERN(offensiveElementalModifierChance);
     INTERN(offensiveTotalDamageModifier); INTERN(offensiveTotalDamageModifierChance);
     INTERN(defensivePhysical); INTERN(defensivePhysicalChance);
     INTERN(defensiveFire); INTERN(defensiveFireChance);
@@ -798,107 +819,38 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         }
     }
 
-    /* DoT: burn (fire) */
+    /* DoT: all damage-over-time types with optional chance */
     {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowFireMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowFireMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowFireDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Burn Damage over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Burn Damage over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: electrical burn (lightning) */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowLightningMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowLightningMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowLightningDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Electrical Burn Damage over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Electrical Burn Damage over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: frostburn (cold) */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowColdMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowColdMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowColdDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Frostburn Damage over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Frostburn Damage over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: poison */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowPoisonMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowPoisonMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowPoisonDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Poison Damage over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Poison Damage over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: life leech */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowLifeLeachMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowLifeLeachMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowLifeLeachDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Life Leech over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Life Leech over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: vitality decay */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowLifeMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowLifeMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowLifeDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Vitality Decay over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Vitality Decay over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: energy leech */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowManaLeachMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowManaLeachMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowManaLeachDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Energy Leech over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Energy Leech over %.1f Seconds</span>\n", color, mn * dur, dur);
-        }
-    }
-
-    /* DoT: bleeding */
-    {
-        float mn = dbr_get_float_fast(data, INT_offensiveSlowBleedingMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensiveSlowBleedingMax, shard_index);
-        float dur = dbr_get_float_fast(data, INT_offensiveSlowBleedingDurationMin, shard_index);
-        if (mn > 0 && dur > 0) {
-            if (mx > mn)
-                buf_write(w, "<span color='%s'>%.0f - %.0f Bleeding Damage over %.1f Seconds</span>\n", color, mn * dur, mx * dur, dur);
-            else
-                buf_write(w, "<span color='%s'>%.0f Bleeding Damage over %.1f Seconds</span>\n", color, mn * dur, dur);
+        static struct { const char **min_int; const char **max_int; const char **dur_int; const char **chance_int; const char *label; } dot_types[] = {
+            {&INT_offensiveSlowFireMin,      &INT_offensiveSlowFireMax,      &INT_offensiveSlowFireDurationMin,      &INT_offensiveSlowFireChance,      "Burn Damage"},
+            {&INT_offensiveSlowLightningMin, &INT_offensiveSlowLightningMax, &INT_offensiveSlowLightningDurationMin, &INT_offensiveSlowLightningChance, "Electrical Burn Damage"},
+            {&INT_offensiveSlowColdMin,      &INT_offensiveSlowColdMax,      &INT_offensiveSlowColdDurationMin,      &INT_offensiveSlowColdChance,      "Frostburn Damage"},
+            {&INT_offensiveSlowPoisonMin,    &INT_offensiveSlowPoisonMax,    &INT_offensiveSlowPoisonDurationMin,    &INT_offensiveSlowPoisonChance,    "Poison Damage"},
+            {&INT_offensiveSlowLifeLeachMin, &INT_offensiveSlowLifeLeachMax, &INT_offensiveSlowLifeLeachDurationMin, &INT_offensiveSlowLifeLeachChance, "Life Leech"},
+            {&INT_offensiveSlowLifeMin,      &INT_offensiveSlowLifeMax,      &INT_offensiveSlowLifeDurationMin,      &INT_offensiveSlowLifeChance,      "Vitality Decay"},
+            {&INT_offensiveSlowManaLeachMin, &INT_offensiveSlowManaLeachMax, &INT_offensiveSlowManaLeachDurationMin, &INT_offensiveSlowManaLeachChance, "Energy Leech"},
+            {&INT_offensiveSlowBleedingMin,  &INT_offensiveSlowBleedingMax,  &INT_offensiveSlowBleedingDurationMin,  &INT_offensiveSlowBleedingChance,  "Bleeding Damage"},
+            {NULL, NULL, NULL, NULL, NULL}
+        };
+        for (int d = 0; dot_types[d].min_int; d++) {
+            float mn = dbr_get_float_fast(data, *dot_types[d].min_int, shard_index);
+            float mx = dbr_get_float_fast(data, *dot_types[d].max_int, shard_index);
+            float dur = dbr_get_float_fast(data, *dot_types[d].dur_int, shard_index);
+            if (mn > 0 && dur > 0) {
+                float chance = dbr_get_float_fast(data, *dot_types[d].chance_int, shard_index);
+                const char *lbl = dot_types[d].label;
+                if (chance > 0) {
+                    if (mx > mn)
+                        buf_write(w, "<span color='%s'>%.1f%% Chance of %.0f - %.0f %s over %.1f Seconds</span>\n", color, chance, mn * dur, mx * dur, lbl, dur);
+                    else
+                        buf_write(w, "<span color='%s'>%.1f%% Chance of %.0f %s over %.1f Seconds</span>\n", color, chance, mn * dur, lbl, dur);
+                } else {
+                    if (mx > mn)
+                        buf_write(w, "<span color='%s'>%.0f - %.0f %s over %.1f Seconds</span>\n", color, mn * dur, mx * dur, lbl, dur);
+                    else
+                        buf_write(w, "<span color='%s'>%.0f %s over %.1f Seconds</span>\n", color, mn * dur, lbl, dur);
+                }
+            }
         }
     }
 
@@ -1084,15 +1036,27 @@ static void add_stats_from_record(const char *record_path, TQTranslation *tr, Bu
         buf_write(w, "<span color='%s'>%s</span>\n", color, line);
     }
 
-    /* Offensive total damage modifier (may have chance) */
+    /* Offensive damage modifiers (may have chance) */
     {
-        float tdm = dbr_get_float_fast(data, INT_offensiveTotalDamageModifier, shard_index);
-        if (fabs(tdm) > 0.001f) {
-            float tdm_chance = dbr_get_float_fast(data, INT_offensiveTotalDamageModifierChance, shard_index);
-            if (tdm_chance > 0 && tdm_chance < 100)
-                buf_write(w, "<span color='%s'>%.0f%% Chance of +%d%% Total Damage</span>\n", color, tdm_chance, (int)round(tdm));
+        static const struct { const char **val; const char **chance; const char *label; } off_mod_defs[] = {
+            {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage"},
+            {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage"},
+            {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage"},
+            {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage"},
+            {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage"},
+            {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage"},
+            {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage"},
+            {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damage"},
+            {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage"},
+        };
+        for (int mi = 0; mi < (int)(sizeof off_mod_defs / sizeof off_mod_defs[0]); mi++) {
+            float mv = dbr_get_float_fast(data, *off_mod_defs[mi].val, shard_index);
+            if (fabs(mv) < 0.001f) continue;
+            float mc = dbr_get_float_fast(data, *off_mod_defs[mi].chance, shard_index);
+            if (mc > 0 && mc < 100)
+                buf_write(w, "<span color='%s'>%.0f%% Chance of +%d%% %s</span>\n", color, mc, (int)round(mv), off_mod_defs[mi].label);
             else
-                buf_write(w, "<span color='%s'>+%d%% Total Damage</span>\n", color, (int)round(tdm));
+                buf_write(w, "<span color='%s'>+%d%% %s</span>\n", color, (int)round(mv), off_mod_defs[mi].label);
         }
     }
 

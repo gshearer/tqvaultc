@@ -1,29 +1,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/stat.h>
-#include <errno.h>
 #include <gtk/gtk.h>
 #include "arc.h"
 #include "texture.h"
 
 static void make_path(const char *path) {
-    char tmp[1024];
-    char *p = NULL;
-    size_t len;
-
-    snprintf(tmp, sizeof(tmp), "%s", path);
-    len = strlen(tmp);
-    if (tmp[len - 1] == '/')
-        tmp[len - 1] = 0;
-    for (p = tmp + 1; *p; p++) {
-        if (*p == '/') {
-            *p = 0;
-            mkdir(tmp, S_IRWXU);
-            *p = '/';
-        }
-    }
-    mkdir(tmp, S_IRWXU);
+    g_mkdir_with_parents(path, 0755);
 }
 
 static char* normalize_to_forward_slashes(const char *path) {
@@ -52,7 +35,7 @@ int main(int argc, char *argv[]) {
         return 1;
     }
 
-    mkdir(out_base, S_IRWXU);
+    g_mkdir_with_parents(out_base, 0755);
 
     for (uint32_t i = 0; i < arc->num_files; i++) {
         const char *entry_path = arc->entries[i].path;

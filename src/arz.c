@@ -1,13 +1,10 @@
 #include "arz.h"
+#include "platform_mmap.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 #include <zlib.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
 
 /* ── string intern table ─────────────────────────────────────────── */
 
@@ -90,26 +87,20 @@ static char* read_string_prefixed(const uint8_t *data, size_t offset, size_t *ne
 }
 
 TQArzFile* arz_load(const char *filepath) {
-    int fd = open(filepath, O_RDONLY);
-    if (fd < 0) return NULL;
-
-    struct stat st;
-    if (fstat(fd, &st) < 0) { close(fd); return NULL; }
-
-    uint8_t *data = mmap(NULL, st.st_size, PROT_READ, MAP_SHARED, fd, 0);
-    if (data == MAP_FAILED) { close(fd); return NULL; }
-    close(fd);
+    size_t file_size = 0;
+    uint8_t *data = platform_mmap_readonly(filepath, &file_size);
+    if (!data) return NULL;
 
     uint32_t magic = read_u32(data, 0);
     if (magic != 0x0052415a && magic != 0x00030004) {
-        munmap(data, st.st_size);
+        platform_munmap(data, file_size);
         return NULL;
     }
 
     TQArzFile *arz = calloc(1, sizeof(TQArzFile));
     arz->filepath = strdup(filepath);
     arz->raw_data = data;
-    arz->data_size = st.st_size;
+    arz->data_size = file_size;
 
     uint32_t record_start = read_u32(data, 4);
     uint32_t record_count = read_u32(data, 12);
@@ -299,7 +290,7 @@ void arz_record_data_free(TQArzRecordData *data) {
 void arz_free(TQArzFile *arz) {
     if (!arz) return;
     free(arz->filepath);
-    if (arz->raw_data) munmap(arz->raw_data, arz->data_size);
+    if (arz->raw_data) platform_munmap(arz->raw_data, arz->data_size);
     if (arz->string_table) {
         for (uint32_t i = 0; i < arz->num_strings; i++) free(arz->string_table[i]);
         free(arz->string_table);

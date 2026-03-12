@@ -4,7 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <unistd.h>
+#include <glib.h>
 
 /* String-valued keys that reach the default handler (not explicitly parsed).
  * Used to fix Bug 1: the old heuristic misinterpreted small integer values
@@ -779,7 +779,7 @@ int character_save_stats(TQCharacter *character) {
     /* Create backup on first save */
     char bak_path[1024];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", character->filepath);
-    if (access(bak_path, F_OK) != 0) {
+    if (!g_file_test(bak_path, G_FILE_TEST_EXISTS)) {
         FILE *bak = fopen(bak_path, "wb");
         if (bak) {
             fwrite(character->raw_data, 1, character->data_size, bak);
@@ -819,7 +819,7 @@ int character_save_skills(TQCharacter *character) {
     /* Create backup on first save */
     char bak_path[1024];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", character->filepath);
-    if (access(bak_path, F_OK) != 0) {
+    if (!g_file_test(bak_path, G_FILE_TEST_EXISTS)) {
         FILE *bak = fopen(bak_path, "wb");
         if (bak) {
             fwrite(character->raw_data, 1, character->data_size, bak);
@@ -867,7 +867,7 @@ int character_save(TQCharacter *character, const char *filepath) {
     /* Create backup on first save */
     char bak_path[1024];
     snprintf(bak_path, sizeof(bak_path), "%s.bak", filepath);
-    if (access(bak_path, F_OK) != 0) {
+    if (!g_file_test(bak_path, G_FILE_TEST_EXISTS)) {
         FILE *bak = fopen(bak_path, "wb");
         if (bak) {
             fwrite(character->raw_data, 1, character->data_size, bak);

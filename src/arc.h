@@ -24,6 +24,8 @@ typedef struct {
     TQArcEntry *entries;
     uint32_t num_parts;
     TQArcPart *parts;
+    uint8_t *raw_data;    /* mmap'd file data (or NULL) */
+    size_t data_size;     /* size of mmap'd region */
 } TQArcFile;
 
 TQArcFile* arc_load(const char *filepath);

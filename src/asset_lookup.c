@@ -1,14 +1,10 @@
 #include "asset_lookup.h"
+#include "platform_mmap.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <zlib.h>
 #include <glib.h>
-#include <sys/mman.h>
-#include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
-#include <dirent.h>
 
 static char *g_game_path = NULL;
 static TQArzFile **g_arz_cache = NULL;
@@ -190,43 +186,40 @@ static void builder_process_arc(IndexBuilder *b, const char *path, const char *r
 }
 
 static void builder_scan_dir(IndexBuilder *b, const char *base_path, const char *sub_path) {
-    char full_dir[1024];
-    snprintf(full_dir, sizeof(full_dir), "%s/%s", base_path, sub_path);
-    DIR *d = opendir(full_dir);
-    if (!d) return;
+    char *full_dir = g_build_filename(base_path, sub_path, NULL);
+    GDir *d = g_dir_open(full_dir, 0, NULL);
+    if (!d) { g_free(full_dir); return; }
 
-    struct dirent *dir;
-    while ((dir = readdir(d)) != NULL) {
-        if (dir->d_name[0] == '.') continue;
-        char full_path[1024];
-        snprintf(full_path, sizeof(full_path), "%s/%s", full_dir, dir->d_name);
-        
-        struct stat st;
-        if (stat(full_path, &st) == 0) {
-            if (S_ISDIR(st.st_mode)) {
-                char next_sub[1024];
-                snprintf(next_sub, sizeof(next_sub), "%s/%s", sub_path, dir->d_name);
-                builder_scan_dir(b, base_path, next_sub);
-            } else {
-                const char *ext = strrchr(dir->d_name, '.');
-                if (ext && (strcasecmp(ext, ".arz") == 0 || strcasecmp(ext, ".arc") == 0)) {
-                    if (b->num_files >= b->max_files) {
-                        b->max_files *= 2;
-                        b->files = realloc(b->files, b->max_files * sizeof(BuildGameFile));
-                    }
-                    char rel_path[1024];
-                    snprintf(rel_path, sizeof(rel_path), "%s/%s", sub_path, dir->d_name);
-                    b->files[b->num_files].path = strdup(rel_path);
-                    
-                    if (strcasecmp(ext, ".arz") == 0) builder_process_arz(b, full_path, b->num_files);
-                    else builder_process_arc(b, full_path, rel_path, b->num_files);
-                    
-                    b->num_files++;
+    const gchar *name;
+    while ((name = g_dir_read_name(d)) != NULL) {
+        if (name[0] == '.') continue;
+        char *full_path = g_build_filename(full_dir, name, NULL);
+
+        if (g_file_test(full_path, G_FILE_TEST_IS_DIR)) {
+            char *next_sub = g_build_filename(sub_path, name, NULL);
+            builder_scan_dir(b, base_path, next_sub);
+            g_free(next_sub);
+        } else {
+            const char *ext = strrchr(name, '.');
+            if (ext && (strcasecmp(ext, ".arz") == 0 || strcasecmp(ext, ".arc") == 0)) {
+                if (b->num_files >= b->max_files) {
+                    b->max_files *= 2;
+                    b->files = realloc(b->files, b->max_files * sizeof(BuildGameFile));
                 }
+                char *rel_path = g_build_filename(sub_path, name, NULL);
+                b->files[b->num_files].path = strdup(rel_path);
+
+                if (strcasecmp(ext, ".arz") == 0) builder_process_arz(b, full_path, b->num_files);
+                else builder_process_arc(b, full_path, rel_path, b->num_files);
+
+                g_free(rel_path);
+                b->num_files++;
             }
         }
+        g_free(full_path);
     }
-    closedir(d);
+    g_dir_close(d);
+    g_free(full_dir);
 }
 
 static void asset_index_build(const char *game_path, const char *index_path) {
@@ -281,23 +274,12 @@ static void asset_index_build(const char *game_path, const char *index_path) {
 }
 
 static bool asset_index_load(const char *index_path) {
-    int fd = open(index_path, O_RDONLY);
-    if (fd < 0) return false;
-
-    struct stat st;
-    if (fstat(fd, &st) < 0) { close(fd); return false; }
-    g_index_size = st.st_size;
-
-    g_index_mmap = mmap(NULL, g_index_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    close(fd);
-
-    if (g_index_mmap == MAP_FAILED) {
-        g_index_mmap = NULL; return false;
-    }
+    g_index_mmap = platform_mmap_readonly(index_path, &g_index_size);
+    if (!g_index_mmap) return false;
 
     g_index_header = (TQIndexHeader*)g_index_mmap;
     if (memcmp(g_index_header->magic, "TQVI", 4) != 0 || g_index_header->version != 1) {
-        munmap(g_index_mmap, g_index_size);
+        platform_munmap(g_index_mmap, g_index_size);
         g_index_mmap = NULL; return false;
     }
 
@@ -317,18 +299,18 @@ static bool asset_index_load(const char *index_path) {
 
 void asset_manager_init(const char *game_path) {
     g_game_path = strdup(game_path);
-    
-    char index_path[1024];
-    const char *cache_dir = g_get_user_cache_dir();
-    snprintf(index_path, sizeof(index_path), "%s/tqvaultc", cache_dir);
-    g_mkdir_with_parents(index_path, 0755);
-    strcat(index_path, "/tqvc-resource-index.bin");
+
+    char *cache_subdir = g_build_filename(g_get_user_cache_dir(), "tqvaultc", NULL);
+    g_mkdir_with_parents(cache_subdir, 0755);
+    char *index_path = g_build_filename(cache_subdir, "tqvc-resource-index.bin", NULL);
+    g_free(cache_subdir);
 
     if (!asset_index_load(index_path)) {
         asset_index_build(game_path, index_path);
         asset_index_load(index_path);
     }
-    
+    g_free(index_path);
+
     g_arz_cache = calloc((size_t)g_num_files, sizeof(TQArzFile*));
     g_arc_cache = calloc((size_t)g_num_files, sizeof(TQArcFile*));
     g_dbr_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, (GDestroyNotify)arz_record_data_free);
@@ -346,20 +328,20 @@ void asset_manager_init(const char *game_path) {
 TQArzFile* asset_get_arz(uint16_t file_id) {
     if (file_id >= g_num_files) return NULL;
     if (g_arz_cache[file_id]) return g_arz_cache[file_id];
-    
-    char full_path[1024];
-    snprintf(full_path, sizeof(full_path), "%s/%s", g_game_path, g_game_files[file_id]);
+
+    char *full_path = g_build_filename(g_game_path, g_game_files[file_id], NULL);
     g_arz_cache[file_id] = arz_load(full_path);
+    g_free(full_path);
     return g_arz_cache[file_id];
 }
 
 TQArcFile* asset_get_arc(uint16_t file_id) {
     if (file_id >= g_num_files) return NULL;
     if (g_arc_cache[file_id]) return g_arc_cache[file_id];
-    
-    char full_path[1024];
-    snprintf(full_path, sizeof(full_path), "%s/%s", g_game_path, g_game_files[file_id]);
+
+    char *full_path = g_build_filename(g_game_path, g_game_files[file_id], NULL);
     g_arc_cache[file_id] = arc_load(full_path);
+    g_free(full_path);
     return g_arc_cache[file_id];
 }
 
@@ -425,7 +407,7 @@ void asset_manager_free(void) {
     free(g_arc_cache);
     free(g_game_path);
     if (g_game_files) free(g_game_files);
-    if (g_index_mmap) munmap(g_index_mmap, g_index_size);
+    if (g_index_mmap) platform_munmap(g_index_mmap, g_index_size);
 }
 
 const TQAssetEntry* asset_lookup(const char *path) {

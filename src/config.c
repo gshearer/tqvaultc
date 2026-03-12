@@ -3,9 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <sys/stat.h>
-#include <dirent.h>
+#include <glib.h>
 
 #define CONFIG_FILENAME "tqvc-config.json"
 
@@ -65,72 +63,86 @@ void config_init(const char *override_path) {
     }
 
     // Try current folder
-    if (access(CONFIG_FILENAME, F_OK) == 0) {
+    if (g_file_test(CONFIG_FILENAME, G_FILE_TEST_EXISTS)) {
         load_from_file(CONFIG_FILENAME);
         if (global_config.config_path) return;
     }
 
-    // Try XDG_CONFIG_HOME
-    char path[1024];
-    const char *xdg_config = getenv("XDG_CONFIG_HOME");
-    if (xdg_config) {
-        snprintf(path, sizeof(path), "%s/tqvaultc/%s", xdg_config, CONFIG_FILENAME);
-    } else {
-        const char *home = getenv("HOME");
-        if (home) {
-            snprintf(path, sizeof(path), "%s/.config/tqvaultc/%s", home, CONFIG_FILENAME);
-        } else {
-            return;
-        }
-    }
+    // Try user config dir (XDG_CONFIG_HOME on Linux, %APPDATA% on Windows)
+    char *path = g_build_filename(g_get_user_config_dir(), "tqvaultc", CONFIG_FILENAME, NULL);
 
-    if (access(path, F_OK) == 0) {
+    if (g_file_test(path, G_FILE_TEST_EXISTS)) {
         load_from_file(path);
+        g_free(path);
     } else {
         // If not found, set default save path for later
-        global_config.config_path = strdup(path);
+        global_config.config_path = g_strdup(path);
+        g_free(path);
         g_first_run = true;
     }
 
-    // Set default game folder if not loaded
+#ifdef _WIN32
+    // Set default game folder if not loaded (Windows Steam path)
     if (!global_config.game_folder) {
-        const char *home = getenv("HOME");
+        char *default_game_path = g_build_filename(
+            "C:\\Program Files (x86)", "Steam", "steamapps", "common",
+            "Titan Quest Anniversary Edition", NULL);
+        if (g_file_test(default_game_path, G_FILE_TEST_IS_DIR))
+            global_config.game_folder = default_game_path;
+        else
+            g_free(default_game_path);
+    }
+
+    // Set default save folder if not loaded (Windows save path)
+    if (!global_config.save_folder) {
+        const char *userprofile = g_get_home_dir();
+        if (userprofile) {
+            char *save_path = g_build_filename(userprofile, "Documents",
+                "My Games", "Titan Quest - Immortal Throne", NULL);
+            if (g_file_test(save_path, G_FILE_TEST_IS_DIR))
+                global_config.save_folder = save_path;
+            else
+                g_free(save_path);
+        }
+    }
+#else
+    // Set default game folder if not loaded (Linux Steam path)
+    if (!global_config.game_folder) {
+        const char *home = g_get_home_dir();
         if (home) {
-            char default_game_path[1024];
-            snprintf(default_game_path, sizeof(default_game_path),
-                     "%s/.local/share/Steam/steamapps/common/Titan Quest Anniversary Edition", home);
-            global_config.game_folder = strdup(default_game_path);
+            char *default_game_path = g_build_filename(home,
+                ".local", "share", "Steam", "steamapps", "common",
+                "Titan Quest Anniversary Edition", NULL);
+            global_config.game_folder = default_game_path;
         }
     }
 
     // Set default save folder if not loaded — scan compatdata for the TQ save dir
     if (!global_config.save_folder) {
-        const char *home = getenv("HOME");
+        const char *home = g_get_home_dir();
         if (home) {
-            char compat_base[1024];
-            snprintf(compat_base, sizeof(compat_base),
-                     "%s/.local/share/Steam/steamapps/compatdata", home);
-            static const char *tq_suffix =
-                "/pfx/drive_c/users/steamuser/Documents/My Games"
-                "/Titan Quest - Immortal Throne";
-            DIR *dp = opendir(compat_base);
+            char *compat_base = g_build_filename(home,
+                ".local", "share", "Steam", "steamapps", "compatdata", NULL);
+            GDir *dp = g_dir_open(compat_base, 0, NULL);
             if (dp) {
-                struct dirent *ent;
-                while ((ent = readdir(dp)) != NULL) {
-                    if (ent->d_name[0] == '.') continue;
-                    char candidate[2048];
-                    snprintf(candidate, sizeof(candidate), "%s/%s%s",
-                             compat_base, ent->d_name, tq_suffix);
-                    struct stat st;
-                    if (stat(candidate, &st) == 0 && S_ISDIR(st.st_mode)) {
-                        global_config.save_folder = strdup(candidate);
+                const gchar *ent_name;
+                while ((ent_name = g_dir_read_name(dp)) != NULL) {
+                    if (ent_name[0] == '.') continue;
+                    char *candidate = g_build_filename(compat_base, ent_name,
+                        "pfx", "drive_c", "users", "steamuser", "Documents",
+                        "My Games", "Titan Quest - Immortal Throne", NULL);
+                    if (g_file_test(candidate, G_FILE_TEST_IS_DIR)) {
+                        global_config.save_folder = candidate;
                         break;
                     }
+                    g_free(candidate);
                 }
-                closedir(dp);
+                g_dir_close(dp);
             }
+            g_free(compat_base);
         }
     }
+#endif
 }
 
 void config_set_save_folder(const char *path) {
@@ -161,18 +173,13 @@ bool config_is_first_run(void) {
     return g_first_run;
 }
 
-bool config_save() {
+bool config_save(void) {
     if (!global_config.config_path) return false;
 
     // Ensure directory exists
-    char *dir_path = strdup(global_config.config_path);
-    char *last_slash = strrchr(dir_path, '/');
-    if (last_slash) {
-        *last_slash = '\0';
-        // Simple mkdir -p equivalent for one level
-        mkdir(dir_path, 0755);
-    }
-    free(dir_path);
+    char *dir_path = g_path_get_dirname(global_config.config_path);
+    g_mkdir_with_parents(dir_path, 0755);
+    g_free(dir_path);
 
     struct json_object *root = json_object_new_object();
     json_object_object_add(root, "save_folder", json_object_new_string(global_config.save_folder ? global_config.save_folder : ""));
@@ -194,7 +201,7 @@ bool config_save() {
     return true;
 }
 
-void config_free() {
+void config_free(void) {
     free(global_config.save_folder);
     free(global_config.game_folder);
     free(global_config.last_character_path);

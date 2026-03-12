@@ -12,79 +12,58 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
-#include <fcntl.h>
-#include <errno.h>
+#include <glib/gstdio.h>
 
 /* ── Directory copy helper ──────────────────────────────────────────────── */
 static int copy_directory_recursive(const char *src, const char *dst) {
-    struct stat st;
-    if (stat(src, &st) != 0) return -1;
-    if (mkdir(dst, st.st_mode) != 0 && errno != EEXIST) return -1;
+    if (!g_file_test(src, G_FILE_TEST_IS_DIR)) return -1;
+    if (g_mkdir_with_parents(dst, 0755) != 0) return -1;
 
-    DIR *d = opendir(src);
+    GDir *d = g_dir_open(src, 0, NULL);
     if (!d) return -1;
 
-    struct dirent *ent;
-    char src_path[1024], dst_path[1024];
     int ret = 0;
+    const gchar *name;
+    while ((name = g_dir_read_name(d)) != NULL) {
+        char *src_path = g_build_filename(src, name, NULL);
+        char *dst_path = g_build_filename(dst, name, NULL);
 
-    while ((ent = readdir(d)) != NULL) {
-        if (strcmp(ent->d_name, ".") == 0 || strcmp(ent->d_name, "..") == 0)
-            continue;
-        snprintf(src_path, sizeof(src_path), "%s/%s", src, ent->d_name);
-        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst, ent->d_name);
-
-        if (stat(src_path, &st) != 0) { ret = -1; break; }
-
-        if (S_ISDIR(st.st_mode)) {
-            if (copy_directory_recursive(src_path, dst_path) != 0) { ret = -1; break; }
+        if (g_file_test(src_path, G_FILE_TEST_IS_DIR)) {
+            if (copy_directory_recursive(src_path, dst_path) != 0) ret = -1;
         } else {
-            int fd_in = open(src_path, O_RDONLY);
-            if (fd_in < 0) { ret = -1; break; }
-            int fd_out = open(dst_path, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode);
-            if (fd_out < 0) { close(fd_in); ret = -1; break; }
-            char buf[8192];
-            ssize_t n;
-            while ((n = read(fd_in, buf, sizeof(buf))) > 0) {
-                ssize_t written = 0;
-                while (written < n) {
-                    ssize_t w = write(fd_out, buf + written, n - written);
-                    if (w <= 0) { ret = -1; break; }
-                    written += w;
-                }
-                if (ret != 0) break;
+            gchar *contents = NULL;
+            gsize length = 0;
+            if (g_file_get_contents(src_path, &contents, &length, NULL)) {
+                if (!g_file_set_contents(dst_path, contents, (gssize)length, NULL))
+                    ret = -1;
+                g_free(contents);
+            } else {
+                ret = -1;
             }
-            if (n < 0) ret = -1;
-            close(fd_in);
-            close(fd_out);
-            if (ret != 0) break;
         }
+        g_free(src_path);
+        g_free(dst_path);
+        if (ret != 0) break;
     }
-    closedir(d);
+    g_dir_close(d);
     return ret;
 }
 
 /* ── Recursive directory removal helper ─────────────────────────────────── */
 static int remove_directory_recursive(const char *path) {
-    DIR *d = opendir(path);
+    GDir *d = g_dir_open(path, 0, NULL);
     if (!d) return -1;
-    struct dirent *dir;
-    while ((dir = readdir(d)) != NULL) {
-        if (strcmp(dir->d_name, ".") == 0 || strcmp(dir->d_name, "..") == 0) continue;
-        char child[1024];
-        snprintf(child, sizeof(child), "%s/%s", path, dir->d_name);
-        struct stat st;
-        if (stat(child, &st) != 0) continue;
-        if (S_ISDIR(st.st_mode))
+    const gchar *name;
+    while ((name = g_dir_read_name(d)) != NULL) {
+        char *child = g_build_filename(path, name, NULL);
+        if (g_file_test(child, G_FILE_TEST_IS_DIR))
             remove_directory_recursive(child);
         else
-            unlink(child);
+            g_unlink(child);
+        g_free(child);
     }
-    closedir(d);
-    return rmdir(path);
+    g_dir_close(d);
+    return g_rmdir(path);
 }
 
 /* ── Name validation helper ────────────────────────────────────────────── */
@@ -220,8 +199,7 @@ static void on_new_vault_ok(GtkButton *btn, gpointer user_data) {
     snprintf(filepath, sizeof(filepath), "%s/TQVaultData/%s.vault.json",
              global_config.save_folder, text);
 
-    struct stat st;
-    if (stat(filepath, &st) == 0) {
+    if (g_file_test(filepath, G_FILE_TEST_EXISTS)) {
         GtkWidget *err = gtk_window_new();
         gtk_window_set_title(GTK_WINDOW(err), "Error");
         gtk_window_set_transient_for(GTK_WINDOW(err), GTK_WINDOW(nw->dialog));
@@ -338,8 +316,7 @@ static void on_duplicate_ok(GtkButton *btn, gpointer user_data) {
     snprintf(target, sizeof(target), "%s/SaveData/Main/%s",
              global_config.save_folder, new_dir);
 
-    struct stat st;
-    if (stat(target, &st) == 0) {
+    if (g_file_test(target, G_FILE_TEST_EXISTS)) {
         /* Target already exists */
         GtkWidget *err = gtk_window_new();
         gtk_window_set_title(GTK_WINDOW(err), "Error");
@@ -454,8 +431,7 @@ static void on_dup_vault_ok(GtkButton *btn, gpointer user_data) {
     snprintf(filepath, sizeof(filepath), "%s/TQVaultData/%s.vault.json",
              global_config.save_folder, text);
 
-    struct stat st;
-    if (stat(filepath, &st) == 0) {
+    if (g_file_test(filepath, G_FILE_TEST_EXISTS)) {
         show_validation_error(nw->dialog, "A vault with that name already exists.");
         return;
     }
@@ -582,8 +558,7 @@ static void on_rename_vault_ok(GtkButton *btn, gpointer user_data) {
              global_config.save_folder, cur);
     g_free(cur);
 
-    struct stat st;
-    if (stat(newpath, &st) == 0) {
+    if (g_file_test(newpath, G_FILE_TEST_EXISTS)) {
         show_validation_error(nw->dialog, "A vault with that name already exists.");
         return;
     }
@@ -672,7 +647,7 @@ static void on_delete_vault_yes(GtkButton *btn, gpointer user_data) {
     snprintf(filepath, sizeof(filepath), "%s/TQVaultData/%s.vault.json",
              global_config.save_folder, dvw->vault_name);
 
-    if (unlink(filepath) != 0) {
+    if (g_unlink(filepath) != 0) {
         fprintf(stderr, "Failed to delete vault: %s\n", filepath);
     }
 
@@ -788,8 +763,7 @@ static void on_rename_char_ok(GtkButton *btn, gpointer user_data) {
              global_config.save_folder, cur);
     g_free(cur);
 
-    struct stat st;
-    if (stat(target, &st) == 0) {
+    if (g_file_test(target, G_FILE_TEST_EXISTS)) {
         show_validation_error(dw->dialog, "A character with that name already exists.");
         return;
     }

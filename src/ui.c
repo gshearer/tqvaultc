@@ -14,9 +14,6 @@
 #include <string.h>
 #include <strings.h>
 #include <ctype.h>
-#include <dirent.h>
-#include <sys/stat.h>
-#include <unistd.h>
 
 GdkPixbuf* load_item_texture(AppWidgets *widgets, const char *base_name, uint32_t var1) {
     if (!base_name) return NULL;
@@ -525,17 +522,17 @@ void repopulate_character_combo(AppWidgets *widgets, const char *select_name) {
     guint old_n = g_list_model_get_n_items(G_LIST_MODEL(sl));
     gtk_string_list_splice(sl, 0, old_n, NULL);
 
-    char main_path[1024];
-    snprintf(main_path, sizeof(main_path), "%s/SaveData/Main", global_config.save_folder);
-    DIR *d = opendir(main_path);
+    char *main_path = g_build_filename(global_config.save_folder, "SaveData", "Main", NULL);
+    GDir *d = g_dir_open(main_path, 0, NULL);
+    g_free(main_path);
     if (!d) { g_signal_handler_unblock(widgets->character_combo, widgets->char_combo_handler); return; }
 
-    struct dirent *dir;
-    while ((dir = readdir(d)) != NULL) {
-        if (dir->d_name[0] != '_') continue;
-        gtk_string_list_append(sl, dir->d_name);
+    const gchar *name;
+    while ((name = g_dir_read_name(d)) != NULL) {
+        if (name[0] != '_') continue;
+        gtk_string_list_append(sl, name);
     }
-    closedir(d);
+    g_dir_close(d);
 
     guint active_idx = 0;
     const char *target = select_name ? select_name : global_config.last_character_path;
@@ -570,32 +567,31 @@ void repopulate_vault_combo(AppWidgets *widgets, const char *select_name) {
     guint old_n = g_list_model_get_n_items(G_LIST_MODEL(sl));
     gtk_string_list_splice(sl, 0, old_n, NULL);
 
-    char vault_path[1024];
-    snprintf(vault_path, sizeof(vault_path), "%s/TQVaultData", global_config.save_folder);
-    DIR *d = opendir(vault_path);
+    char *vault_path = g_build_filename(global_config.save_folder, "TQVaultData", NULL);
+    GDir *d = g_dir_open(vault_path, 0, NULL);
+    g_free(vault_path);
     if (!d) { g_signal_handler_unblock(widgets->vault_combo, widgets->vault_combo_handler); return; }
 
-    struct dirent *dir;
+    const gchar *dir_name;
     char **vault_names = NULL;
     int vault_count = 0, vault_cap = 0;
     const char *suffix = ".vault.json";
     size_t suffix_len = strlen(suffix);
-    while ((dir = readdir(d)) != NULL) {
-        if (dir->d_name[0] == '.') continue;
-        size_t name_len = strlen(dir->d_name);
+    while ((dir_name = g_dir_read_name(d)) != NULL) {
+        size_t name_len = strlen(dir_name);
         if (name_len > suffix_len &&
-            strcmp(dir->d_name + name_len - suffix_len, suffix) == 0) {
+            strcmp(dir_name + name_len - suffix_len, suffix) == 0) {
             size_t base_len = name_len - suffix_len;
             if (base_len > 255) base_len = 255;
             if (vault_count >= vault_cap) {
                 vault_cap = vault_cap ? vault_cap * 2 : 16;
                 vault_names = realloc(vault_names, (size_t)vault_cap * sizeof(char *));
             }
-            vault_names[vault_count] = strndup(dir->d_name, base_len);
+            vault_names[vault_count] = strndup(dir_name, base_len);
             vault_count++;
         }
     }
-    closedir(d);
+    g_dir_close(d);
     qsort(vault_names, (size_t)vault_count, sizeof(char *), compare_strings);
     for (int i = 0; i < vault_count; i++) {
         gtk_string_list_append(sl, vault_names[i]);
@@ -693,19 +689,11 @@ static void on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_
             if (widgets->current_character && widgets->current_character->filepath) {
                 const char *fp = widgets->current_character->filepath;
                 /* filepath is .../SaveData/Main/_CharName/Player.chr — extract _CharName */
-                const char *player = strrchr(fp, '/');
-                if (player) {
-                    char prev_name[256];
-                    size_t dir_len = (size_t)(player - fp);
-                    const char *dir_start = fp + dir_len;
-                    /* Walk back to find the preceding '/' */
-                    while (dir_start > fp && *(dir_start - 1) != '/') dir_start--;
-                    size_t nlen = (size_t)(player - dir_start);
-                    if (nlen >= sizeof(prev_name)) nlen = sizeof(prev_name) - 1;
-                    memcpy(prev_name, dir_start, nlen);
-                    prev_name[nlen] = '\0';
-                    dropdown_select_by_name(combo, prev_name);
-                }
+                char *dir_part = g_path_get_dirname(fp);
+                char *char_name = g_path_get_basename(dir_part);
+                dropdown_select_by_name(combo, char_name);
+                g_free(char_name);
+                g_free(dir_part);
             }
             g_signal_handler_unblock(combo, widgets->char_combo_handler);
             return;

@@ -17,10 +17,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
-#include <libgen.h>
-#include <dirent.h>
-#include <sys/stat.h>
+#include <glib.h>
 
 /* ── ByteBuf: growable byte buffer ────────────────────────────────────── */
 
@@ -249,31 +246,27 @@ char *quest_token_path(const char *char_filepath, QuestDifficulty diff) {
 
     /* char_filepath is e.g. .../SaveData/Main/_soothie/Player.chr
      * We need: .../SaveData/Main/_soothie/Levels_World_World01.map/{difficulty}/QuestToken.myw */
-    char *copy = strdup(char_filepath);
-    char *dir = dirname(copy);  /* .../SaveData/Main/_soothie */
-
-    char *path = malloc(strlen(dir) + 80);
-    sprintf(path, "%s/Levels_World_World01.map/%s/QuestToken.myw", dir, diff_dirs[diff]);
-    free(copy);
+    char *dir = g_path_get_dirname(char_filepath);
+    char *path = g_build_filename(dir, "Levels_World_World01.map",
+                                  diff_dirs[diff], "QuestToken.myw", NULL);
+    g_free(dir);
     return path;
 }
 
 char *quest_state_dir(const char *char_filepath, QuestDifficulty diff) {
     if (!char_filepath || diff < 0 || diff >= NUM_DIFFICULTIES) return NULL;
 
-    char *copy = strdup(char_filepath);
-    char *dir = dirname(copy);
-
-    char *path = malloc(strlen(dir) + 80);
-    sprintf(path, "%s/Levels_World_World01.map/%s", dir, diff_dirs[diff]);
-    free(copy);
+    char *dir = g_path_get_dirname(char_filepath);
+    char *path = g_build_filename(dir, "Levels_World_World01.map",
+                                  diff_dirs[diff], NULL);
+    g_free(dir);
     return path;
 }
 
 /* ── Backup helper ────────────────────────────────────────────────────── */
 
 int quest_backup_file(const char *filepath) {
-    if (access(filepath, F_OK) != 0)
+    if (!g_file_test(filepath, G_FILE_TEST_EXISTS))
         return 0;  /* nothing to backup */
 
     char bak[1024];
@@ -321,18 +314,17 @@ static int copy_file(const char *src_path, const char *dst_path) {
 /* ── Quest state file operations ──────────────────────────────────────── */
 
 int quest_que_clear_all(const char *quest_dir) {
-    DIR *d = opendir(quest_dir);
+    GDir *d = g_dir_open(quest_dir, 0, NULL);
     if (!d) return -1;
 
     int modified = 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t nlen = strlen(ent->d_name);
-        if (nlen < 5 || strcmp(ent->d_name + nlen - 4, ".que") != 0)
+    const gchar *ent_name;
+    while ((ent_name = g_dir_read_name(d)) != NULL) {
+        size_t nlen = strlen(ent_name);
+        if (nlen < 5 || strcmp(ent_name + nlen - 4, ".que") != 0)
             continue;
 
-        char filepath[1024];
-        snprintf(filepath, sizeof(filepath), "%s/%s", quest_dir, ent->d_name);
+        char *filepath = g_build_filename(quest_dir, ent_name, NULL);
 
         /* Read entire file */
         FILE *f = fopen(filepath, "rb");
@@ -389,14 +381,14 @@ int quest_que_clear_all(const char *quest_dir) {
             }
         }
         free(data);
+        g_free(filepath);
     }
-    closedir(d);
+    g_dir_close(d);
     return modified;
 }
 
 int quest_myw_clear(const char *quest_dir) {
-    char filepath[1024];
-    snprintf(filepath, sizeof(filepath), "%s/Quest.myw", quest_dir);
+    char *filepath = g_build_filename(quest_dir, "Quest.myw", NULL);
 
     quest_backup_file(filepath);
 
@@ -423,35 +415,37 @@ int quest_myw_clear(const char *quest_dir) {
     bb_write_u32(&bb, 0xDEADC0DE);
 
     FILE *f = fopen(filepath, "wb");
-    if (!f) { free(bb.data); return -1; }
+    if (!f) { free(bb.data); g_free(filepath); return -1; }
     size_t written = fwrite(bb.data, 1, bb.size, f);
     fclose(f);
     free(bb.data);
+    g_free(filepath);
 
     return (written == bb.size) ? 0 : -1;
 }
 
 int quest_copy_state_from(const char *src_dir, const char *dst_dir) {
-    DIR *d = opendir(src_dir);
+    GDir *d = g_dir_open(src_dir, 0, NULL);
     if (!d) return -1;
 
     int errors = 0;
-    struct dirent *ent;
-    while ((ent = readdir(d)) != NULL) {
-        size_t nlen = strlen(ent->d_name);
-        bool is_que = (nlen >= 5 && strcmp(ent->d_name + nlen - 4, ".que") == 0);
-        bool is_quest_myw = (strcmp(ent->d_name, "Quest.myw") == 0);
+    const gchar *ent_name;
+    while ((ent_name = g_dir_read_name(d)) != NULL) {
+        size_t nlen = strlen(ent_name);
+        bool is_que = (nlen >= 5 && strcmp(ent_name + nlen - 4, ".que") == 0);
+        bool is_quest_myw = (strcmp(ent_name, "Quest.myw") == 0);
         if (!is_que && !is_quest_myw) continue;
 
-        char src_path[1024], dst_path[1024];
-        snprintf(src_path, sizeof(src_path), "%s/%s", src_dir, ent->d_name);
-        snprintf(dst_path, sizeof(dst_path), "%s/%s", dst_dir, ent->d_name);
+        char *src_path = g_build_filename(src_dir, ent_name, NULL);
+        char *dst_path = g_build_filename(dst_dir, ent_name, NULL);
 
         quest_backup_file(dst_path);
         if (copy_file(src_path, dst_path) != 0)
             errors++;
+        g_free(src_path);
+        g_free(dst_path);
     }
-    closedir(d);
+    g_dir_close(d);
     return errors == 0 ? 0 : -1;
 }
 

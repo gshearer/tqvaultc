@@ -3,6 +3,8 @@
 
 #include <stdint.h>
 
+#pragma pack(push, 1)
+
 /**
  * entry_t - Represents a single asset (record or file) in the game archives.
  * Size: 16 bytes
@@ -29,5 +31,7 @@ typedef struct {
     uint32_t entries_offset;      // Offset to TQAssetEntry array
     uint32_t reserved[2];
 } TQIndexHeader;
+
+#pragma pack(pop)
 
 #endif

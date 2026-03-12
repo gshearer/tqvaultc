@@ -10,7 +10,6 @@
 #include "quest_tokens.h"
 #include <stdlib.h>
 #include <string.h>
-#include <unistd.h>
 
 /* ── Dialog state ─────────────────────────────────────────────────────── */
 
@@ -50,7 +49,7 @@ static void load_all_difficulties(ChecklistDialogState *st) {
         char *path = quest_token_path(filepath, (QuestDifficulty)d);
         if (!path) continue;
 
-        if (access(path, F_OK) == 0) {
+        if (g_file_test(path, G_FILE_TEST_EXISTS)) {
             if (quest_tokens_load(path, &st->sets[d]) == 0)
                 st->sets_loaded[d] = true;
         }
