@@ -4,7 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* ── Quest enums ──────────────────────────────────────────────────────── */
+// ── Quest enums ──────────────────────────────────────────────────────────
 
 typedef enum {
     ACT_GREECE = 0, ACT_EGYPT, ACT_ORIENT, ACT_IMMORTAL_THRONE,
@@ -15,94 +15,165 @@ typedef enum {
     DIFF_NORMAL = 0, DIFF_EPIC, DIFF_LEGENDARY, NUM_DIFFICULTIES
 } QuestDifficulty;
 
-/* ── Quest definition table ───────────────────────────────────────────── */
+// ── Quest definition table ───────────────────────────────────────────────
 
 typedef struct {
-    const char *name;              /* Human-readable quest name */
-    const char *area;              /* Region/area header (e.g. "Helos", "Sparta"); NULL for main quests */
+    const char *name;              // Human-readable quest name
+    const char *area;              // Region/area header (e.g. "Helos", "Sparta"); NULL for main quests
     QuestAct act;
-    bool is_main;                  /* Main quest vs side quest */
-    const char **tokens;           /* NULL-terminated array of all tokens for this quest */
-    const char *completion_token;  /* Token that means "quest done" (for checkbox state) */
+    bool is_main;                  // Main quest vs side quest
+    const char *const *tokens;     // NULL-terminated array of all tokens for this quest
+    const char *completion_token;  // Token that means "quest done" (for checkbox state)
 } QuestDef;
 
-/* ── Token set (dynamic array of token names) ─────────────────────────── */
+// ── Token set (dynamic array of token names) ─────────────────────────────
 
 typedef struct {
-    char **tokens;   /* Dynamic array of token names (strdup'd) */
+    char **tokens;   // Dynamic array of token names (strdup'd)
     int count;
     int capacity;
     bool dirty;
 } QuestTokenSet;
 
-/* ── Parser/writer ────────────────────────────────────────────────────── */
+// ── Parser/writer ────────────────────────────────────────────────────────
 
-int quest_tokens_load(const char *filepath, QuestTokenSet *out);
-int quest_tokens_save(const char *filepath, const QuestTokenSet *set);
+// Load quest tokens from a QuestToken.myw file.
+// filepath: path to the .myw file.
+// out: token set to populate (must be initialized).
+// Returns: 0 on success, -1 on error.
+int
+quest_tokens_load(const char *filepath, QuestTokenSet *out);
 
-/* ── Token set operations ─────────────────────────────────────────────── */
+// Save quest tokens to a QuestToken.myw file.
+// filepath: path to the .myw file.
+// set: token set to write.
+// Returns: 0 on success, -1 on error.
+int
+quest_tokens_save(const char *filepath, const QuestTokenSet *set);
 
-void quest_token_set_init(QuestTokenSet *set);
-void quest_token_set_free(QuestTokenSet *set);
-bool quest_token_set_contains(const QuestTokenSet *set, const char *token);
-void quest_token_set_add(QuestTokenSet *set, const char *token);
-void quest_token_set_remove(QuestTokenSet *set, const char *token);
+// ── Token set operations ─────────────────────────────────────────────────
 
-/* ── Path helpers ─────────────────────────────────────────────────────── */
+// Initialize a token set to empty state.
+// set: the token set to initialize.
+void
+quest_token_set_init(QuestTokenSet *set);
 
-/* Returns malloc'd path to QuestToken.myw for a given character + difficulty.
- * char_filepath is the path to Player.chr (e.g. .../SaveData/Main/_soothie/Player.chr).
- * Caller must free the returned string. Returns NULL on error. */
-char *quest_token_path(const char *char_filepath, QuestDifficulty diff);
+// Free all memory in a token set.
+// set: the token set to free.
+void
+quest_token_set_free(QuestTokenSet *set);
 
-/* Returns malloc'd path to the quest state directory for a given character + difficulty.
- * e.g. .../SaveData/Main/_soothie/Levels_World_World01.map/Legendary/
- * Caller must free the returned string. Returns NULL on error. */
-char *quest_state_dir(const char *char_filepath, QuestDifficulty diff);
+// Check if a token set contains a specific token.
+// set: the token set to search.
+// token: the token name to look for.
+// Returns: true if the token is present.
+bool
+quest_token_set_contains(const QuestTokenSet *set, const char *token);
 
-/* ── Quest state file operations ─────────────────────────────────────── */
+// Add a token to the set (no-op if already present).
+// set: the token set to modify.
+// token: the token name to add (will be strdup'd).
+void
+quest_token_set_add(QuestTokenSet *set, const char *token);
 
-/* Backup a file to <filepath>.bak. Returns 0 on success, -1 on error.
- * If the source file doesn't exist, returns 0 (nothing to backup). */
-int quest_backup_file(const char *filepath);
+// Remove a token from the set (no-op if not present).
+// set: the token set to modify.
+// token: the token name to remove.
+void
+quest_token_set_remove(QuestTokenSet *set, const char *token);
 
-/* Zero all hasFired/isPendingFire flags in all .que files in quest_dir.
- * Returns number of modified files, or -1 on error. */
-int quest_que_clear_all(const char *quest_dir);
+// ── Path helpers ─────────────────────────────────────────────────────────
 
-/* Write a minimal empty Quest.myw to quest_dir (backs up existing).
- * Returns 0 on success, -1 on error. */
-int quest_myw_clear(const char *quest_dir);
+// Returns malloc'd path to QuestToken.myw for a given character + difficulty.
+// char_filepath: path to Player.chr (e.g. .../SaveData/Main/_soothie/Player.chr).
+// diff: which difficulty level.
+// Returns: allocated path string, or NULL on error. Caller must free.
+char *
+quest_token_path(const char *char_filepath, QuestDifficulty diff);
 
-/* Copy all .que files + Quest.myw from src_dir to dst_dir (backs up dst files).
- * Returns 0 on success, -1 on error. */
-int quest_copy_state_from(const char *src_dir, const char *dst_dir);
+// Returns malloc'd path to the quest state directory for a given character + difficulty.
+// e.g. .../SaveData/Main/_soothie/Levels_World_World01.map/Legendary/
+// char_filepath: path to Player.chr.
+// diff: which difficulty level.
+// Returns: allocated path string, or NULL on error. Caller must free.
+char *
+quest_state_dir(const char *char_filepath, QuestDifficulty diff);
 
-/* ── Quest definition table access ────────────────────────────────────── */
+// ── Quest state file operations ──────────────────────────────────────────
 
-const QuestDef *quest_get_defs(int *count_out);
-const char *quest_act_name(QuestAct act);
-const char *quest_difficulty_name(QuestDifficulty diff);
+// Backup a file to <filepath>.bak.
+// filepath: path to the file to back up.
+// Returns: 0 on success, -1 on error. If file doesn't exist, returns 0.
+int
+quest_backup_file(const char *filepath);
 
-/* ── Checklist extras (non-quest achievements) ────────────────────────── */
+// Zero all hasFired/isPendingFire flags in all .que files in quest_dir.
+// quest_dir: path to the quest state directory.
+// Returns: number of modified files, or -1 on error.
+int
+quest_que_clear_all(const char *quest_dir);
+
+// Write a minimal empty Quest.myw to quest_dir (backs up existing).
+// quest_dir: path to the quest state directory.
+// Returns: 0 on success, -1 on error.
+int
+quest_myw_clear(const char *quest_dir);
+
+// Copy all .que files + Quest.myw from src_dir to dst_dir (backs up dst files).
+// src_dir: source quest state directory.
+// dst_dir: destination quest state directory.
+// Returns: 0 on success, -1 on error.
+int
+quest_copy_state_from(const char *src_dir, const char *dst_dir);
+
+// ── Quest definition table access ────────────────────────────────────────
+
+// Get the global quest definition table.
+// count_out: receives the number of entries.
+// Returns: pointer to the quest definitions array.
+const QuestDef *
+quest_get_defs(int *count_out);
+
+// Get the display name for a quest act.
+// act: the act enum value.
+// Returns: static string with the act name.
+const char *
+quest_act_name(QuestAct act);
+
+// Get the display name for a difficulty level.
+// diff: the difficulty enum value.
+// Returns: static string with the difficulty name.
+const char *
+quest_difficulty_name(QuestDifficulty diff);
+
+// ── Checklist extras (non-quest achievements) ────────────────────────────
 
 typedef enum {
-    CHECK_CAT_BOSS_CHEST,     /* Boss loot chests */
-    CHECK_CAT_EXPLORATION,    /* Map unlocks, bags, portals, difficulty */
-    CHECK_CAT_NPC,            /* NPC knowledge/conversation flags */
-    CHECK_CAT_MISC,           /* Scripted sequences, dungeon keys, misc */
+    CHECK_CAT_BOSS_CHEST,     // Boss loot chests
+    CHECK_CAT_EXPLORATION,    // Map unlocks, bags, portals, difficulty
+    CHECK_CAT_NPC,            // NPC knowledge/conversation flags
+    CHECK_CAT_MISC,           // Scripted sequences, dungeon keys, misc
     NUM_CHECK_CATEGORIES
 } ChecklistCategory;
 
 typedef struct {
-    const char *name;              /* Display name (in-game verbiage) */
-    const char *token;             /* Token for Normal difficulty */
-    const char *token_epic;        /* Token for Epic/Legendary, or NULL if same */
+    const char *name;              // Display name (in-game verbiage)
+    const char *token;             // Token for Normal difficulty
+    const char *token_epic;        // Token for Epic/Legendary, or NULL if same
     ChecklistCategory category;
-    QuestAct act;                  /* Which act this belongs to (-1 for global) */
+    QuestAct act;                  // Which act this belongs to (-1 for global)
 } ChecklistExtraDef;
 
-const ChecklistExtraDef *checklist_get_extras(int *count_out);
-const char *checklist_category_name(ChecklistCategory cat);
+// Get the global checklist extras table.
+// count_out: receives the number of entries.
+// Returns: pointer to the checklist extras array.
+const ChecklistExtraDef *
+checklist_get_extras(int *count_out);
+
+// Get the display name for a checklist category.
+// cat: the category enum value.
+// Returns: static string with the category name.
+const char *
+checklist_category_name(ChecklistCategory cat);
 
 #endif

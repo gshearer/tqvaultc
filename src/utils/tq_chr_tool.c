@@ -1,7 +1,7 @@
-// tq_chr_tool.c — Player.chr debugging/troubleshooting CLI
+// tq_chr_tool.c -- Player.chr debugging/troubleshooting CLI
 //
 // Independent binary parser for Titan Quest .chr files. Does NOT reuse
-// character_load() for analysis commands — has its own raw stream walker
+// character_load() for analysis commands -- has its own raw stream walker
 // with a known-key table to avoid the heuristic bug (Bug 1 in TODO.md).
 //
 // Usage:
@@ -26,10 +26,17 @@
 #include <glib.h>
 
 
-// Stubs — character.c references these but we don't need them for analysis
+// Stubs -- character.c references these but we don't need them for analysis
 #include "../character.h"
-void vault_item_free_strings(TQVaultItem *item) {
-  if (!item) return;
+
+// vault_item_free_strings -- stub to free item string fields.
+// item: pointer to TQVaultItem (may be NULL).
+void
+vault_item_free_strings(TQVaultItem *item)
+{
+  if(!item)
+    return;
+
   free(item->base_name);
   free(item->prefix_name);
   free(item->suffix_name);
@@ -40,6 +47,7 @@ void vault_item_free_strings(TQVaultItem *item) {
   free(item->stack_seeds);
   free(item->stack_var2);
 }
+
 int tqvc_debug = 0;
 
 // ── Sentinel values ──────────────────────────────────────────────────────
@@ -331,200 +339,324 @@ typedef struct {
 
 // ── Low-level helpers ────────────────────────────────────────────────────
 
-static uint8_t *load_file(const char *path, size_t *out_size) {
+// load_file -- read an entire file into a malloc'd buffer.
+// path: path to the file.
+// out_size: receives the file size in bytes.
+// returns malloc'd buffer, or NULL on error.
+static uint8_t *
+load_file(const char *path, size_t *out_size)
+{
   FILE *f = fopen(path, "rb");
-  if (!f) {
+
+  if(!f)
+  {
     fprintf(stderr, "error: cannot open '%s': ", path);
     perror(NULL);
-    return NULL;
+    return(NULL);
   }
+
   fseek(f, 0, SEEK_END);
   long sz = ftell(f);
-  if (sz <= 0) {
+
+  if(sz <= 0)
+  {
     fprintf(stderr, "error: '%s' is empty or unreadable\n", path);
     fclose(f);
-    return NULL;
+    return(NULL);
   }
+
   fseek(f, 0, SEEK_SET);
+
   uint8_t *data = malloc((size_t)sz);
-  if (!data) {
+
+  if(!data)
+  {
     fprintf(stderr, "error: malloc failed for %ld bytes\n", sz);
     fclose(f);
-    return NULL;
+    return(NULL);
   }
-  if (fread(data, 1, (size_t)sz, f) != (size_t)sz) {
+
+  if(fread(data, 1, (size_t)sz, f) != (size_t)sz)
+  {
     fprintf(stderr, "error: short read on '%s'\n", path);
     free(data);
     fclose(f);
-    return NULL;
+    return(NULL);
   }
+
   fclose(f);
   *out_size = (size_t)sz;
-  return data;
+  return(data);
 }
 
-static inline uint32_t rd_u32(const uint8_t *data, size_t off) {
+// rd_u32 -- read a little-endian uint32 from a data buffer.
+// data: binary data buffer.
+// off: byte offset to read from.
+// returns the uint32 value.
+static inline uint32_t
+rd_u32(const uint8_t *data, size_t off)
+{
   uint32_t v;
+
   memcpy(&v, data + off, 4);
-  return v;
+  return(v);
 }
 
-static inline float rd_float(const uint8_t *data, size_t off) {
+// rd_float -- read a little-endian IEEE float from a data buffer.
+// data: binary data buffer.
+// off: byte offset to read from.
+// returns the float value.
+static inline float
+rd_float(const uint8_t *data, size_t off)
+{
   float v;
+
   memcpy(&v, data + off, 4);
-  return v;
+  return(v);
 }
 
-// Read length-prefixed ASCII string into buf. Returns bytes consumed.
-static size_t rd_string(const uint8_t *data, size_t off, size_t file_size,
-                        char *buf, size_t buf_size) {
+// rd_string -- read a length-prefixed ASCII string into buf.
+// data: binary data buffer.
+// off: byte offset of the length prefix.
+// file_size: total buffer size for bounds checking.
+// buf: output buffer for the string.
+// buf_size: size of buf.
+// returns number of bytes consumed.
+static size_t
+rd_string(const uint8_t *data, size_t off, size_t file_size,
+          char *buf, size_t buf_size)
+{
   uint32_t len = rd_u32(data, off);
-  if (len == 0 || off + 4 + len > file_size) {
+
+  if(len == 0 || off + 4 + len > file_size)
+  {
     buf[0] = '\0';
-    return 4;
+    return(4);
   }
+
   size_t copy = len < buf_size - 1 ? len : buf_size - 1;
+
   memcpy(buf, data + off + 4, copy);
   buf[copy] = '\0';
-  return 4 + len;
+  return(4 + len);
 }
 
-// Read length-prefixed UTF-16LE string, convert to ASCII. Returns bytes consumed.
-static size_t rd_utf16(const uint8_t *data, size_t off, size_t file_size,
-                       char *buf, size_t buf_size) {
+// rd_utf16 -- read a length-prefixed UTF-16LE string, convert to ASCII.
+// data: binary data buffer.
+// off: byte offset of the length prefix.
+// file_size: total buffer size for bounds checking.
+// buf: output buffer for the ASCII string.
+// buf_size: size of buf.
+// returns number of bytes consumed.
+static size_t
+rd_utf16(const uint8_t *data, size_t off, size_t file_size,
+         char *buf, size_t buf_size)
+{
   uint32_t len = rd_u32(data, off);
-  if (len == 0 || off + 4 + len * 2 > file_size) {
+
+  if(len == 0 || off + 4 + len * 2 > file_size)
+  {
     buf[0] = '\0';
-    return 4;
+    return(4);
   }
+
   size_t copy = len < buf_size - 1 ? len : buf_size - 1;
-  for (size_t i = 0; i < copy; i++)
+
+  for(size_t i = 0; i < copy; i++)
     buf[i] = (char)data[off + 4 + i * 2];
+
   buf[copy] = '\0';
-  return 4 + len * 2;
+  return(4 + len * 2);
 }
 
-static const KnownKey *lookup_key(const char *name) {
-  for (int i = 0; known_keys[i].name; i++) {
-    if (strcmp(known_keys[i].name, name) == 0)
-      return &known_keys[i];
+// lookup_key -- find a key in the known-key table.
+// name: key name to look up.
+// returns pointer to KnownKey, or NULL if not found.
+static const KnownKey *
+lookup_key(const char *name)
+{
+  for(int i = 0; known_keys[i].name; i++)
+  {
+    if(strcmp(known_keys[i].name, name) == 0)
+      return(&known_keys[i]);
   }
-  return NULL;
+
+  return(NULL);
 }
 
 // ── Entry-level parser ───────────────────────────────────────────────────
 // Walks the raw binary stream, using the known-key table to determine types.
 // Unknown keys fall back to the heuristic but are flagged as AMBIGUOUS.
 
-static void entry_list_init(ChrEntryList *list) {
+// entry_list_init -- initialize a dynamic entry list.
+// list: list to initialize.
+static void
+entry_list_init(ChrEntryList *list)
+{
   list->count = 0;
   list->cap = 4096;
   list->entries = malloc(list->cap * sizeof(ChrEntry));
+
+  if(!list->entries)
+  {
+    list->cap = 0;
+    return;
+  }
 }
 
-static void entry_list_push(ChrEntryList *list, const ChrEntry *e) {
-  if (list->count >= list->cap) {
+// entry_list_push -- append an entry to the dynamic list.
+// list: list to append to.
+// e: entry to copy into the list.
+static void
+entry_list_push(ChrEntryList *list, const ChrEntry *e)
+{
+  if(list->count >= list->cap)
+  {
     list->cap *= 2;
     list->entries = realloc(list->entries, list->cap * sizeof(ChrEntry));
+
+    if(!list->entries)
+    {
+      list->cap = 0;
+      return;
+    }
   }
+
   list->entries[list->count++] = *e;
 }
 
-static void entry_list_free(ChrEntryList *list) {
+// entry_list_free -- free all memory in a dynamic entry list.
+// list: list to free.
+static void
+entry_list_free(ChrEntryList *list)
+{
   free(list->entries);
   list->entries = NULL;
   list->count = list->cap = 0;
 }
 
-static int parse_entries(const uint8_t *data, size_t file_size,
-                         ChrEntryList *out) {
+// parse_entries -- walk the raw binary stream and build an entry list.
+// Uses the known-key table for type resolution, heuristic fallback for unknowns.
+// data: binary file data.
+// file_size: size of data in bytes.
+// out: receives the parsed entry list.
+// returns the number of entries parsed.
+static int
+parse_entries(const uint8_t *data, size_t file_size, ChrEntryList *out)
+{
   entry_list_init(out);
   size_t offset = 0;
   int depth = 0;
 
-  while (offset + 4 <= file_size) {
+  while(offset + 4 <= file_size)
+  {
     size_t key_start = offset;
     uint32_t klen = rd_u32(data, offset);
 
     // Validate: plausible key length with printable ASCII
-    if (klen == 0 || klen >= 256 || offset + 4 + klen > file_size) {
+    if(klen == 0 || klen >= 256 || offset + 4 + klen > file_size)
+    {
       offset++;
       continue;
     }
 
     bool printable = true;
-    for (uint32_t i = 0; i < klen; i++) {
-      if (!isprint(data[offset + 4 + i])) {
+
+    for(uint32_t i = 0; i < klen; i++)
+    {
+      if(!isprint(data[offset + 4 + i]))
+      {
         printable = false;
         break;
       }
     }
-    if (!printable) {
+
+    if(!printable)
+    {
       offset++;
       continue;
     }
 
     ChrEntry e = {0};
+
     e.offset = key_start;
     memcpy(e.key, data + offset + 4, klen);
     e.key[klen] = '\0';
     offset += 4 + klen;
     e.val_offset = offset;
 
-    if (offset + 4 > file_size) break;
+    if(offset + 4 > file_size)
+      break;
 
     // Track block depth
-    if (strcmp(e.key, "begin_block") == 0) {
+    if(strcmp(e.key, "begin_block") == 0)
+    {
       e.type = VAL_U32;
       e.u32_val = rd_u32(data, offset);
       e.depth = depth;
       depth++;
       offset += 4;
-    } else if (strcmp(e.key, "end_block") == 0) {
+    }
+    else if(strcmp(e.key, "end_block") == 0)
+    {
       depth--;
-      if (depth < 0) depth = 0;
+      if(depth < 0)
+        depth = 0;
       e.type = VAL_U32;
       e.u32_val = rd_u32(data, offset);
       e.depth = depth;
       offset += 4;
-    } else {
+    }
+    else
+    {
       e.depth = depth;
 
       const KnownKey *kk = lookup_key(e.key);
-      if (kk) {
+
+      if(kk)
+      {
         e.type = kk->type;
         e.ambiguous = false;
-        switch (kk->type) {
-          case VAL_U32:
-            e.u32_val = rd_u32(data, offset);
-            offset += 4;
-            break;
-          case VAL_FLOAT:
-            e.float_val = rd_float(data, offset);
-            e.u32_val = rd_u32(data, offset);  // raw bits too
-            offset += 4;
-            break;
-          case VAL_STRING:
-            offset += rd_string(data, offset, file_size,
-                                e.str_val, sizeof(e.str_val));
-            break;
-          case VAL_UTF16:
-            offset += rd_utf16(data, offset, file_size,
-                               e.str_val, sizeof(e.str_val));
-            break;
+
+        switch(kk->type)
+        {
+        case VAL_U32:
+          e.u32_val = rd_u32(data, offset);
+          offset += 4;
+          break;
+        case VAL_FLOAT:
+          e.float_val = rd_float(data, offset);
+          e.u32_val = rd_u32(data, offset);  // raw bits too
+          offset += 4;
+          break;
+        case VAL_STRING:
+          offset += rd_string(data, offset, file_size,
+                              e.str_val, sizeof(e.str_val));
+          break;
+        case VAL_UTF16:
+          offset += rd_utf16(data, offset, file_size,
+                             e.str_val, sizeof(e.str_val));
+          break;
         }
-      } else {
+      }
+      else
+      {
         // Heuristic fallback (same as character.c but flagged)
         e.ambiguous = true;
         uint32_t val = rd_u32(data, offset);
-        if (val > 0 && val < 512 && offset + 4 + val <= file_size) {
+
+        if(val > 0 && val < 512 && offset + 4 + val <= file_size)
+        {
           // Looks like a string
           e.type = VAL_STRING;
           size_t copy = val < sizeof(e.str_val) - 1 ? val : sizeof(e.str_val) - 1;
+
           memcpy(e.str_val, data + offset + 4, copy);
           e.str_val[copy] = '\0';
           offset += 4 + val;
-        } else {
+        }
+        else
+        {
           e.type = VAL_U32;
           e.u32_val = val;
           offset += 4;
@@ -536,33 +668,51 @@ static int parse_entries(const uint8_t *data, size_t file_size,
     entry_list_push(out, &e);
   }
 
-  return out->count;
+  return(out->count);
 }
 
 // ── Structured chr parser ────────────────────────────────────────────────
 // Builds inventory/equipment structures from the entry list.
 
-static void sack_add_item(RawSack *sack, const RawItem *item) {
-  if (sack->actual_count >= sack->items_cap) {
+// sack_add_item -- append an item to a sack's item array.
+// sack: the sack to add to.
+// item: the item to copy into the sack.
+static void
+sack_add_item(RawSack *sack, const RawItem *item)
+{
+  if(sack->actual_count >= sack->items_cap)
+  {
     sack->items_cap = sack->items_cap ? sack->items_cap * 2 : 64;
     sack->items = realloc(sack->items, sack->items_cap * sizeof(RawItem));
+
+    if(!sack->items)
+    {
+      sack->items_cap = 0;
+      return;
+    }
   }
+
   sack->items[sack->actual_count++] = *item;
 }
 
-static void parse_chr_structured(const ChrEntryList *entries,
-                                 RawChrParse *out) {
+// parse_chr_structured -- build inventory/equipment structures from entry list.
+// Mirrors character.c's state machine but with correct type handling.
+// entries: parsed entry list from parse_entries().
+// out: receives the structured parse result.
+static void
+parse_chr_structured(const ChrEntryList *entries, RawChrParse *out)
+{
   memset(out, 0, sizeof(*out));
-  for (int i = 0; i < 12; i++)
+
+  for(int i = 0; i < 12; i++)
     out->slots[i].alternate = -1;
 
-  // State machine — mirrors character.c but with correct type handling
+  // State machine -- mirrors character.c but with correct type handling
   int inv_state = 0;
   int sack_idx = -1;
   RawItem cur_item = {0};
   bool in_item_inner = false;
   bool in_item_outer = false;
-
   int in_equipment = 0;
   int equip_count = 0;        // linear counter: how many itemAttached seen
   int equip_slot = 0;         // actual slot index (alternate-aware)
@@ -570,16 +720,19 @@ static void parse_chr_structured(const ChrEntryList *entries,
   int weapon_sub = 0;         // index within weapon wrapper (0 or 1)
   int equip_end_pending = 0;
 
-  for (int i = 0; i < entries->count; i++) {
+  for(int i = 0; i < entries->count; i++)
+  {
     const ChrEntry *e = &entries->entries[i];
 
     // ── Section triggers ──
-    if (strcmp(e->key, "itemPositionsSavedAsGridCoords") == 0) {
+    if(strcmp(e->key, "itemPositionsSavedAsGridCoords") == 0)
+    {
       inv_state = 1;
       continue;
     }
 
-    if (strcmp(e->key, "useAlternate") == 0) {
+    if(strcmp(e->key, "useAlternate") == 0)
+    {
       out->equip_start = e->next_offset;
       in_equipment = 1;
       equip_slot = 0;
@@ -587,18 +740,23 @@ static void parse_chr_structured(const ChrEntryList *entries,
     }
 
     // ── Inventory header ──
-    if (inv_state == 1 && strcmp(e->key, "numberOfSacks") == 0) {
+    if(inv_state == 1 && strcmp(e->key, "numberOfSacks") == 0)
+    {
       out->inv_start = e->offset;
       out->num_sacks = e->u32_val;
       inv_state = 2;
       continue;
     }
-    if (inv_state == 2 && strcmp(e->key, "currentlyFocusedSackNumber") == 0) {
+
+    if(inv_state == 2 && strcmp(e->key, "currentlyFocusedSackNumber") == 0)
+    {
       out->focused_sack = e->u32_val;
       inv_state = 3;
       continue;
     }
-    if (inv_state == 3 && strcmp(e->key, "currentlySelectedSackNumber") == 0) {
+
+    if(inv_state == 3 && strcmp(e->key, "currentlySelectedSackNumber") == 0)
+    {
       out->selected_sack = e->u32_val;
       sack_idx = -1;
       inv_state = 4;
@@ -606,130 +764,174 @@ static void parse_chr_structured(const ChrEntryList *entries,
     }
 
     // ── begin_block ──
-    if (strcmp(e->key, "begin_block") == 0) {
-      if (inv_state == 4) {
+    if(strcmp(e->key, "begin_block") == 0)
+    {
+      if(inv_state == 4)
+      {
         sack_idx++;
-        if (sack_idx < 8) {
+        if(sack_idx < 8)
+        {
           out->sacks[sack_idx].offset = e->offset;
           out->sacks[sack_idx].actual_count = 0;
           out->sacks[sack_idx].items = NULL;
           out->sacks[sack_idx].items_cap = 0;
         }
         inv_state = 5;
-      } else if (inv_state == 7 && !in_item_outer) {
+      }
+      else if(inv_state == 7 && !in_item_outer)
+      {
         memset(&cur_item, 0, sizeof(cur_item));
         cur_item.offset = e->offset;
         in_item_outer = true;
-      } else if (inv_state == 7 && in_item_outer && !in_item_inner) {
+      }
+      else if(inv_state == 7 && in_item_outer && !in_item_inner)
+      {
         in_item_inner = true;
       }
       continue;
     }
 
     // ── end_block ──
-    if (strcmp(e->key, "end_block") == 0) {
-      if (inv_state == 7 && in_item_inner) {
+    if(strcmp(e->key, "end_block") == 0)
+    {
+      if(inv_state == 7 && in_item_inner)
+      {
         // Inner block closes
         in_item_inner = false;
-      } else if (inv_state == 7 && in_item_outer && !in_item_inner) {
-        // Outer block closes — finalize item
-        if (sack_idx >= 0 && sack_idx < 8)
+      }
+      else if(inv_state == 7 && in_item_outer && !in_item_inner)
+      {
+        // Outer block closes -- finalize item
+        if(sack_idx >= 0 && sack_idx < 8)
           sack_add_item(&out->sacks[sack_idx], &cur_item);
         in_item_outer = false;
         memset(&cur_item, 0, sizeof(cur_item));
-      } else if (inv_state == 7 && !in_item_outer) {
+      }
+      else if(inv_state == 7 && !in_item_outer)
+      {
         // Sack ends
-        if (sack_idx + 1 >= (int)out->num_sacks) {
+        if(sack_idx + 1 >= (int)out->num_sacks)
+        {
           inv_state = 0;
           out->inv_end = e->next_offset;
-        } else {
+        }
+        else
+        {
           inv_state = 4;
         }
-      } else if (equip_end_pending) {
+      }
+      else if(equip_end_pending)
+      {
         out->equip_end = e->next_offset;
         equip_end_pending = 0;
-      } else if (in_equipment && cur_alternate >= 0 && weapon_sub >= 2) {
+      }
+      else if(in_equipment && cur_alternate >= 0 && weapon_sub >= 2)
+      {
         // Weapon set wrapper end_block
         cur_alternate = -1;
-        if (equip_count >= 11) equip_slot = 11;
+        if(equip_count >= 11)
+          equip_slot = 11;
       }
       continue;
     }
 
     // ── Sack header ──
-    if (strcmp(e->key, "tempBool") == 0 && inv_state == 5) {
+    if(strcmp(e->key, "tempBool") == 0 && inv_state == 5)
+    {
       inv_state = 6;
       continue;
     }
-    if (strcmp(e->key, "size") == 0 && inv_state == 6) {
-      if (sack_idx >= 0 && sack_idx < 8)
+
+    if(strcmp(e->key, "size") == 0 && inv_state == 6)
+    {
+      if(sack_idx >= 0 && sack_idx < 8)
         out->sacks[sack_idx].declared_size = e->u32_val;
       inv_state = 7;
       continue;
     }
 
     // ── Item fields (inventory) ──
-    if (inv_state == 7 && in_item_inner) {
-      if (strcmp(e->key, "baseName") == 0)
+    if(inv_state == 7 && in_item_inner)
+    {
+      if(strcmp(e->key, "baseName") == 0)
         strncpy(cur_item.base_name, e->str_val, sizeof(cur_item.base_name) - 1);
-      else if (strcmp(e->key, "prefixName") == 0)
+      else if(strcmp(e->key, "prefixName") == 0)
         strncpy(cur_item.prefix_name, e->str_val, sizeof(cur_item.prefix_name) - 1);
-      else if (strcmp(e->key, "suffixName") == 0)
+      else if(strcmp(e->key, "suffixName") == 0)
         strncpy(cur_item.suffix_name, e->str_val, sizeof(cur_item.suffix_name) - 1);
-      else if (strcmp(e->key, "relicName") == 0)
+      else if(strcmp(e->key, "relicName") == 0)
         strncpy(cur_item.relic_name, e->str_val, sizeof(cur_item.relic_name) - 1);
-      else if (strcmp(e->key, "relicBonus") == 0)
+      else if(strcmp(e->key, "relicBonus") == 0)
         strncpy(cur_item.relic_bonus, e->str_val, sizeof(cur_item.relic_bonus) - 1);
-      else if (strcmp(e->key, "relicName2") == 0) {
+      else if(strcmp(e->key, "relicName2") == 0)
+      {
         strncpy(cur_item.relic_name2, e->str_val, sizeof(cur_item.relic_name2) - 1);
         cur_item.has_atlantis = true;
-      } else if (strcmp(e->key, "relicBonus2") == 0)
+      }
+      else if(strcmp(e->key, "relicBonus2") == 0)
         strncpy(cur_item.relic_bonus2, e->str_val, sizeof(cur_item.relic_bonus2) - 1);
-      else if (strcmp(e->key, "seed") == 0)
+      else if(strcmp(e->key, "seed") == 0)
         cur_item.seed = e->u32_val;
-      else if (strcmp(e->key, "var1") == 0)
+      else if(strcmp(e->key, "var1") == 0)
         cur_item.var1 = e->u32_val;
-      else if (strcmp(e->key, "var2") == 0)
+      else if(strcmp(e->key, "var2") == 0)
         cur_item.var2 = e->u32_val;
       continue;
     }
 
     // ── Item position (between inner end_block and outer end_block) ──
-    if (inv_state == 7 && in_item_outer && !in_item_inner) {
-      if (strcmp(e->key, "pointX") == 0)
+    if(inv_state == 7 && in_item_outer && !in_item_inner)
+    {
+      if(strcmp(e->key, "pointX") == 0)
         cur_item.point_x = (int32_t)e->u32_val;
-      else if (strcmp(e->key, "pointY") == 0)
+      else if(strcmp(e->key, "pointY") == 0)
         cur_item.point_y = (int32_t)e->u32_val;
       continue;
     }
 
     // ── Equipment section ──
-    if (in_equipment) {
-      if (strcmp(e->key, "equipmentCtrlIOStreamVersion") == 0) {
+    if(in_equipment)
+    {
+      if(strcmp(e->key, "equipmentCtrlIOStreamVersion") == 0)
+      {
         out->equip_version = e->u32_val;
         continue;
       }
-      if (strcmp(e->key, "alternate") == 0) {
+
+      if(strcmp(e->key, "alternate") == 0)
+      {
         cur_alternate = (int)e->u32_val;
         weapon_sub = 0;
         equip_slot = 7 + cur_alternate * 2;
         continue;
       }
-      if (strcmp(e->key, "itemAttached") == 0) {
-        if (equip_slot < 12)
+
+      if(strcmp(e->key, "itemAttached") == 0)
+      {
+        if(equip_slot < 12)
           out->slots[equip_slot].attached = (e->u32_val != 0);
+
         equip_count++;
-        if (cur_alternate >= 0) {
+
+        if(cur_alternate >= 0)
+        {
           weapon_sub++;
-          if (weapon_sub < 2)
+          if(weapon_sub < 2)
             equip_slot = 7 + cur_alternate * 2 + weapon_sub;
-        } else if (equip_count < 7) {
+        }
+        else if(equip_count < 7)
+        {
           equip_slot = equip_count;
-        } else {
+        }
+        else
+        {
           equip_slot = 11;
         }
+
         out->slots_parsed = equip_count;
-        if (equip_count >= 12) {
+
+        if(equip_count >= 12)
+        {
           in_equipment = 0;
           equip_end_pending = 1;
         }
@@ -737,87 +939,134 @@ static void parse_chr_structured(const ChrEntryList *entries,
       }
 
       // Item fields for current equipment slot
-      if (equip_slot < 12) {
+      if(equip_slot < 12)
+      {
         RawEquipSlot *s = &out->slots[equip_slot];
+
         s->alternate = cur_alternate;
         s->offset = e->offset;
-        if (strcmp(e->key, "baseName") == 0)
+
+        if(strcmp(e->key, "baseName") == 0)
           strncpy(s->base_name, e->str_val, sizeof(s->base_name) - 1);
-        else if (strcmp(e->key, "prefixName") == 0)
+        else if(strcmp(e->key, "prefixName") == 0)
           strncpy(s->prefix_name, e->str_val, sizeof(s->prefix_name) - 1);
-        else if (strcmp(e->key, "suffixName") == 0)
+        else if(strcmp(e->key, "suffixName") == 0)
           strncpy(s->suffix_name, e->str_val, sizeof(s->suffix_name) - 1);
-        else if (strcmp(e->key, "relicName") == 0)
+        else if(strcmp(e->key, "relicName") == 0)
           strncpy(s->relic_name, e->str_val, sizeof(s->relic_name) - 1);
-        else if (strcmp(e->key, "relicBonus") == 0)
+        else if(strcmp(e->key, "relicBonus") == 0)
           strncpy(s->relic_bonus, e->str_val, sizeof(s->relic_bonus) - 1);
-        else if (strcmp(e->key, "relicName2") == 0) {
+        else if(strcmp(e->key, "relicName2") == 0)
+        {
           strncpy(s->relic_name2, e->str_val, sizeof(s->relic_name2) - 1);
           s->has_atlantis = true;
-        } else if (strcmp(e->key, "relicBonus2") == 0)
+        }
+        else if(strcmp(e->key, "relicBonus2") == 0)
           strncpy(s->relic_bonus2, e->str_val, sizeof(s->relic_bonus2) - 1);
-        else if (strcmp(e->key, "seed") == 0)
+        else if(strcmp(e->key, "seed") == 0)
           s->seed = e->u32_val;
-        else if (strcmp(e->key, "var1") == 0)
+        else if(strcmp(e->key, "var1") == 0)
           s->var1 = e->u32_val;
-        else if (strcmp(e->key, "var2") == 0)
+        else if(strcmp(e->key, "var2") == 0)
           s->var2 = e->u32_val;
       }
     }
   }
 }
 
-static void free_chr_parse(RawChrParse *p) {
-  for (int i = 0; i < 8; i++)
+// free_chr_parse -- free memory allocated by parse_chr_structured.
+// p: parse result to free.
+static void
+free_chr_parse(RawChrParse *p)
+{
+  for(int i = 0; i < 8; i++)
     free(p->sacks[i].items);
 }
 
 // ── Hex dump helper ──────────────────────────────────────────────────────
 
-static void print_hex_line(const uint8_t *data, size_t offset, size_t len) {
+// print_hex_line -- print one 16-byte hex dump line with ASCII sidebar.
+// data: binary data buffer.
+// offset: starting offset in data.
+// len: number of bytes to print (up to 16).
+static void
+print_hex_line(const uint8_t *data, size_t offset, size_t len)
+{
   printf("  %08zx: ", offset);
-  for (size_t i = 0; i < 16; i++) {
-    if (i < len)
+
+  for(size_t i = 0; i < 16; i++)
+  {
+    if(i < len)
       printf("%02x ", data[offset + i]);
     else
       printf("   ");
-    if (i == 7) printf(" ");
+    if(i == 7)
+      printf(" ");
   }
+
   printf(" |");
-  for (size_t i = 0; i < 16 && i < len; i++) {
+
+  for(size_t i = 0; i < 16 && i < len; i++)
+  {
     uint8_t c = data[offset + i];
+
     printf("%c", (c >= 32 && c < 127) ? c : '.');
   }
+
   printf("|\n");
 }
 
-static void hex_dump_range(const uint8_t *data, size_t start, size_t len) {
-  for (size_t off = 0; off < len; off += 16) {
+// hex_dump_range -- print a hex dump of a byte range.
+// data: binary data buffer.
+// start: starting offset in data.
+// len: number of bytes to dump.
+static void
+hex_dump_range(const uint8_t *data, size_t start, size_t len)
+{
+  for(size_t off = 0; off < len; off += 16)
+  {
     size_t chunk = (len - off) < 16 ? (len - off) : 16;
+
     print_hex_line(data, start + off, chunk);
   }
 }
 
 // ── Equipment slot names ─────────────────────────────────────────────────
 
-static const char *equip_slot_name(int slot) {
+// equip_slot_name -- return a human-readable name for an equipment slot index.
+// slot: slot index (0-11).
+// returns the slot name string.
+static const char *
+equip_slot_name(int slot)
+{
   static const char *names[] = {
     "Head", "Neck", "Chest", "Legs", "Arms",
     "Ring1", "Ring2", "Weapon1", "Shield1",
     "Weapon2", "Shield2", "Artifact"
   };
-  if (slot >= 0 && slot < 12) return names[slot];
-  return "Unknown";
+
+  if(slot >= 0 && slot < 12)
+    return(names[slot]);
+
+  return("Unknown");
 }
 
 // ── Basename tail: last path component for readable output ───────────────
 
-static const char *basename_tail(const char *path) {
-  if (!path || !*path) return "(empty)";
+// basename_tail -- return the last path component of a file path.
+// path: full file path string.
+// returns pointer to the last component, or "(empty)" if path is empty.
+static const char *
+basename_tail(const char *path)
+{
+  if(!path || !*path)
+    return("(empty)");
+
   const char *slash = strrchr(path, '/');
   const char *bslash = strrchr(path, '\\');
   const char *last = slash > bslash ? slash : bslash;
-  return last ? last + 1 : path;
+
+  return(last ? last + 1 : path);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
@@ -825,32 +1074,43 @@ static const char *basename_tail(const char *path) {
 // ═══════════════════════════════════════════════════════════════════════════
 
 // ── cmd_dump ─────────────────────────────────────────────────────────────
-// Raw key-value dump with file offsets, block depth, and value types.
 
-static int cmd_dump(const char *path) {
+// cmd_dump -- raw key-value dump with file offsets, block depth, and value types.
+// path: path to .chr file.
+// returns 0 on success, 1 on error.
+static int
+cmd_dump(const char *path)
+{
   size_t file_size;
   uint8_t *data = load_file(path, &file_size);
-  if (!data) return 1;
+
+  if(!data)
+    return(1);
 
   ChrEntryList entries;
   int count = parse_entries(data, file_size, &entries);
 
   printf("=== %s (%zu bytes, %d entries) ===\n\n", path, file_size, count);
 
-  for (int i = 0; i < entries.count; i++) {
+  for(int i = 0; i < entries.count; i++)
+  {
     const ChrEntry *e = &entries.entries[i];
 
     // Indentation by depth
-    for (int d = 0; d < e->depth; d++) printf("  ");
+    for(int d = 0; d < e->depth; d++)
+      printf("  ");
 
     // Offset and key
     printf("@%06zx ", e->offset);
 
-    if (strcmp(e->key, "begin_block") == 0) {
+    if(strcmp(e->key, "begin_block") == 0)
+    {
       printf("BEGIN_BLOCK (0x%08X)\n", e->u32_val);
       continue;
     }
-    if (strcmp(e->key, "end_block") == 0) {
+
+    if(strcmp(e->key, "end_block") == 0)
+    {
       printf("END_BLOCK (0x%08X)\n", e->u32_val);
       continue;
     }
@@ -859,52 +1119,65 @@ static int cmd_dump(const char *path) {
     printf("%-40s = ", e->key);
 
     // Value
-    switch (e->type) {
-      case VAL_U32: {
-        float fv;
-        memcpy(&fv, &e->u32_val, 4);
-        if (e->u32_val == 0)
-          printf("0");
-        else if (e->u32_val == 0xFFFFFFFF)
-          printf("-1 (0xFFFFFFFF)");
-        else if (e->u32_val < 100000)
-          printf("%u (0x%08X)", e->u32_val, e->u32_val);
-        else
-          printf("0x%08X (%u)", e->u32_val, e->u32_val);
-        break;
-      }
-      case VAL_FLOAT:
-        printf("%.6f (0x%08X)", e->float_val, e->u32_val);
-        break;
-      case VAL_STRING:
-        printf("\"%s\"", e->str_val);
-        break;
-      case VAL_UTF16:
-        printf("u\"%s\"", e->str_val);
-        break;
+    switch(e->type)
+    {
+    case VAL_U32:
+    {
+      float fv;
+
+      memcpy(&fv, &e->u32_val, 4);
+      if(e->u32_val == 0)
+        printf("0");
+      else if(e->u32_val == 0xFFFFFFFF)
+        printf("-1 (0xFFFFFFFF)");
+      else if(e->u32_val < 100000)
+        printf("%u (0x%08X)", e->u32_val, e->u32_val);
+      else
+        printf("0x%08X (%u)", e->u32_val, e->u32_val);
+      break;
+    }
+    case VAL_FLOAT:
+      printf("%.6f (0x%08X)", e->float_val, e->u32_val);
+      break;
+    case VAL_STRING:
+      printf("\"%s\"", e->str_val);
+      break;
+    case VAL_UTF16:
+      printf("u\"%s\"", e->str_val);
+      break;
     }
 
-    if (e->ambiguous) printf("  [AMBIGUOUS]");
+    if(e->ambiguous)
+      printf("  [AMBIGUOUS]");
+
     printf("\n");
   }
 
   entry_list_free(&entries);
   free(data);
-  return 0;
+  return(0);
 }
 
 // ── cmd_inv ──────────────────────────────────────────────────────────────
-// Inventory listing: per-sack items with all fields.
 
-static int cmd_inv(const char *path) {
+// cmd_inv -- inventory listing: per-sack items with all fields.
+// path: path to .chr file.
+// returns 0 on success, 1 on error.
+static int
+cmd_inv(const char *path)
+{
   size_t file_size;
   uint8_t *data = load_file(path, &file_size);
-  if (!data) return 1;
+
+  if(!data)
+    return(1);
 
   ChrEntryList entries;
+
   parse_entries(data, file_size, &entries);
 
   RawChrParse parse;
+
   parse.data = data;
   parse.file_size = file_size;
   parse_chr_structured(&entries, &parse);
@@ -916,63 +1189,79 @@ static int cmd_inv(const char *path) {
   printf("inv_block: [%zu..%zu) = %zu bytes\n\n",
          parse.inv_start, parse.inv_end, parse.inv_end - parse.inv_start);
 
-  for (uint32_t s = 0; s < parse.num_sacks && s < 8; s++) {
+  for(uint32_t s = 0; s < parse.num_sacks && s < 8; s++)
+  {
     RawSack *sack = &parse.sacks[s];
+
     printf("── Sack %u (declared_size=%u, actual=%d) ──\n",
            s, sack->declared_size, sack->actual_count);
 
     // Count unique items (collapse stacks with point_x=-1)
     int unique = 0;
-    for (int i = 0; i < sack->actual_count; i++) {
-      if (sack->items[i].point_x != -1 || sack->items[i].point_y != -1)
+
+    for(int i = 0; i < sack->actual_count; i++)
+    {
+      if(sack->items[i].point_x != -1 || sack->items[i].point_y != -1)
         unique++;
-      else if (i == 0)
+      else if(i == 0)
         unique++;  // edge case: first item at -1,-1
     }
+
     printf("  unique positions: %d, expanded entries: %d\n\n", unique, sack->actual_count);
 
-    for (int i = 0; i < sack->actual_count; i++) {
+    for(int i = 0; i < sack->actual_count; i++)
+    {
       RawItem *it = &sack->items[i];
+
       printf("  [%d] @%06zx  pos=(%d,%d)  seed=0x%08X\n",
              i, it->offset, it->point_x, it->point_y, it->seed);
-      if (it->base_name[0])
+      if(it->base_name[0])
         printf("      base:   %s\n", it->base_name);
-      if (it->prefix_name[0])
+      if(it->prefix_name[0])
         printf("      prefix: %s\n", it->prefix_name);
-      if (it->suffix_name[0])
+      if(it->suffix_name[0])
         printf("      suffix: %s\n", it->suffix_name);
-      if (it->relic_name[0])
+      if(it->relic_name[0])
         printf("      relic:  %s\n", it->relic_name);
-      if (it->relic_bonus[0])
+      if(it->relic_bonus[0])
         printf("      bonus:  %s\n", it->relic_bonus);
-      if (it->relic_name2[0])
+      if(it->relic_name2[0])
         printf("      relic2: %s\n", it->relic_name2);
-      if (it->relic_bonus2[0])
+      if(it->relic_bonus2[0])
         printf("      bonus2: %s\n", it->relic_bonus2);
-      if (it->var1 || it->var2)
+      if(it->var1 || it->var2)
         printf("      var1=%u  var2=0x%08X\n", it->var1, it->var2);
     }
+
     printf("\n");
   }
 
   free_chr_parse(&parse);
   entry_list_free(&entries);
   free(data);
-  return 0;
+  return(0);
 }
 
 // ── cmd_equip ────────────────────────────────────────────────────────────
-// Equipment listing: 12 slots with alternate flags.
 
-static int cmd_equip(const char *path) {
+// cmd_equip -- equipment listing: 12 slots with alternate flags.
+// path: path to .chr file.
+// returns 0 on success, 1 on error.
+static int
+cmd_equip(const char *path)
+{
   size_t file_size;
   uint8_t *data = load_file(path, &file_size);
-  if (!data) return 1;
+
+  if(!data)
+    return(1);
 
   ChrEntryList entries;
+
   parse_entries(data, file_size, &entries);
 
   RawChrParse parse;
+
   parse.data = data;
   parse.file_size = file_size;
   parse_chr_structured(&entries, &parse);
@@ -984,25 +1273,36 @@ static int cmd_equip(const char *path) {
          parse.equip_end - parse.equip_start);
   printf("slots_parsed: %d\n\n", parse.slots_parsed);
 
-  for (int i = 0; i < 12; i++) {
+  for(int i = 0; i < 12; i++)
+  {
     RawEquipSlot *s = &parse.slots[i];
+
     printf("  [%2d] %-10s  attached=%d  alternate=%d",
            i, equip_slot_name(i), s->attached, s->alternate);
 
-    if (s->base_name[0]) {
+    if(s->base_name[0])
+    {
       printf("  %s\n", basename_tail(s->base_name));
       printf("       base:   %s\n", s->base_name);
-      if (s->prefix_name[0])  printf("       prefix: %s\n", s->prefix_name);
-      if (s->suffix_name[0])  printf("       suffix: %s\n", s->suffix_name);
-      if (s->relic_name[0])   printf("       relic:  %s\n", s->relic_name);
-      if (s->relic_bonus[0])  printf("       bonus:  %s\n", s->relic_bonus);
-      if (s->relic_name2[0])  printf("       relic2: %s\n", s->relic_name2);
-      if (s->relic_bonus2[0]) printf("       bonus2: %s\n", s->relic_bonus2);
+      if(s->prefix_name[0])
+        printf("       prefix: %s\n", s->prefix_name);
+      if(s->suffix_name[0])
+        printf("       suffix: %s\n", s->suffix_name);
+      if(s->relic_name[0])
+        printf("       relic:  %s\n", s->relic_name);
+      if(s->relic_bonus[0])
+        printf("       bonus:  %s\n", s->relic_bonus);
+      if(s->relic_name2[0])
+        printf("       relic2: %s\n", s->relic_name2);
+      if(s->relic_bonus2[0])
+        printf("       bonus2: %s\n", s->relic_bonus2);
       printf("       seed=0x%08X  var1=%u  var2=0x%08X\n",
              s->seed, s->var1, s->var2);
-    } else {
+    }
+    else
+    {
       printf("  (empty)");
-      if (s->var2 != 0)
+      if(s->var2 != 0)
         printf("  var2=0x%08X", s->var2);
       printf("\n");
     }
@@ -1011,18 +1311,25 @@ static int cmd_equip(const char *path) {
   free_chr_parse(&parse);
   entry_list_free(&entries);
   free(data);
-  return 0;
+  return(0);
 }
 
 // ── cmd_validate ─────────────────────────────────────────────────────────
-// Structural integrity checks.
 
-static int cmd_validate(const char *path) {
+// cmd_validate -- structural integrity checks on a .chr file.
+// path: path to .chr file.
+// returns 0 if no errors, 1 if errors found.
+static int
+cmd_validate(const char *path)
+{
   size_t file_size;
   uint8_t *data = load_file(path, &file_size);
-  if (!data) return 1;
+
+  if(!data)
+    return(1);
 
   ChrEntryList entries;
+
   parse_entries(data, file_size, &entries);
 
   int errors = 0;
@@ -1037,26 +1344,35 @@ static int cmd_validate(const char *path) {
   int begin_count = 0;
   int end_count = 0;
 
-  for (int i = 0; i < entries.count; i++) {
+  for(int i = 0; i < entries.count; i++)
+  {
     const ChrEntry *e = &entries.entries[i];
-    if (strcmp(e->key, "begin_block") == 0) {
+
+    if(strcmp(e->key, "begin_block") == 0)
+    {
       begin_count++;
       depth++;
-      if (depth > max_depth) max_depth = depth;
-      if (e->u32_val != TQ_BEGIN_BLOCK) {
+      if(depth > max_depth)
+        max_depth = depth;
+      if(e->u32_val != TQ_BEGIN_BLOCK)
+      {
         printf("  ERROR: begin_block @%06zx has unexpected sentinel 0x%08X\n",
                e->offset, e->u32_val);
         errors++;
       }
-    } else if (strcmp(e->key, "end_block") == 0) {
+    }
+    else if(strcmp(e->key, "end_block") == 0)
+    {
       end_count++;
       depth--;
-      if (depth < 0) {
+      if(depth < 0)
+      {
         printf("  ERROR: end_block @%06zx causes negative depth\n", e->offset);
         errors++;
         depth = 0;
       }
-      if (e->u32_val != TQ_END_BLOCK) {
+      if(e->u32_val != TQ_END_BLOCK)
+      {
         printf("  ERROR: end_block @%06zx has unexpected sentinel 0x%08X\n",
                e->offset, e->u32_val);
         errors++;
@@ -1064,175 +1380,229 @@ static int cmd_validate(const char *path) {
     }
   }
 
-  if (depth != 0) {
-    printf("  ERROR: unclosed blocks — final depth = %d\n", depth);
+  if(depth != 0)
+  {
+    printf("  ERROR: unclosed blocks -- final depth = %d\n", depth);
     errors++;
   }
 
   printf("  blocks: %d begin, %d end, max depth = %d\n",
          begin_count, end_count, max_depth);
 
-  if (begin_count == end_count && depth == 0)
+  if(begin_count == end_count && depth == 0)
     printf("  block nesting: OK\n");
 
   // 2. Check for ambiguous keys
   int ambiguous_count = 0;
-  for (int i = 0; i < entries.count; i++) {
-    if (entries.entries[i].ambiguous)
+
+  for(int i = 0; i < entries.count; i++)
+  {
+    if(entries.entries[i].ambiguous)
       ambiguous_count++;
   }
-  if (ambiguous_count > 0) {
+
+  if(ambiguous_count > 0)
+  {
     printf("\n  WARNING: %d keys used heuristic type detection (AMBIGUOUS)\n",
            ambiguous_count);
     warnings++;
-    for (int i = 0; i < entries.count; i++) {
+
+    for(int i = 0; i < entries.count; i++)
+    {
       const ChrEntry *e = &entries.entries[i];
-      if (e->ambiguous) {
+
+      if(e->ambiguous)
+      {
         printf("    @%06zx %-40s ", e->offset, e->key);
-        if (e->type == VAL_STRING)
+        if(e->type == VAL_STRING)
           printf("-> string \"%s\"\n", e->str_val);
         else
           printf("-> u32 %u (0x%08X)\n", e->u32_val, e->u32_val);
       }
     }
-  } else {
+  }
+  else
+  {
     printf("  ambiguous keys: none (all keys recognized)\n");
   }
 
   // 3. Structured parse validation
   RawChrParse parse;
+
   parse.data = data;
   parse.file_size = file_size;
   parse_chr_structured(&entries, &parse);
 
-  printf("\n  ── Inventory ──\n");
+  printf("\n  -- Inventory --\n");
   printf("  numberOfSacks: %u\n", parse.num_sacks);
   printf("  inv_block: [%zu..%zu)\n", parse.inv_start, parse.inv_end);
 
-  if (parse.inv_start == 0) {
+  if(parse.inv_start == 0)
+  {
     printf("  ERROR: inventory section not found\n");
     errors++;
   }
 
-  for (uint32_t s = 0; s < parse.num_sacks && s < 8; s++) {
+  for(uint32_t s = 0; s < parse.num_sacks && s < 8; s++)
+  {
     RawSack *sk = &parse.sacks[s];
+
     printf("  sack[%u]: declared=%u  actual=%d",
            s, sk->declared_size, sk->actual_count);
-    if (sk->declared_size != (uint32_t)sk->actual_count) {
+
+    if(sk->declared_size != (uint32_t)sk->actual_count)
+    {
       printf("  ** MISMATCH **");
       warnings++;
     }
+
     printf("\n");
   }
 
-  printf("\n  ── Equipment ──\n");
+  printf("\n  -- Equipment --\n");
   printf("  equip_block: [%zu..%zu)\n", parse.equip_start, parse.equip_end);
   printf("  version: %u, slots_parsed: %d\n",
          parse.equip_version, parse.slots_parsed);
 
-  if (parse.equip_start == 0) {
+  if(parse.equip_start == 0)
+  {
     printf("  ERROR: equipment section not found\n");
     errors++;
   }
-  if (parse.slots_parsed != 12) {
+
+  if(parse.slots_parsed != 12)
+  {
     printf("  ERROR: expected 12 equipment slots, got %d\n", parse.slots_parsed);
     errors++;
   }
 
   // Check weapon set ordering
-  printf("\n  ── Weapon Sets ──\n");
-  for (int i = 7; i <= 10; i++) {
+  printf("\n  -- Weapon Sets --\n");
+
+  for(int i = 7; i <= 10; i++)
+  {
     printf("  slot[%d] %-10s  alternate=%d  attached=%d",
            i, equip_slot_name(i), parse.slots[i].alternate,
            parse.slots[i].attached);
-    if (parse.slots[i].base_name[0])
+    if(parse.slots[i].base_name[0])
       printf("  %s", basename_tail(parse.slots[i].base_name));
     printf("\n");
   }
 
   // Check boundary ordering
-  printf("\n  ── Section Boundaries ──\n");
+  printf("\n  -- Section Boundaries --\n");
   printf("  prefix:    [0..%zu)\n", parse.inv_start);
   printf("  inventory: [%zu..%zu)\n", parse.inv_start, parse.inv_end);
-  if (parse.inv_end > 0 && parse.equip_start > 0) {
+
+  if(parse.inv_end > 0 && parse.equip_start > 0)
+  {
     printf("  middle:    [%zu..%zu) = %zu bytes\n",
            parse.inv_end, parse.equip_start,
            parse.equip_start - parse.inv_end);
   }
+
   printf("  equipment: [%zu..%zu)\n", parse.equip_start, parse.equip_end);
   printf("  suffix:    [%zu..%zu)\n", parse.equip_end, file_size);
 
-  if (parse.inv_end > parse.equip_start && parse.inv_end > 0 && parse.equip_start > 0) {
+  if(parse.inv_end > parse.equip_start && parse.inv_end > 0 && parse.equip_start > 0)
+  {
     printf("  ERROR: inventory end (%zu) > equipment start (%zu)\n",
            parse.inv_end, parse.equip_start);
     errors++;
   }
 
   // Check empty slot var2 values
-  printf("\n  ── Empty Slot var2 Values ──\n");
+  printf("\n  -- Empty Slot var2 Values --\n");
   bool any_nonzero_var2 = false;
-  for (int i = 0; i < 12; i++) {
-    if (!parse.slots[i].base_name[0] && parse.slots[i].var2 != 0) {
+
+  for(int i = 0; i < 12; i++)
+  {
+    if(!parse.slots[i].base_name[0] && parse.slots[i].var2 != 0)
+    {
       printf("  slot[%d] %-10s  var2=0x%08X (non-zero on empty slot)\n",
              i, equip_slot_name(i), parse.slots[i].var2);
       any_nonzero_var2 = true;
       warnings++;
     }
   }
-  if (!any_nonzero_var2)
+
+  if(!any_nonzero_var2)
     printf("  (all empty slots have var2=0)\n");
 
-  printf("\n  ══ Summary: %d errors, %d warnings ══\n", errors, warnings);
+  printf("\n  == Summary: %d errors, %d warnings ==\n", errors, warnings);
 
   free_chr_parse(&parse);
   entry_list_free(&entries);
   free(data);
-  return errors > 0 ? 1 : 0;
+  return(errors > 0 ? 1 : 0);
 }
 
 // ── cmd_hex ──────────────────────────────────────────────────────────────
-// Hex dump of named sections or arbitrary offsets.
 
-static int cmd_hex(const char *path, const char *section, const char *len_str) {
+// cmd_hex -- hex dump of named sections or arbitrary offsets.
+// path: path to .chr file.
+// section: section name ("prefix", "inventory", "middle", "equipment", "suffix")
+//          or a numeric offset.
+// len_str: optional length string (decimal or hex), or NULL for default 256.
+// returns 0 on success, 1 on error.
+static int
+cmd_hex(const char *path, const char *section, const char *len_str)
+{
   size_t file_size;
   uint8_t *data = load_file(path, &file_size);
-  if (!data) return 1;
+
+  if(!data)
+    return(1);
 
   size_t start = 0;
   size_t len = 0;
 
   // Try named section first
-  if (strcmp(section, "prefix") == 0 || strcmp(section, "inventory") == 0 ||
-      strcmp(section, "middle") == 0 || strcmp(section, "equipment") == 0 ||
-      strcmp(section, "suffix") == 0) {
+  if(strcmp(section, "prefix") == 0 || strcmp(section, "inventory") == 0 ||
+     strcmp(section, "middle") == 0 || strcmp(section, "equipment") == 0 ||
+     strcmp(section, "suffix") == 0)
+  {
     // Need structural parse for boundaries
     ChrEntryList entries;
+
     parse_entries(data, file_size, &entries);
+
     RawChrParse parse;
+
     parse.data = data;
     parse.file_size = file_size;
     parse_chr_structured(&entries, &parse);
 
-    if (parse.inv_start == 0 || parse.equip_start == 0) {
+    if(parse.inv_start == 0 || parse.equip_start == 0)
+    {
       fprintf(stderr, "error: could not determine section boundaries\n");
       entry_list_free(&entries);
       free(data);
-      return 1;
+      return(1);
     }
 
-    if (strcmp(section, "prefix") == 0) {
+    if(strcmp(section, "prefix") == 0)
+    {
       start = 0;
       len = parse.inv_start;
-    } else if (strcmp(section, "inventory") == 0) {
+    }
+    else if(strcmp(section, "inventory") == 0)
+    {
       start = parse.inv_start;
       len = parse.inv_end - parse.inv_start;
-    } else if (strcmp(section, "middle") == 0) {
+    }
+    else if(strcmp(section, "middle") == 0)
+    {
       start = parse.inv_end;
       len = parse.equip_start - parse.inv_end;
-    } else if (strcmp(section, "equipment") == 0) {
+    }
+    else if(strcmp(section, "equipment") == 0)
+    {
       start = parse.equip_start;
       len = parse.equip_end - parse.equip_start;
-    } else if (strcmp(section, "suffix") == 0) {
+    }
+    else if(strcmp(section, "suffix") == 0)
+    {
       start = parse.equip_end;
       len = file_size - parse.equip_end;
     }
@@ -1242,26 +1612,35 @@ static int cmd_hex(const char *path, const char *section, const char *len_str) {
 
     free_chr_parse(&parse);
     entry_list_free(&entries);
-  } else {
+  }
+  else
+  {
     // Numeric offset
     char *endptr;
     unsigned long off = strtoul(section, &endptr, 0);
-    if (*endptr != '\0') {
+
+    if(*endptr != '\0')
+    {
       fprintf(stderr, "error: unknown section '%s'\n"
               "  valid sections: prefix, inventory, middle, equipment, suffix\n"
               "  or a numeric offset (decimal or 0x hex)\n", section);
       free(data);
-      return 1;
+      return(1);
     }
+
     start = (size_t)off;
-    if (start >= file_size) {
+
+    if(start >= file_size)
+    {
       fprintf(stderr, "error: offset %zu beyond file size %zu\n",
               start, file_size);
       free(data);
-      return 1;
+      return(1);
     }
+
     len = len_str ? (size_t)strtoul(len_str, NULL, 0) : 256;
-    if (start + len > file_size)
+
+    if(start + len > file_size)
       len = file_size - start;
 
     printf("=== hex dump @%zu (0x%zx), %zu bytes ===\n\n", start, start, len);
@@ -1270,70 +1649,125 @@ static int cmd_hex(const char *path, const char *section, const char *len_str) {
   hex_dump_range(data, start, len);
 
   free(data);
-  return 0;
+  return(0);
 }
 
 // ── cmd_compare ──────────────────────────────────────────────────────────
-// Structural diff between two .chr files. The flagship debugging command.
 
-static void compare_bytes(const char *label,
-                          const uint8_t *a, size_t a_off, size_t a_len,
-                          const uint8_t *b, size_t b_off, size_t b_len,
-                          int *diffs) {
-  if (a_len != b_len) {
+// compare_bytes -- compare two byte ranges and report differences.
+// label: section label for output.
+// a: first file data.
+// a_off: offset into first file.
+// a_len: length of first range.
+// b: second file data.
+// b_off: offset into second file.
+// b_len: length of second range.
+// diffs: pointer to difference counter (incremented on mismatch).
+static void
+compare_bytes(const char *label,
+              const uint8_t *a, size_t a_off, size_t a_len,
+              const uint8_t *b, size_t b_off, size_t b_len,
+              int *diffs)
+{
+  if(a_len != b_len)
+  {
     printf("  %-20s SIZE DIFFERS: %zu vs %zu bytes (delta %+zd)\n",
            label, a_len, b_len, (ssize_t)(b_len - a_len));
     (*diffs)++;
-  } else if (memcmp(a + a_off, b + b_off, a_len) != 0) {
+  }
+  else if(memcmp(a + a_off, b + b_off, a_len) != 0)
+  {
     // Find first difference
     size_t first_diff = 0;
     int diff_count = 0;
-    for (size_t i = 0; i < a_len; i++) {
-      if (a[a_off + i] != b[b_off + i]) {
-        if (diff_count == 0) first_diff = i;
+
+    for(size_t i = 0; i < a_len; i++)
+    {
+      if(a[a_off + i] != b[b_off + i])
+      {
+        if(diff_count == 0)
+          first_diff = i;
         diff_count++;
       }
     }
+
     printf("  %-20s %d byte(s) differ (first at +%zu)\n",
            label, diff_count, first_diff);
     (*diffs)++;
-  } else {
+  }
+  else
+  {
     printf("  %-20s identical (%zu bytes)\n", label, a_len);
   }
 }
 
-static void compare_string_field(const char *label, const char *a,
-                                 const char *b, int *diffs) {
+// compare_string_field -- compare two string fields and report if different.
+// label: field label for output.
+// a: first string value.
+// b: second string value.
+// diffs: pointer to difference counter (incremented on mismatch).
+static void
+compare_string_field(const char *label, const char *a,
+                     const char *b, int *diffs)
+{
   bool a_empty = (!a || !*a);
   bool b_empty = (!b || !*b);
-  if (a_empty && b_empty) return;
-  if (a_empty != b_empty || strcmp(a ? a : "", b ? b : "") != 0) {
+
+  if(a_empty && b_empty)
+    return;
+
+  if(a_empty != b_empty || strcmp(a ? a : "", b ? b : "") != 0)
+  {
     printf("      %s: \"%s\" -> \"%s\"\n", label,
            a_empty ? "" : a, b_empty ? "" : b);
     (*diffs)++;
   }
 }
 
-static void compare_u32_field(const char *label, uint32_t a, uint32_t b,
-                              int *diffs) {
-  if (a != b) {
+// compare_u32_field -- compare two uint32 fields and report if different.
+// label: field label for output.
+// a: first value.
+// b: second value.
+// diffs: pointer to difference counter (incremented on mismatch).
+static void
+compare_u32_field(const char *label, uint32_t a, uint32_t b,
+                  int *diffs)
+{
+  if(a != b)
+  {
     printf("      %s: %u (0x%08X) -> %u (0x%08X)\n", label, a, a, b, b);
     (*diffs)++;
   }
 }
 
-static int cmd_compare(const char *path_a, const char *path_b) {
+// cmd_compare -- structural diff between two .chr files (flagship debugging command).
+// path_a: path to first .chr file.
+// path_b: path to second .chr file.
+// returns 0 if identical, 1 if differences found or on error.
+static int
+cmd_compare(const char *path_a, const char *path_b)
+{
   size_t size_a, size_b;
   uint8_t *data_a = load_file(path_a, &size_a);
-  if (!data_a) return 1;
+
+  if(!data_a)
+    return(1);
+
   uint8_t *data_b = load_file(path_b, &size_b);
-  if (!data_b) { free(data_a); return 1; }
+
+  if(!data_b)
+  {
+    free(data_a);
+    return(1);
+  }
 
   ChrEntryList entries_a, entries_b;
+
   parse_entries(data_a, size_a, &entries_a);
   parse_entries(data_b, size_b, &entries_b);
 
   RawChrParse pa, pb;
+
   pa.data = data_a; pa.file_size = size_a;
   pb.data = data_b; pb.file_size = size_b;
   parse_chr_structured(&entries_a, &pa);
@@ -1342,25 +1776,30 @@ static int cmd_compare(const char *path_a, const char *path_b) {
   printf("=== Compare: %s vs %s ===\n\n", path_a, path_b);
   printf("  File A: %zu bytes, %d entries\n", size_a, entries_a.count);
   printf("  File B: %zu bytes, %d entries\n", size_b, entries_b.count);
-  if (size_a != size_b)
+
+  if(size_a != size_b)
     printf("  Size delta: %+zd bytes\n", (ssize_t)(size_b - size_a));
+
   printf("\n");
 
   int diffs = 0;
 
   // ── Pass 1: Section byte comparison ──
-  printf("── Section Comparison ──\n");
+  printf("-- Section Comparison --\n");
   printf("  File A boundaries: inv=[%zu..%zu) equip=[%zu..%zu)\n",
          pa.inv_start, pa.inv_end, pa.equip_start, pa.equip_end);
   printf("  File B boundaries: inv=[%zu..%zu) equip=[%zu..%zu)\n",
          pb.inv_start, pb.inv_end, pb.equip_start, pb.equip_end);
   printf("\n");
 
-  if (pa.inv_start == 0 || pb.inv_start == 0 ||
-      pa.equip_start == 0 || pb.equip_start == 0) {
+  if(pa.inv_start == 0 || pb.inv_start == 0 ||
+     pa.equip_start == 0 || pb.equip_start == 0)
+  {
     printf("  ERROR: could not determine boundaries for both files\n");
     diffs++;
-  } else {
+  }
+  else
+  {
     compare_bytes("prefix", data_a, 0, pa.inv_start,
                   data_b, 0, pb.inv_start, &diffs);
     compare_bytes("inventory", data_a, pa.inv_start,
@@ -1382,26 +1821,31 @@ static int cmd_compare(const char *path_a, const char *path_b) {
   }
 
   // ── Pass 2: Inventory header comparison ──
-  printf("\n── Inventory Header ──\n");
+  printf("\n-- Inventory Header --\n");
   compare_u32_field("numberOfSacks", pa.num_sacks, pb.num_sacks, &diffs);
   compare_u32_field("focusedSack", pa.focused_sack, pb.focused_sack, &diffs);
   compare_u32_field("selectedSack", pa.selected_sack, pb.selected_sack, &diffs);
 
   // ── Pass 3: Per-sack item comparison ──
   uint32_t max_sacks = pa.num_sacks > pb.num_sacks ? pa.num_sacks : pb.num_sacks;
-  if (max_sacks > 8) max_sacks = 8;
 
-  for (uint32_t s = 0; s < max_sacks; s++) {
-    printf("\n── Sack %u ──\n", s);
+  if(max_sacks > 8)
+    max_sacks = 8;
+
+  for(uint32_t s = 0; s < max_sacks; s++)
+  {
+    printf("\n-- Sack %u --\n", s);
     RawSack *sa = (s < pa.num_sacks) ? &pa.sacks[s] : NULL;
     RawSack *sb = (s < pb.num_sacks) ? &pb.sacks[s] : NULL;
 
-    if (!sa) { printf("  MISSING in file A\n"); diffs++; continue; }
-    if (!sb) { printf("  MISSING in file B\n"); diffs++; continue; }
+    if(!sa) { printf("  MISSING in file A\n"); diffs++; continue; }
+    if(!sb) { printf("  MISSING in file B\n"); diffs++; continue; }
 
     compare_u32_field("declared_size", sa->declared_size,
                       sb->declared_size, &diffs);
-    if (sa->actual_count != sb->actual_count) {
+
+    if(sa->actual_count != sb->actual_count)
+    {
       printf("      actual_count: %d -> %d\n", sa->actual_count, sb->actual_count);
       diffs++;
     }
@@ -1411,38 +1855,53 @@ static int cmd_compare(const char *path_a, const char *path_b) {
     int max_items = sa->actual_count > sb->actual_count ?
                     sa->actual_count : sb->actual_count;
 
-    for (int ia = 0; ia < sa->actual_count; ia++) {
+    for(int ia = 0; ia < sa->actual_count; ia++)
+    {
       RawItem *a = &sa->items[ia];
+
       // Find matching item in B
       int ib_match = -1;
-      for (int ib = 0; ib < sb->actual_count; ib++) {
-        if (matched_b[ib]) continue;
+
+      for(int ib = 0; ib < sb->actual_count; ib++)
+      {
+        if(matched_b[ib])
+          continue;
+
         RawItem *b = &sb->items[ib];
-        if (strcmp(a->base_name, b->base_name) == 0 &&
-            a->point_x == b->point_x && a->point_y == b->point_y) {
+
+        if(strcmp(a->base_name, b->base_name) == 0 &&
+           a->point_x == b->point_x && a->point_y == b->point_y)
+        {
           ib_match = ib;
           break;
         }
       }
 
-      if (ib_match < 0) {
+      if(ib_match < 0)
+      {
         // Try looser match: same base_name, same position coords
-        for (int ib = 0; ib < sb->actual_count; ib++) {
-          if (matched_b[ib]) continue;
-          if (strcmp(a->base_name, sb->items[ib].base_name) == 0) {
+        for(int ib = 0; ib < sb->actual_count; ib++)
+        {
+          if(matched_b[ib])
+            continue;
+
+          if(strcmp(a->base_name, sb->items[ib].base_name) == 0)
+          {
             ib_match = ib;
             break;
           }
         }
       }
 
-      if (ib_match >= 0) {
+      if(ib_match >= 0)
+      {
         matched_b[ib_match] = 1;
         RawItem *b = &sb->items[ib_match];
         int item_diffs = 0;
 
         // Compare all fields
         int local_diffs = 0;
+
         compare_string_field("baseName", a->base_name, b->base_name, &local_diffs);
         compare_string_field("prefixName", a->prefix_name, b->prefix_name, &local_diffs);
         compare_string_field("suffixName", a->suffix_name, b->suffix_name, &local_diffs);
@@ -1454,19 +1913,24 @@ static int cmd_compare(const char *path_a, const char *path_b) {
         compare_u32_field("var1", a->var1, b->var1, &local_diffs);
         compare_u32_field("var2", a->var2, b->var2, &local_diffs);
 
-        if (a->point_x != b->point_x || a->point_y != b->point_y) {
+        if(a->point_x != b->point_x || a->point_y != b->point_y)
+        {
           printf("      position: (%d,%d) -> (%d,%d)\n",
                  a->point_x, a->point_y, b->point_x, b->point_y);
           local_diffs++;
         }
 
         item_diffs = local_diffs;
-        if (item_diffs > 0) {
+
+        if(item_diffs > 0)
+        {
           printf("    item[%d] %s: %d difference(s)\n",
                  ia, basename_tail(a->base_name), item_diffs);
           diffs += item_diffs;
         }
-      } else {
+      }
+      else
+      {
         printf("    item[%d] ONLY IN A: %s at (%d,%d)\n",
                ia, basename_tail(a->base_name), a->point_x, a->point_y);
         diffs++;
@@ -1474,9 +1938,12 @@ static int cmd_compare(const char *path_a, const char *path_b) {
     }
 
     // Report unmatched B items
-    for (int ib = 0; ib < sb->actual_count; ib++) {
-      if (!matched_b[ib]) {
+    for(int ib = 0; ib < sb->actual_count; ib++)
+    {
+      if(!matched_b[ib])
+      {
         RawItem *b = &sb->items[ib];
+
         printf("    item[%d] ONLY IN B: %s at (%d,%d)\n",
                ib, basename_tail(b->base_name), b->point_x, b->point_y);
         diffs++;
@@ -1487,15 +1954,16 @@ static int cmd_compare(const char *path_a, const char *path_b) {
   }
 
   // ── Pass 4: Equipment comparison ──
-  printf("\n── Equipment ──\n");
+  printf("\n-- Equipment --\n");
   compare_u32_field("version", pa.equip_version, pb.equip_version, &diffs);
 
-  for (int i = 0; i < 12; i++) {
+  for(int i = 0; i < 12; i++)
+  {
     RawEquipSlot *a = &pa.slots[i];
     RawEquipSlot *b = &pb.slots[i];
     int slot_diffs = 0;
-
     int local_diffs = 0;
+
     compare_string_field("baseName", a->base_name, b->base_name, &local_diffs);
     compare_string_field("prefixName", a->prefix_name, b->prefix_name, &local_diffs);
     compare_string_field("suffixName", a->suffix_name, b->suffix_name, &local_diffs);
@@ -1507,17 +1975,22 @@ static int cmd_compare(const char *path_a, const char *path_b) {
     compare_u32_field("var1", a->var1, b->var1, &local_diffs);
     compare_u32_field("var2", a->var2, b->var2, &local_diffs);
 
-    if (a->attached != b->attached) {
+    if(a->attached != b->attached)
+    {
       printf("      attached: %d -> %d\n", a->attached, b->attached);
       local_diffs++;
     }
-    if (a->alternate != b->alternate) {
+
+    if(a->alternate != b->alternate)
+    {
       printf("      alternate: %d -> %d\n", a->alternate, b->alternate);
       local_diffs++;
     }
 
     slot_diffs = local_diffs;
-    if (slot_diffs > 0) {
+
+    if(slot_diffs > 0)
+    {
       printf("  slot[%2d] %-10s: %d difference(s)\n",
              i, equip_slot_name(i), slot_diffs);
       diffs += slot_diffs;
@@ -1525,7 +1998,7 @@ static int cmd_compare(const char *path_a, const char *path_b) {
   }
 
   // ── Summary ──
-  printf("\n══ Summary: %d total differences ══\n", diffs);
+  printf("\n== Summary: %d total differences ==\n", diffs);
 
   free_chr_parse(&pa);
   free_chr_parse(&pb);
@@ -1533,27 +2006,35 @@ static int cmd_compare(const char *path_a, const char *path_b) {
   entry_list_free(&entries_b);
   free(data_a);
   free(data_b);
-  return diffs > 0 ? 1 : 0;
+  return(diffs > 0 ? 1 : 0);
 }
 
 // ── cmd_roundtrip ────────────────────────────────────────────────────────
-// Load via character_load(), save to /tmp, then run compare logic.
 
-static int cmd_roundtrip(const char *path) {
+// cmd_roundtrip -- load via character_load(), save to /tmp, then compare.
+// path: path to .chr file.
+// returns 0 if round-trip is identical, 1 if differences found or on error.
+static int
+cmd_roundtrip(const char *path)
+{
   printf("=== Roundtrip: %s ===\n\n", path);
 
   // Load original file size for later comparison
   size_t orig_size;
   uint8_t *orig_data = load_file(path, &orig_size);
-  if (!orig_data) return 1;
+
+  if(!orig_data)
+    return(1);
 
   // Use character_load() / character_save()
   tqvc_debug = 1;
   TQCharacter *chr = character_load(path);
-  if (!chr) {
+
+  if(!chr)
+  {
     fprintf(stderr, "error: character_load() failed\n");
     free(orig_data);
-    return 1;
+    return(1);
   }
 
   printf("\ncharacter_load() succeeded: %s level %u, %d sacks\n",
@@ -1565,12 +2046,14 @@ static int cmd_roundtrip(const char *path) {
   // Save to temp file
   char *tmp_path = g_build_filename(g_get_tmp_dir(), "tq_chr_tool_roundtrip.chr", NULL);
   int ret = character_save(chr, tmp_path);
-  if (ret != 0) {
+
+  if(ret != 0)
+  {
     fprintf(stderr, "error: character_save() returned %d\n", ret);
     character_free(chr);
     free(orig_data);
     g_free(tmp_path);
-    return 1;
+    return(1);
   }
 
   printf("character_save() wrote %s\n\n", tmp_path);
@@ -1578,22 +2061,27 @@ static int cmd_roundtrip(const char *path) {
   free(orig_data);
 
   // Now compare original vs roundtripped using our independent parser
-  printf("────────────────────────────────────────────────────────────\n\n");
+  printf("------------------------------------------------------------\n\n");
   int cmp_ret = cmd_compare(path, tmp_path);
+
   g_free(tmp_path);
-  return cmp_ret;
+  return(cmp_ret);
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
 
-static void usage(const char *prog) {
+// usage -- print program usage to stderr.
+// prog: program name (argv[0]).
+static void
+usage(const char *prog)
+{
   fprintf(stderr,
     "Usage: %s <command> [args...]\n"
     "\n"
     "Player.chr debugging/troubleshooting tool.\n"
-    "Independent binary parser — does NOT reuse character_load() bugs.\n"
+    "Independent binary parser -- does NOT reuse character_load() bugs.\n"
     "\n"
     "Commands:\n"
     "  dump      <chr>                      Raw key-value dump with offsets\n"
@@ -1619,76 +2107,98 @@ static void usage(const char *prog) {
     prog, prog, prog, prog, prog, prog, prog, prog);
 }
 
-int main(int argc, char **argv) {
-  if (argc < 2) {
+// main -- entry point. Dispatches to subcommands based on argv[1].
+// argc: argument count.
+// argv: argument array.
+// returns 0 on success, 1 on error.
+int
+main(int argc, char **argv)
+{
+  if(argc < 2)
+  {
     usage(argv[0]);
-    return 1;
+    return(1);
   }
 
-  if (strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0) {
+  if(strcmp(argv[1], "--help") == 0 || strcmp(argv[1], "-h") == 0)
+  {
     usage(argv[0]);
-    return 0;
+    return(0);
   }
 
   const char *cmd = argv[1];
 
-  if (strcmp(cmd, "dump") == 0) {
-    if (argc < 3) {
+  if(strcmp(cmd, "dump") == 0)
+  {
+    if(argc < 3)
+    {
       fprintf(stderr, "Usage: %s dump <chr>\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_dump(argv[2]);
+    return(cmd_dump(argv[2]));
   }
 
-  if (strcmp(cmd, "inv") == 0) {
-    if (argc < 3) {
+  if(strcmp(cmd, "inv") == 0)
+  {
+    if(argc < 3)
+    {
       fprintf(stderr, "Usage: %s inv <chr>\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_inv(argv[2]);
+    return(cmd_inv(argv[2]));
   }
 
-  if (strcmp(cmd, "equip") == 0) {
-    if (argc < 3) {
+  if(strcmp(cmd, "equip") == 0)
+  {
+    if(argc < 3)
+    {
       fprintf(stderr, "Usage: %s equip <chr>\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_equip(argv[2]);
+    return(cmd_equip(argv[2]));
   }
 
-  if (strcmp(cmd, "compare") == 0) {
-    if (argc < 4) {
+  if(strcmp(cmd, "compare") == 0)
+  {
+    if(argc < 4)
+    {
       fprintf(stderr, "Usage: %s compare <chr_a> <chr_b>\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_compare(argv[2], argv[3]);
+    return(cmd_compare(argv[2], argv[3]));
   }
 
-  if (strcmp(cmd, "validate") == 0) {
-    if (argc < 3) {
+  if(strcmp(cmd, "validate") == 0)
+  {
+    if(argc < 3)
+    {
       fprintf(stderr, "Usage: %s validate <chr>\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_validate(argv[2]);
+    return(cmd_validate(argv[2]));
   }
 
-  if (strcmp(cmd, "hex") == 0) {
-    if (argc < 4) {
+  if(strcmp(cmd, "hex") == 0)
+  {
+    if(argc < 4)
+    {
       fprintf(stderr, "Usage: %s hex <chr> <section|offset> [len]\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_hex(argv[2], argv[3], argc > 4 ? argv[4] : NULL);
+    return(cmd_hex(argv[2], argv[3], argc > 4 ? argv[4] : NULL));
   }
 
-  if (strcmp(cmd, "roundtrip") == 0) {
-    if (argc < 3) {
+  if(strcmp(cmd, "roundtrip") == 0)
+  {
+    if(argc < 3)
+    {
       fprintf(stderr, "Usage: %s roundtrip <chr>\n", argv[0]);
-      return 1;
+      return(1);
     }
-    return cmd_roundtrip(argv[2]);
+    return(cmd_roundtrip(argv[2]));
   }
 
   fprintf(stderr, "error: unknown command '%s'\n\n", cmd);
   usage(argv[0]);
-  return 1;
+  return(1);
 }

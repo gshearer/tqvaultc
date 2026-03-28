@@ -1,5 +1,5 @@
 project('TQVaultC', 'c',
-  version: '0.1',
+  version: '0.2',
   default_options: ['warning_level=3'])
 
 # 1. Define Dependencies
@@ -12,7 +12,12 @@ m_dep = meson.get_compiler('c').find_library('m', required : false)
 # 2. Version info
 version_conf = configuration_data()
 version_conf.set_quoted('TQVAULTC_VERSION', meson.project_version())
-configure_file(input: 'src/version.h.in', output: 'version.h', configuration: version_conf)
+version_h = custom_target('version_header',
+  output: 'version.h',
+  command: [find_program('bash'), '-c',
+    'cat > "$1" <<EOF\n#ifndef VERSION_H\n#define VERSION_H\n#define TQVAULTC_VERSION "' + meson.project_version() + '"\n#endif\nEOF',
+    '--', '@OUTPUT@'],
+  build_always_stale: true)
 
 if host_machine.system() == 'windows'
   build_number = custom_target('build_number',
@@ -53,6 +58,7 @@ app_sources = [
   'src/asset_lookup.c',
   'src/translation.c',
   'src/item_stats.c',
+  'src/item_stats_format.c',
   'src/affix_table.c',
   'src/ui_manage.c',
   'src/ui_context_menu.c',
@@ -60,6 +66,7 @@ app_sources = [
   'src/ui_affix_dialog.c',
   'src/ui_draw.c',
   'src/ui_tooltip.c',
+  'src/ui_io.c',
   'src/ui_dnd.c',
   'src/ui_stats.c',
   'src/ui_settings.c',
@@ -74,7 +81,7 @@ app_sources = [
 
 # 5. Build the GUI Application
 executable('tqvaultc',
-  app_sources + platform_sources + [build_number, app_resources],
+  app_sources + platform_sources + [version_h, build_number, app_resources],
   dependencies: [gtk_dep, json_dep, zlib_dep, magick_dep, m_dep],
   install: true)
 

@@ -80,8 +80,18 @@
 .dot-hdr-brn { background: alpha(#ff8844, 0.15); color: #ff8844; }
 .dot-hdr-fbrn { background: alpha(#ff8844, 0.15); color: #ff8844; }
 .dot-hdr-ebrn { background: alpha(#dddd44, 0.15); color: #dddd44; }
+.dot-hdr-vit { background: alpha(#dd5577, 0.15); color: #dd5577; }
 .dot-hdr-ll  { background: alpha(#dd5577, 0.15); color: #dd5577; }
 .dot-hdr-el  { background: alpha(#44bbdd, 0.15); color: #44bbdd; }
+
+/* Ability header colors */
+.abil-hdr-oa    { background: alpha(#ffaa44, 0.15); color: #ffaa44; }
+.abil-hdr-oapct { background: alpha(#ffaa44, 0.15); color: #ffaa44; }
+.abil-hdr-da    { background: alpha(#44aaff, 0.15); color: #44aaff; }
+.abil-hdr-dapct { background: alpha(#44aaff, 0.15); color: #44aaff; }
+
+/* Health/Energy header colors */
+.hea-hdr-adcth { background: alpha(#dd5577, 0.15); color: #dd5577; }
 
 /* Pet damage header colors */
 .pet-hdr-phy { background: alpha(#d4a06a, 0.15); color: #d4a06a; }
