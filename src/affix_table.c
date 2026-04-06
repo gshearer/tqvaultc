@@ -862,7 +862,7 @@ resolve_randomizer_table(const char *table_path, TQTranslation *tr,
     extract_affix_family(rp->path, &family, &tier);
 
     // Build stat summary from the affix DBR
-    char *summary = item_bonus_stat_summary(rp->path);
+    char *summary = item_bonus_stat_summary(rp->path, tr);
 
     if(!summary)
       summary = family ? strdup(family) : pretty_filename(rp->path);

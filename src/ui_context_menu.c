@@ -317,7 +317,7 @@ build_bonus_submenu(const char *table_path, const char *current_bonus,
     if(!translation)
     {
       // Fallback: generate stat summary from the bonus record
-      translation = item_bonus_stat_summary(bp->path);
+      translation = item_bonus_stat_summary(bp->path, tr);
     }
 
     if(!translation)

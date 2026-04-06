@@ -86,9 +86,10 @@ relic_max_shards(const char *relic_path);
 // Returns a malloc'd short stat summary string from a bonus DBR
 // (e.g. "+30% Attack Speed"). Caller must free().
 // record_path: DBR path to the bonus record.
+// tr: optional translation table (may be NULL) for mastery name resolution.
 // Returns: summary string, or NULL if no stats found.
 char *
-item_bonus_stat_summary(const char *record_path);
+item_bonus_stat_summary(const char *record_path, TQTranslation *tr);
 
 // BufWriter: O(1) append instead of O(N) strlen
 

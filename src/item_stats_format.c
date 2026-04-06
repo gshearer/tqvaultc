@@ -902,8 +902,8 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
     add_stats_from_record(relic_bonus, tr, &w, "#40FF40", 0);
   }
 
-  // Relic/Charm slot 1
-  if(!is_artifact)
+  // Relic/Charm slot 1 (skip for standalone relics -- already shown above)
+  if(!is_artifact && !standalone_relic_charm)
     add_relic_section(relic_name, relic_bonus, var1, tr, &w);
 
   // Relic/Charm slot 2
