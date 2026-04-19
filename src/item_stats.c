@@ -103,7 +103,7 @@ static AttributeMap attr_maps[] = {
   {"defensiveStunModifier", "+%d%% Reduced Stun Duration", true, NULL},
   {"defensiveConfusion", "%+d%% Confusion Resistance", false, NULL},
   {"defensiveConvert", "%+d%% Convert Resistance", false, NULL},
-  {"defensiveReflect", "%d%% Damage Reflected", false, NULL},
+  // defensiveReflect handled in dedicated block (has chance)
 
   // Duration reductions
   {"defensiveFreeze", "%+d%% Reduced Freeze Duration", false, NULL},
@@ -291,6 +291,7 @@ static const char *INT_retaliationPierceMax;
 static const char *INT_defensiveSlowLifeLeach, *INT_defensiveSlowLifeLeachChance;
 static const char *INT_defensiveSlowManaLeach, *INT_defensiveSlowManaLeachChance;
 static const char *INT_defensivePoisonDuration, *INT_defensivePoisonDurationChance;
+static const char *INT_defensiveReflect, *INT_defensiveReflectChance;
 const char *INT_itemNameTag, *INT_description, *INT_lootRandomizerName, *INT_FileDescription;
 const char *INT_itemClassification, *INT_itemText;
 const char *INT_characterBaseAttackSpeedTag, *INT_artifactClassification;
@@ -384,6 +385,7 @@ item_stats_init(void)
     "defensiveSlowLifeLeach", "defensiveSlowLifeLeachChance",
     "defensiveSlowManaLeach", "defensiveSlowManaLeachChance",
     "defensivePoisonDuration", "defensivePoisonDurationChance",
+    "defensiveReflect", "defensiveReflectChance",
     "retaliationSlowAttackSpeedMin", "retaliationSlowAttackSpeedDurationMin",
     "retaliationSlowManaLeachMin", "retaliationSlowManaLeachDurationMin", "retaliationSlowManaLeachChance",
     "retaliationPierceMax",
@@ -507,6 +509,7 @@ item_stats_init(void)
   INTERN(defensiveSlowLifeLeach); INTERN(defensiveSlowLifeLeachChance);
   INTERN(defensiveSlowManaLeach); INTERN(defensiveSlowManaLeachChance);
   INTERN(defensivePoisonDuration); INTERN(defensivePoisonDurationChance);
+  INTERN(defensiveReflect); INTERN(defensiveReflectChance);
   INTERN(itemNameTag); INTERN(description); INTERN(lootRandomizerName); INTERN(FileDescription);
   INTERN(itemClassification); INTERN(itemText);
   INTERN(characterBaseAttackSpeedTag); INTERN(artifactClassification);
@@ -2106,6 +2109,21 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
         buf_write(w, "<span color='%s'>%.0f%% Chance of %+d%% %s</span>\n", color, rc, (int)round(rv), dot_resist[ri].label);
       else
         buf_write(w, "<span color='%s'>%+d%% %s</span>\n", color, (int)round(rv), dot_resist[ri].label);
+    }
+  }
+
+  // Damage reflected (may have chance)
+  {
+    float rv = dbr_get_float_fast(data, INT_defensiveReflect, shard_index);
+
+    if(rv > 0)
+    {
+      float rc = dbr_get_float_fast(data, INT_defensiveReflectChance, shard_index);
+
+      if(rc > 0 && rc < 100)
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %d Damage Reflected</span>\n", color, rc, (int)round(rv));
+      else
+        buf_write(w, "<span color='%s'>%d Damage Reflected</span>\n", color, (int)round(rv));
     }
   }
 
