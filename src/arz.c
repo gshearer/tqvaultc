@@ -347,9 +347,10 @@ arz_read_record_at(TQArzFile *arz, uint32_t offset, uint32_t compressed_size)
     data->vars[i].name = (key_idx < arz->num_strings) ? arz->string_table[key_idx] : NULL;
     data->vars[i].count = count;
 
-    if(type == 0 || type == 1)
+    if(type == 0 || type == 1 || type == 3)
     {
-      data->vars[i].type = (type == 0) ? TQ_VAR_INT : TQ_VAR_FLOAT;
+      // type 3 = Boolean (4-byte int per ARZ format), treat as INT
+      data->vars[i].type = (type == 1) ? TQ_VAR_FLOAT : TQ_VAR_INT;
       data->vars[i].value.i32 = (int32_t *)(data->pool_to_free + pool_off);
       memcpy(data->vars[i].value.i32, uncompressed + off, (size_t)count * 4);
       pool_off += (size_t)count * 4;

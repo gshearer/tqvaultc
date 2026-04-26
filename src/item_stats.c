@@ -706,6 +706,36 @@ dbr_get_float_fast(TQArzRecordData *data, const char *interned_name, int si)
   return((v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx]);
 }
 
+// Check whether a proc-style offensive stat group belongs inside the
+// "X% Chance of:" block.  TQ flags this with offensive<Prefix>Global == 1
+// (boolean).  prefix is the stat name segment (e.g. "Elemental", "Fire",
+// "LifeLeech", "PercentCurrentLife").  Returns true if Global is set.
+static bool
+offensive_proc_in_chance(TQArzRecordData *data, const char *prefix, int shard_index)
+{
+  if(!prefix || !*prefix)
+    return false;
+
+  char name[96];
+  snprintf(name, sizeof(name), "offensive%sGlobal", prefix);
+  const char *iv = arz_intern(name);
+
+  return dbr_get_float_fast(data, iv, shard_index) > 0.5f;
+}
+
+__attribute__((unused)) static bool
+retaliation_proc_in_chance(TQArzRecordData *data, const char *prefix, int shard_index)
+{
+  if(!prefix || !*prefix)
+    return false;
+
+  char name[96];
+  snprintf(name, sizeof(name), "retaliation%sGlobal", prefix);
+  const char *iv = arz_intern(name);
+
+  return dbr_get_float_fast(data, iv, shard_index) > 0.5f;
+}
+
 // Get string variable from a pre-fetched record using interned name.
 // data: pre-fetched record data.
 // interned_name: interned variable name pointer.
@@ -1444,14 +1474,15 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   if(!data)
     return;
 
-  // Items without base weapon damage (relics, charms, armor, jewelry) wrap
-  // their proc-style offensive effects under an "X% Chance of:" header when
-  // offensiveGlobalChance > 0.  Weapons and shields are excluded because
-  // their offensivePhysicalMin etc. is base attack damage, not a proc.
+  // offensiveGlobalChance > 0 wraps proc-style offensive effects under an
+  // "X% Chance of:" header.  On weapons, the offensiveBase* damage entries
+  // are the weapon's actual base attack damage and stay outside the chance
+  // block (handled below via is_base), while non-Base bonuses go inside.
   const char *cls = record_get_string_fast(data, INT_Class);
   bool is_proc_wrapped = cls && (strcasecmp(cls, "ItemRelic") == 0 ||
                                  strcasecmp(cls, "ItemCharm") == 0 ||
-                                 strncasecmp(cls, "Armor", 5) == 0);
+                                 strncasecmp(cls, "Armor", 5) == 0 ||
+                                 strncasecmp(cls, "Weapon", 6) == 0);
   float global_chance = is_proc_wrapped
                         ? dbr_get_float_fast(data, INT_offensiveGlobalChance, shard_index)
                         : 0;
@@ -1485,24 +1516,27 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
   // Flat damage ranges (min-max), with optional chance qualifier
   {
-    static struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; } damage_types[] = {
-      {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, &INT_offensivePhysicalChance, "Physical Damage"},
-      {&INT_offensiveFireMin, &INT_offensiveFireMax, &INT_offensiveFireChance, "Fire Damage"},
-      {&INT_offensiveColdMin, &INT_offensiveColdMax, &INT_offensiveColdChance, "Cold Damage"},
-      {&INT_offensiveLightningMin, &INT_offensiveLightningMax, &INT_offensiveLightningChance, "Lightning Damage"},
-      {&INT_offensivePoisonMin, &INT_offensivePoisonMax, &INT_offensivePoisonChance, "Poison Damage"},
-      {&INT_offensivePierceMin, &INT_offensivePierceMax, &INT_offensivePierceChance, "Piercing Damage"},
-      {&INT_offensiveElementalMin, &INT_offensiveElementalMax, &INT_offensiveElementalChance, "Elemental Damage"},
-      {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech"},
-      {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Physical Damage"},
-      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage"},
-      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage"},
-      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage"},
-      {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage"},
-      {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage"},
-      {&INT_offensiveLifeMin, &INT_offensiveLifeMax, &INT_offensiveLifeChance, "Vitality Damage"},
-      {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, &INT_offensiveBonusPhysicalChance, "Physical Damage"},
-      {NULL, NULL, NULL, NULL}
+    // prefix: stat name segment used to look up offensive<Prefix>Global.
+    // is_base: weapon base damage (always top-level).  NULL prefix on
+    // non-base entries means "no Global lookup" (treat like top-level).
+    static struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; bool is_base; const char *prefix; } damage_types[] = {
+      {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, &INT_offensivePhysicalChance, "Physical Damage", false, "Physical"},
+      {&INT_offensiveFireMin, &INT_offensiveFireMax, &INT_offensiveFireChance, "Fire Damage", false, "Fire"},
+      {&INT_offensiveColdMin, &INT_offensiveColdMax, &INT_offensiveColdChance, "Cold Damage", false, "Cold"},
+      {&INT_offensiveLightningMin, &INT_offensiveLightningMax, &INT_offensiveLightningChance, "Lightning Damage", false, "Lightning"},
+      {&INT_offensivePoisonMin, &INT_offensivePoisonMax, &INT_offensivePoisonChance, "Poison Damage", false, "Poison"},
+      {&INT_offensivePierceMin, &INT_offensivePierceMax, &INT_offensivePierceChance, "Piercing Damage", false, "Pierce"},
+      {&INT_offensiveElementalMin, &INT_offensiveElementalMax, &INT_offensiveElementalChance, "Elemental Damage", false, "Elemental"},
+      {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech", false, NULL},
+      {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Physical Damage", true, NULL},
+      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage", true, NULL},
+      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage", true, NULL},
+      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage", true, NULL},
+      {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage", true, NULL},
+      {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage", true, NULL},
+      {&INT_offensiveLifeMin, &INT_offensiveLifeMax, &INT_offensiveLifeChance, "Vitality Damage", false, "Life"},
+      {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, &INT_offensiveBonusPhysicalChance, "Physical Damage", false, "BonusPhysical"},
+      {NULL, NULL, NULL, NULL, false, NULL}
     };
 
     for(int d = 0; damage_types[d].min_int; d++)
@@ -1526,11 +1560,19 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
         else
         {
+          // Base weapon damage and stats whose Global flag is false stay
+          // outside the chance block; only stats with Global=true go inside.
+          bool in_chance = !damage_types[d].is_base
+                           && global_chance > 0
+                           && offensive_proc_in_chance(data, damage_types[d].prefix, shard_index);
+          BufWriter *target = in_chance ? ow : w;
+          const char *target_indent = in_chance ? indent : "";
+
           if(mx > mn)
-            buf_write(ow, "<span color='%s'>%s%d - %d %s</span>\n", color, indent, (int)round(mn), (int)round(mx), dmg_label);
+            buf_write(target, "<span color='%s'>%s%d - %d %s</span>\n", color, target_indent, (int)round(mn), (int)round(mx), dmg_label);
 
           else
-            buf_write(ow, "<span color='%s'>%s%d %s</span>\n", color, indent, (int)round(mn), dmg_label);
+            buf_write(target, "<span color='%s'>%s%d %s</span>\n", color, target_indent, (int)round(mn), dmg_label);
         }
       }
     }
@@ -1543,11 +1585,15 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
     if(mn > 0)
     {
+      bool in_chance = global_chance > 0 && offensive_proc_in_chance(data, "LifeLeech", shard_index);
+      BufWriter *target = in_chance ? ow : w;
+      const char *target_indent = in_chance ? indent : "";
+
       if(mx > mn)
-        buf_write(ow, "<span color='%s'>%s%d%% - %d%% Attack Damage Converted to Health</span>\n", color, indent, (int)round(mn), (int)round(mx));
+        buf_write(target, "<span color='%s'>%s%d%% - %d%% Attack Damage Converted to Health</span>\n", color, target_indent, (int)round(mn), (int)round(mx));
 
       else
-        buf_write(ow, "<span color='%s'>%s%d%% Attack Damage Converted to Health</span>\n", color, indent, (int)round(mn));
+        buf_write(target, "<span color='%s'>%s%d%% Attack Damage Converted to Health</span>\n", color, target_indent, (int)round(mn));
     }
   }
 
@@ -1990,21 +2036,24 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     {
       float pcl_max = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMax, shard_index);
       float pcl_chance = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeChance, shard_index);
+      bool in_chance = global_chance > 0 && offensive_proc_in_chance(data, "PercentCurrentLife", shard_index);
+      BufWriter *target = in_chance ? ow : w;
+      const char *target_indent = in_chance ? indent : "";
 
       if(pcl_chance > 0 && pcl_chance < 100)
       {
         if(pcl_max > pcl)
-          buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f%% - %.0f%% Reduction to Enemy's Health</span>\n", color, indent, pcl_chance, pcl, pcl_max);
+          buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% - %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl, pcl_max);
         else
-          buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, indent, pcl_chance, pcl);
+          buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl);
       }
 
       else
       {
         if(pcl_max > pcl)
-          buf_write(ow, "<span color='%s'>%s%.0f%% - %.0f%% Reduction to Enemy's Health</span>\n", color, indent, pcl, pcl_max);
+          buf_write(target, "<span color='%s'>%s%.0f%% - %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl, pcl_max);
         else
-          buf_write(ow, "<span color='%s'>%s%.0f%% Reduction to Enemy's Health</span>\n", color, indent, pcl);
+          buf_write(target, "<span color='%s'>%s%.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl);
       }
     }
   }
