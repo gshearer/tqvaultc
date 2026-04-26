@@ -118,7 +118,6 @@ static AttributeMap attr_maps[] = {
   // Retaliation (flat types handled in dedicated block with chance support)
 
   // Misc offensive
-  {"offensivePierceRatioMin", "%.0f%% Pierce Ratio", false, NULL},
   {"piercingProjectile", "%d%% Chance to pass through Enemies", true, NULL},
   // offensiveManaBurnDrain* handled in dedicated block (has DamageRatio qualifier)
 
@@ -150,6 +149,20 @@ static AttributeMap attr_maps[] = {
 
   // Poison/Disruption duration
   {"defensivePoisonDuration", "%+d%% Reduced Poison Duration", false, NULL},
+
+  // Defensive resist-duration partners
+  {"defensiveBleedingDuration",          "%+d%% Reduced Bleeding Duration",        false, NULL},
+  {"defensiveBleedingDurationModifier",  "+%d%% Reduced Bleeding Duration",        true,  NULL},
+  {"defensiveColdDuration",              "%+d%% Reduced Frostburn Duration",       false, NULL},
+  {"defensiveColdDurationModifier",      "+%d%% Reduced Frostburn Duration",       true,  NULL},
+  {"defensiveFireDuration",              "%+d%% Reduced Burn Duration",            false, NULL},
+  {"defensiveFireDurationModifier",      "+%d%% Reduced Burn Duration",            true,  NULL},
+  {"defensiveLifeDuration",              "%+d%% Reduced Vitality Decay Duration",  false, NULL},
+  {"defensiveLifeDurationModifier",      "+%d%% Reduced Vitality Decay Duration",  true,  NULL},
+  {"defensiveLightningDurationModifier", "+%d%% Reduced Electrical Burn Duration", true,  NULL},
+  {"defensivePoisonDurationModifier",    "+%d%% Reduced Poison Duration",          true,  NULL},
+  {"defensivePhysicalDuration",          "%+d%% Reduced Physical Trauma Duration", false, NULL},
+  {"defensivePhysicalDurationModifier",  "+%d%% Reduced Physical Trauma Duration", true,  NULL},
 
   // Regen modifiers
   {"characterLifeRegenModifier", "+%d%% Health Regeneration", true, NULL},
@@ -183,10 +196,24 @@ static AttributeMap attr_maps[] = {
   // Misc
   {"characterTotalSpeedModifier", "%+d%% Total Speed", true, NULL},
   {"skillCooldownReduction", "-%.0f%% Recharge", false, NULL},
+  {"skillCooldownReductionModifier", "+%d%% Recharge", true, NULL},
+  {"skillCooldownReductionChance", "%.0f%% Chance of Recharge Reduction", false, NULL},
   {"skillManaCostReduction", "-%.0f%% Energy Cost", false, NULL},
-  {"skillManaCostReductionModifier", "-%.0f%% Energy Cost", false, NULL},
+  {"skillManaCostReductionModifier", "+%d%% Energy Cost", true, NULL},
+  {"skillManaCostReductionChance", "%.0f%% Chance of Energy Cost Reduction", false, NULL},
   {"augmentAllLevel", "+%d to all Skills", false, NULL},
   {"characterIncreasedExperience", "%+d%% Increased Experience", false, NULL},
+
+  // Character utility / damage conversion / requirement reductions
+  {"characterPhysToElementalRatio",              "%d%% of Physical Damage Converted to Elemental", false, NULL},
+  {"characterDefensiveBlockRecoveryReduction",   "+%d%% Reduced Block Recovery",                   true,  NULL},
+  {"characterManaLimitReserveReduction",         "-%d%% Energy Reserved",                          true,  NULL},
+  {"characterManaLimitReserve",                  "+%d%% Energy Reserved",                          true,  NULL},
+  {"characterManaLimitReserveModifier",          "+%d%% Energy Reserved",                          true,  NULL},
+  {"characterManaLimitReserveReductionModifier", "-%d%% Energy Reserved",                          true,  NULL},
+  {"characterWeaponStrengthReqReduction",        "-%d%% Strength Requirement for Weapons",         true,  NULL},
+  {"characterWeaponDexterityReqReduction",       "-%d%% Dexterity Requirement for Weapons",        true,  NULL},
+  {"characterWeaponIntelligenceReqReduction",    "-%d%% Intelligence Requirement for Weapons",     true,  NULL},
 
   {NULL, NULL, false, NULL}
 };
@@ -198,7 +225,7 @@ static GHashTable *g_attr_map_ht = NULL; // interned ptr -> &attr_maps[i]
 
 // Pre-interned variable name pointers for frequently used names
 static const char *INT_offensivePhysicalMin, *INT_offensivePhysicalMax, *INT_offensivePhysicalChance;
-static const char *INT_offensiveFireMin, *INT_offensiveFireMax;
+static const char *INT_offensiveFireMin, *INT_offensiveFireMax, *INT_offensiveFireChance;
 static const char *INT_offensiveColdMin, *INT_offensiveColdMax, *INT_offensiveColdChance;
 static const char *INT_offensiveLightningMin, *INT_offensiveLightningMax, *INT_offensiveLightningChance;
 static const char *INT_offensivePoisonMin, *INT_offensivePoisonMax, *INT_offensivePoisonChance;
@@ -240,13 +267,18 @@ static const char *INT_retaliationFireMin, *INT_retaliationFireChance;
 static const char *INT_retaliationColdMin, *INT_retaliationColdChance;
 static const char *INT_retaliationLightningMin, *INT_retaliationLightningChance;
 static const char *INT_retaliationPierceMin, *INT_retaliationPierceChance;
-static const char *INT_retaliationSlowFireMin, *INT_retaliationSlowFireDurationMin, *INT_retaliationSlowFireChance;
-static const char *INT_retaliationSlowColdMin, *INT_retaliationSlowColdDurationMin, *INT_retaliationSlowColdChance;
-static const char *INT_retaliationSlowLightningMin, *INT_retaliationSlowLightningDurationMin, *INT_retaliationSlowLightningChance;
-static const char *INT_retaliationSlowPoisonMin, *INT_retaliationSlowPoisonDurationMin, *INT_retaliationSlowPoisonChance;
-static const char *INT_retaliationSlowLifeMin, *INT_retaliationSlowLifeDurationMin, *INT_retaliationSlowLifeChance;
-static const char *INT_retaliationSlowBleedingMin, *INT_retaliationSlowBleedingDurationMin, *INT_retaliationSlowBleedingChance;
+static const char *INT_retaliationSlowFireMin, *INT_retaliationSlowFireMax, *INT_retaliationSlowFireDurationMin, *INT_retaliationSlowFireChance;
+static const char *INT_retaliationSlowColdMin, *INT_retaliationSlowColdMax, *INT_retaliationSlowColdDurationMin, *INT_retaliationSlowColdChance;
+static const char *INT_retaliationSlowLightningMin, *INT_retaliationSlowLightningMax, *INT_retaliationSlowLightningDurationMin, *INT_retaliationSlowLightningChance;
+static const char *INT_retaliationSlowPoisonMin, *INT_retaliationSlowPoisonMax, *INT_retaliationSlowPoisonDurationMin, *INT_retaliationSlowPoisonChance;
+static const char *INT_retaliationSlowLifeMin, *INT_retaliationSlowLifeMax, *INT_retaliationSlowLifeDurationMin, *INT_retaliationSlowLifeChance;
+static const char *INT_retaliationSlowBleedingMin, *INT_retaliationSlowBleedingMax, *INT_retaliationSlowBleedingDurationMin, *INT_retaliationSlowBleedingChance;
 static const char *INT_retaliationSlowLifeLeachMin, *INT_retaliationSlowLifeLeachMax, *INT_retaliationSlowLifeLeachDurationMin, *INT_retaliationSlowLifeLeachChance;
+static const char *INT_retaliationSlowManaLeachMax;
+static const char *INT_retaliationSlowRunSpeedMin, *INT_retaliationSlowRunSpeedMax, *INT_retaliationSlowRunSpeedDurationMin, *INT_retaliationSlowRunSpeedChance;
+static const char *INT_retaliationSlowDefensiveAbilityMin, *INT_retaliationSlowDefensiveAbilityMax, *INT_retaliationSlowDefensiveAbilityDurationMin, *INT_retaliationSlowDefensiveAbilityChance;
+static const char *INT_retaliationSlowOffensiveAbilityMin, *INT_retaliationSlowOffensiveAbilityMax, *INT_retaliationSlowOffensiveAbilityDurationMin, *INT_retaliationSlowOffensiveAbilityChance;
+static const char *INT_retaliationSlowOffensiveReductionMin, *INT_retaliationSlowOffensiveReductionMax, *INT_retaliationSlowOffensiveReductionDurationMin, *INT_retaliationSlowOffensiveReductionChance;
 static const char *INT_offensivePhysicalModifier, *INT_offensivePhysicalModifierChance;
 static const char *INT_offensiveFireModifier, *INT_offensiveFireModifierChance;
 static const char *INT_offensiveColdModifier, *INT_offensiveColdModifierChance;
@@ -268,7 +300,17 @@ static const char *INT_defensiveElementalResistance, *INT_defensiveElementalResi
 static const char *INT_offensivePercentCurrentLifeMin, *INT_offensivePercentCurrentLifeChance;
 static const char *INT_offensiveTotalDamageReductionPercentMin, *INT_offensiveTotalDamageReductionPercentChance;
 static const char *INT_offensiveTotalDamageReductionPercentDurationMin;
-static const char *INT_offensiveManaBurnDrainMin, *INT_offensiveManaBurnDrainRatioMin, *INT_offensiveManaBurnDamageRatio;
+static const char *INT_offensiveManaBurnDrainMin, *INT_offensiveManaBurnDrainMax, *INT_offensiveManaBurnDrainRatioMin, *INT_offensiveManaBurnDamageRatio;
+static const char *INT_offensiveManaBurnChance, *INT_offensiveManaBurnRatioAdder, *INT_offensiveManaBurnRatioAdderChance;
+static const char *INT_retaliationPhysicalModifier, *INT_retaliationPhysicalModifierChance;
+static const char *INT_retaliationColdModifier, *INT_retaliationColdModifierChance;
+static const char *INT_retaliationFireModifier, *INT_retaliationFireModifierChance;
+static const char *INT_retaliationLightningModifier, *INT_retaliationLightningModifierChance;
+static const char *INT_retaliationPoisonModifier, *INT_retaliationPoisonModifierChance;
+static const char *INT_retaliationPierceModifier, *INT_retaliationPierceModifierChance;
+static const char *INT_retaliationLifeModifier, *INT_retaliationLifeModifierChance;
+static const char *INT_retaliationStunModifier, *INT_retaliationStunModifierChance;
+static const char *INT_retaliationElementalModifier, *INT_retaliationElementalModifierChance;
 static const char *INT_racialBonusPercentDamage, *INT_racialBonusPercentDefense, *INT_racialBonusRace;
 static const char *INT_petBonusName;
 static const char *INT_skillCooldownTime, *INT_refreshTime;
@@ -280,14 +322,38 @@ static const char *INT_offensiveSlowColdDurationMax, *INT_offensiveSlowPoisonDur
 static const char *INT_defensiveDisruption, *INT_defensiveDisruptionDuration;
 static const char *INT_offensiveTotalResistanceReductionAbsoluteMin, *INT_offensiveTotalResistanceReductionAbsoluteDurationMin;
 static const char *INT_offensiveTotalResistanceReductionAbsoluteChance, *INT_offensiveTotalResistanceReductionAbsoluteMax;
+static const char *INT_offensiveTotalResistanceReductionPercentMin, *INT_offensiveTotalResistanceReductionPercentDurationMin;
+static const char *INT_offensiveTotalResistanceReductionPercentChance;
 static const char *INT_offensiveSlowOffensiveAbilityModifier, *INT_offensiveSlowOffensiveAbilityDurationMin;
+static const char *INT_offensiveSlowPhysicalMin, *INT_offensiveSlowPhysicalMax, *INT_offensiveSlowPhysicalDurationMin, *INT_offensiveSlowPhysicalChance;
+static const char *INT_offensiveSlowDefensiveAbilityMin, *INT_offensiveSlowDefensiveAbilityMax, *INT_offensiveSlowDefensiveAbilityDurationMin, *INT_offensiveSlowDefensiveAbilityChance;
+static const char *INT_offensiveSlowOffensiveAbilityMin, *INT_offensiveSlowOffensiveAbilityMax, *INT_offensiveSlowOffensiveAbilityChance;
 static const char *INT_offensiveSlowOffensiveReductionModifier, *INT_offensiveSlowOffensiveReductionDurationMin;
 static const char *INT_offensiveSlowTotalSpeedMin, *INT_offensiveSlowTotalSpeedChance, *INT_offensiveSlowTotalSpeedDurationMin;
 static const char *INT_offensivePercentCurrentLifeMax, *INT_offensiveConfusionMax;
-static const char *INT_racialBonusAbsoluteDamage;
+static const char *INT_racialBonusAbsoluteDamage, *INT_racialBonusAbsoluteDefense;
 static const char *INT_retaliationSlowAttackSpeedMin, *INT_retaliationSlowAttackSpeedDurationMin;
 static const char *INT_retaliationSlowManaLeachMin, *INT_retaliationSlowManaLeachDurationMin, *INT_retaliationSlowManaLeachChance;
 static const char *INT_retaliationPierceMax;
+static const char *INT_retaliationFireMax, *INT_retaliationColdMax, *INT_retaliationLightningMax, *INT_retaliationPhysicalMax;
+static const char *INT_retaliationLifeMin, *INT_retaliationLifeMax, *INT_retaliationLifeChance;
+static const char *INT_retaliationPoisonMin, *INT_retaliationPoisonMax, *INT_retaliationPoisonChance;
+static const char *INT_retaliationStunMin, *INT_retaliationStunMax, *INT_retaliationStunChance;
+static const char *INT_retaliationElementalMin, *INT_retaliationElementalMax, *INT_retaliationElementalChance;
+static const char *INT_retaliationPercentCurrentLifeMin, *INT_retaliationPercentCurrentLifeMax, *INT_retaliationPercentCurrentLifeChance;
+static const char *INT_retaliationGlobalChance;
+static const char *INT_defensiveBlock, *INT_defensiveBlockChance, *INT_defensiveAbsorption, *INT_defensivePetrify;
+static const char *INT_offensivePierceRatioMin, *INT_offensivePierceRatioMax, *INT_offensivePierceRatioChance;
+static const char *INT_offensivePierceRatioModifier, *INT_offensivePierceRatioModifierChance;
+static const char *INT_offensiveSlowRunSpeedMax;
+static const char *INT_offensiveStunMax, *INT_offensiveStunModifier;
+static const char *INT_offensiveFreezeMax;
+static const char *INT_offensiveSleepMin, *INT_offensiveSleepMax, *INT_offensiveSleepChance;
+static const char *INT_offensiveSleepDurationMin, *INT_offensiveSleepModifier;
+static const char *INT_offensiveDisruptionMax, *INT_offensiveDisruptionChance;
+static const char *INT_offensiveBaseFireChance, *INT_offensiveBaseColdChance, *INT_offensiveBaseLightningChance;
+static const char *INT_offensiveSlowLifeLeachDurationMax, *INT_offensiveSlowManaLeachDurationMax;
+static const char *INT_offensiveSlowBleedingDurationMax;
 static const char *INT_defensiveSlowLifeLeach, *INT_defensiveSlowLifeLeachChance;
 static const char *INT_defensiveSlowManaLeach, *INT_defensiveSlowManaLeachChance;
 static const char *INT_defensivePoisonDuration, *INT_defensivePoisonDurationChance;
@@ -354,7 +420,17 @@ item_stats_init(void)
     "offensiveElementalModifier", "offensiveElementalModifierChance",
     "offensiveTotalDamageModifier", "offensiveTotalDamageModifierChance",
     "offensivePercentCurrentLifeMin", "offensivePercentCurrentLifeChance",
-    "offensiveManaBurnDrainMin", "offensiveManaBurnDrainRatioMin", "offensiveManaBurnDamageRatio",
+    "offensiveManaBurnDrainMin", "offensiveManaBurnDrainMax", "offensiveManaBurnDrainRatioMin", "offensiveManaBurnDamageRatio",
+    "offensiveManaBurnChance", "offensiveManaBurnRatioAdder", "offensiveManaBurnRatioAdderChance",
+    "retaliationPhysicalModifier", "retaliationPhysicalModifierChance",
+    "retaliationColdModifier", "retaliationColdModifierChance",
+    "retaliationFireModifier", "retaliationFireModifierChance",
+    "retaliationLightningModifier", "retaliationLightningModifierChance",
+    "retaliationPoisonModifier", "retaliationPoisonModifierChance",
+    "retaliationPierceModifier", "retaliationPierceModifierChance",
+    "retaliationLifeModifier", "retaliationLifeModifierChance",
+    "retaliationStunModifier", "retaliationStunModifierChance",
+    "retaliationElementalModifier", "retaliationElementalModifierChance",
     "offensiveGlobalChance",
     "offensiveDisruptionMin",
     "offensiveBasePhysicalMin", "offensiveBasePhysicalMax",
@@ -377,11 +453,16 @@ item_stats_init(void)
     "defensiveDisruption", "defensiveDisruptionDuration",
     "offensiveTotalResistanceReductionAbsoluteMin", "offensiveTotalResistanceReductionAbsoluteDurationMin",
     "offensiveTotalResistanceReductionAbsoluteChance", "offensiveTotalResistanceReductionAbsoluteMax",
+    "offensiveTotalResistanceReductionPercentMin", "offensiveTotalResistanceReductionPercentDurationMin",
+    "offensiveTotalResistanceReductionPercentChance",
     "offensiveSlowOffensiveAbilityModifier", "offensiveSlowOffensiveAbilityDurationMin",
+    "offensiveSlowPhysicalMin", "offensiveSlowPhysicalMax", "offensiveSlowPhysicalDurationMin", "offensiveSlowPhysicalChance",
+    "offensiveSlowDefensiveAbilityMin", "offensiveSlowDefensiveAbilityMax", "offensiveSlowDefensiveAbilityDurationMin", "offensiveSlowDefensiveAbilityChance",
+    "offensiveSlowOffensiveAbilityMin", "offensiveSlowOffensiveAbilityMax", "offensiveSlowOffensiveAbilityChance",
     "offensiveSlowOffensiveReductionModifier", "offensiveSlowOffensiveReductionDurationMin",
     "offensiveSlowTotalSpeedMin", "offensiveSlowTotalSpeedChance", "offensiveSlowTotalSpeedDurationMin",
     "offensivePercentCurrentLifeMax", "offensiveConfusionMax",
-    "racialBonusAbsoluteDamage",
+    "racialBonusAbsoluteDamage", "racialBonusAbsoluteDefense",
     "defensiveSlowLifeLeach", "defensiveSlowLifeLeachChance",
     "defensiveSlowManaLeach", "defensiveSlowManaLeachChance",
     "defensivePoisonDuration", "defensivePoisonDurationChance",
@@ -389,17 +470,40 @@ item_stats_init(void)
     "retaliationSlowAttackSpeedMin", "retaliationSlowAttackSpeedDurationMin",
     "retaliationSlowManaLeachMin", "retaliationSlowManaLeachDurationMin", "retaliationSlowManaLeachChance",
     "retaliationPierceMax",
-    "retaliationPhysicalMin", "retaliationPhysicalChance",
-    "retaliationFireMin", "retaliationFireChance",
-    "retaliationColdMin", "retaliationColdChance",
-    "retaliationLightningMin", "retaliationLightningChance",
+    "retaliationPhysicalMin", "retaliationPhysicalMax", "retaliationPhysicalChance",
+    "retaliationFireMin", "retaliationFireMax", "retaliationFireChance",
+    "retaliationColdMin", "retaliationColdMax", "retaliationColdChance",
+    "retaliationLightningMin", "retaliationLightningMax", "retaliationLightningChance",
     "retaliationPierceMin", "retaliationPierceChance",
-    "retaliationSlowFireMin", "retaliationSlowFireDurationMin", "retaliationSlowFireChance",
-    "retaliationSlowColdMin", "retaliationSlowColdDurationMin", "retaliationSlowColdChance",
-    "retaliationSlowLightningMin", "retaliationSlowLightningDurationMin", "retaliationSlowLightningChance",
-    "retaliationSlowPoisonMin", "retaliationSlowPoisonDurationMin", "retaliationSlowPoisonChance",
-    "retaliationSlowLifeMin", "retaliationSlowLifeDurationMin", "retaliationSlowLifeChance",
-    "retaliationSlowBleedingMin", "retaliationSlowBleedingDurationMin", "retaliationSlowBleedingChance",
+    "retaliationLifeMin", "retaliationLifeMax", "retaliationLifeChance",
+    "retaliationPoisonMin", "retaliationPoisonMax", "retaliationPoisonChance",
+    "retaliationStunMin", "retaliationStunMax", "retaliationStunChance",
+    "retaliationElementalMin", "retaliationElementalMax", "retaliationElementalChance",
+    "retaliationPercentCurrentLifeMin", "retaliationPercentCurrentLifeMax", "retaliationPercentCurrentLifeChance",
+    "retaliationGlobalChance",
+    "defensiveBlock", "defensiveBlockChance", "defensiveAbsorption", "defensivePetrify",
+    "offensivePierceRatioMin", "offensivePierceRatioMax", "offensivePierceRatioChance",
+    "offensivePierceRatioModifier", "offensivePierceRatioModifierChance",
+    "offensiveSlowRunSpeedMax",
+    "offensiveStunMax", "offensiveStunModifier",
+    "offensiveFreezeMax",
+    "offensiveSleepMin", "offensiveSleepMax", "offensiveSleepChance",
+    "offensiveSleepDurationMin", "offensiveSleepModifier",
+    "offensiveDisruptionMax", "offensiveDisruptionChance",
+    "offensiveBaseFireChance", "offensiveBaseColdChance", "offensiveBaseLightningChance",
+    "offensiveSlowLifeLeachDurationMax", "offensiveSlowManaLeachDurationMax",
+    "offensiveSlowBleedingDurationMax",
+    "retaliationSlowFireMin", "retaliationSlowFireMax", "retaliationSlowFireDurationMin", "retaliationSlowFireChance",
+    "retaliationSlowColdMin", "retaliationSlowColdMax", "retaliationSlowColdDurationMin", "retaliationSlowColdChance",
+    "retaliationSlowLightningMin", "retaliationSlowLightningMax", "retaliationSlowLightningDurationMin", "retaliationSlowLightningChance",
+    "retaliationSlowPoisonMin", "retaliationSlowPoisonMax", "retaliationSlowPoisonDurationMin", "retaliationSlowPoisonChance",
+    "retaliationSlowLifeMin", "retaliationSlowLifeMax", "retaliationSlowLifeDurationMin", "retaliationSlowLifeChance",
+    "retaliationSlowBleedingMin", "retaliationSlowBleedingMax", "retaliationSlowBleedingDurationMin", "retaliationSlowBleedingChance",
+    "retaliationSlowManaLeachMax",
+    "retaliationSlowRunSpeedMin", "retaliationSlowRunSpeedMax", "retaliationSlowRunSpeedDurationMin", "retaliationSlowRunSpeedChance",
+    "retaliationSlowDefensiveAbilityMin", "retaliationSlowDefensiveAbilityMax", "retaliationSlowDefensiveAbilityDurationMin", "retaliationSlowDefensiveAbilityChance",
+    "retaliationSlowOffensiveAbilityMin", "retaliationSlowOffensiveAbilityMax", "retaliationSlowOffensiveAbilityDurationMin", "retaliationSlowOffensiveAbilityChance",
+    "retaliationSlowOffensiveReductionMin", "retaliationSlowOffensiveReductionMax", "retaliationSlowOffensiveReductionDurationMin", "retaliationSlowOffensiveReductionChance",
     "retaliationSlowLifeLeachMin", "retaliationSlowLifeLeachMax", "retaliationSlowLifeLeachDurationMin", "retaliationSlowLifeLeachChance",
     "racialBonusPercentDamage", "racialBonusPercentDefense", "racialBonusRace",
     NULL
@@ -416,7 +520,7 @@ item_stats_init(void)
 
   // Pre-intern all frequently used variable names
   INTERN(offensivePhysicalMin); INTERN(offensivePhysicalMax); INTERN(offensivePhysicalChance);
-  INTERN(offensiveFireMin); INTERN(offensiveFireMax);
+  INTERN(offensiveFireMin); INTERN(offensiveFireMax); INTERN(offensiveFireChance);
   INTERN(offensiveColdMin); INTERN(offensiveColdMax); INTERN(offensiveColdChance);
   INTERN(offensiveLightningMin); INTERN(offensiveLightningMax); INTERN(offensiveLightningChance);
   INTERN(offensivePoisonMin); INTERN(offensivePoisonMax); INTERN(offensivePoisonChance);
@@ -458,13 +562,18 @@ item_stats_init(void)
   INTERN(retaliationColdMin); INTERN(retaliationColdChance);
   INTERN(retaliationLightningMin); INTERN(retaliationLightningChance);
   INTERN(retaliationPierceMin); INTERN(retaliationPierceChance);
-  INTERN(retaliationSlowFireMin); INTERN(retaliationSlowFireDurationMin); INTERN(retaliationSlowFireChance);
-  INTERN(retaliationSlowColdMin); INTERN(retaliationSlowColdDurationMin); INTERN(retaliationSlowColdChance);
-  INTERN(retaliationSlowLightningMin); INTERN(retaliationSlowLightningDurationMin); INTERN(retaliationSlowLightningChance);
-  INTERN(retaliationSlowPoisonMin); INTERN(retaliationSlowPoisonDurationMin); INTERN(retaliationSlowPoisonChance);
-  INTERN(retaliationSlowLifeMin); INTERN(retaliationSlowLifeDurationMin); INTERN(retaliationSlowLifeChance);
-  INTERN(retaliationSlowBleedingMin); INTERN(retaliationSlowBleedingDurationMin); INTERN(retaliationSlowBleedingChance);
+  INTERN(retaliationSlowFireMin); INTERN(retaliationSlowFireMax); INTERN(retaliationSlowFireDurationMin); INTERN(retaliationSlowFireChance);
+  INTERN(retaliationSlowColdMin); INTERN(retaliationSlowColdMax); INTERN(retaliationSlowColdDurationMin); INTERN(retaliationSlowColdChance);
+  INTERN(retaliationSlowLightningMin); INTERN(retaliationSlowLightningMax); INTERN(retaliationSlowLightningDurationMin); INTERN(retaliationSlowLightningChance);
+  INTERN(retaliationSlowPoisonMin); INTERN(retaliationSlowPoisonMax); INTERN(retaliationSlowPoisonDurationMin); INTERN(retaliationSlowPoisonChance);
+  INTERN(retaliationSlowLifeMin); INTERN(retaliationSlowLifeMax); INTERN(retaliationSlowLifeDurationMin); INTERN(retaliationSlowLifeChance);
+  INTERN(retaliationSlowBleedingMin); INTERN(retaliationSlowBleedingMax); INTERN(retaliationSlowBleedingDurationMin); INTERN(retaliationSlowBleedingChance);
   INTERN(retaliationSlowLifeLeachMin); INTERN(retaliationSlowLifeLeachMax); INTERN(retaliationSlowLifeLeachDurationMin); INTERN(retaliationSlowLifeLeachChance);
+  INTERN(retaliationSlowManaLeachMax);
+  INTERN(retaliationSlowRunSpeedMin); INTERN(retaliationSlowRunSpeedMax); INTERN(retaliationSlowRunSpeedDurationMin); INTERN(retaliationSlowRunSpeedChance);
+  INTERN(retaliationSlowDefensiveAbilityMin); INTERN(retaliationSlowDefensiveAbilityMax); INTERN(retaliationSlowDefensiveAbilityDurationMin); INTERN(retaliationSlowDefensiveAbilityChance);
+  INTERN(retaliationSlowOffensiveAbilityMin); INTERN(retaliationSlowOffensiveAbilityMax); INTERN(retaliationSlowOffensiveAbilityDurationMin); INTERN(retaliationSlowOffensiveAbilityChance);
+  INTERN(retaliationSlowOffensiveReductionMin); INTERN(retaliationSlowOffensiveReductionMax); INTERN(retaliationSlowOffensiveReductionDurationMin); INTERN(retaliationSlowOffensiveReductionChance);
   INTERN(offensivePhysicalModifier); INTERN(offensivePhysicalModifierChance);
   INTERN(offensiveFireModifier); INTERN(offensiveFireModifierChance);
   INTERN(offensiveColdModifier); INTERN(offensiveColdModifierChance);
@@ -484,7 +593,17 @@ item_stats_init(void)
   INTERN(defensiveBleeding); INTERN(defensiveBleedingChance);
   INTERN(defensiveElementalResistance); INTERN(defensiveElementalResistanceChance);
   INTERN(offensivePercentCurrentLifeMin); INTERN(offensivePercentCurrentLifeChance);
-  INTERN(offensiveManaBurnDrainMin); INTERN(offensiveManaBurnDrainRatioMin); INTERN(offensiveManaBurnDamageRatio);
+  INTERN(offensiveManaBurnDrainMin); INTERN(offensiveManaBurnDrainMax); INTERN(offensiveManaBurnDrainRatioMin); INTERN(offensiveManaBurnDamageRatio);
+  INTERN(offensiveManaBurnChance); INTERN(offensiveManaBurnRatioAdder); INTERN(offensiveManaBurnRatioAdderChance);
+  INTERN(retaliationPhysicalModifier); INTERN(retaliationPhysicalModifierChance);
+  INTERN(retaliationColdModifier); INTERN(retaliationColdModifierChance);
+  INTERN(retaliationFireModifier); INTERN(retaliationFireModifierChance);
+  INTERN(retaliationLightningModifier); INTERN(retaliationLightningModifierChance);
+  INTERN(retaliationPoisonModifier); INTERN(retaliationPoisonModifierChance);
+  INTERN(retaliationPierceModifier); INTERN(retaliationPierceModifierChance);
+  INTERN(retaliationLifeModifier); INTERN(retaliationLifeModifierChance);
+  INTERN(retaliationStunModifier); INTERN(retaliationStunModifierChance);
+  INTERN(retaliationElementalModifier); INTERN(retaliationElementalModifierChance);
   INTERN(offensiveTotalDamageReductionPercentMin); INTERN(offensiveTotalDamageReductionPercentChance);
   INTERN(offensiveTotalDamageReductionPercentDurationMin);
   INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
@@ -498,14 +617,38 @@ item_stats_init(void)
   INTERN(defensiveDisruption); INTERN(defensiveDisruptionDuration);
   INTERN(offensiveTotalResistanceReductionAbsoluteMin); INTERN(offensiveTotalResistanceReductionAbsoluteDurationMin);
   INTERN(offensiveTotalResistanceReductionAbsoluteChance); INTERN(offensiveTotalResistanceReductionAbsoluteMax);
+  INTERN(offensiveTotalResistanceReductionPercentMin); INTERN(offensiveTotalResistanceReductionPercentDurationMin);
+  INTERN(offensiveTotalResistanceReductionPercentChance);
   INTERN(offensiveSlowOffensiveAbilityModifier); INTERN(offensiveSlowOffensiveAbilityDurationMin);
+  INTERN(offensiveSlowPhysicalMin); INTERN(offensiveSlowPhysicalMax); INTERN(offensiveSlowPhysicalDurationMin); INTERN(offensiveSlowPhysicalChance);
+  INTERN(offensiveSlowDefensiveAbilityMin); INTERN(offensiveSlowDefensiveAbilityMax); INTERN(offensiveSlowDefensiveAbilityDurationMin); INTERN(offensiveSlowDefensiveAbilityChance);
+  INTERN(offensiveSlowOffensiveAbilityMin); INTERN(offensiveSlowOffensiveAbilityMax); INTERN(offensiveSlowOffensiveAbilityChance);
   INTERN(offensiveSlowOffensiveReductionModifier); INTERN(offensiveSlowOffensiveReductionDurationMin);
   INTERN(offensiveSlowTotalSpeedMin); INTERN(offensiveSlowTotalSpeedChance); INTERN(offensiveSlowTotalSpeedDurationMin);
   INTERN(offensivePercentCurrentLifeMax); INTERN(offensiveConfusionMax);
-  INTERN(racialBonusAbsoluteDamage);
+  INTERN(racialBonusAbsoluteDamage); INTERN(racialBonusAbsoluteDefense);
   INTERN(retaliationSlowAttackSpeedMin); INTERN(retaliationSlowAttackSpeedDurationMin);
   INTERN(retaliationSlowManaLeachMin); INTERN(retaliationSlowManaLeachDurationMin); INTERN(retaliationSlowManaLeachChance);
   INTERN(retaliationPierceMax);
+  INTERN(retaliationFireMax); INTERN(retaliationColdMax); INTERN(retaliationLightningMax); INTERN(retaliationPhysicalMax);
+  INTERN(retaliationLifeMin); INTERN(retaliationLifeMax); INTERN(retaliationLifeChance);
+  INTERN(retaliationPoisonMin); INTERN(retaliationPoisonMax); INTERN(retaliationPoisonChance);
+  INTERN(retaliationStunMin); INTERN(retaliationStunMax); INTERN(retaliationStunChance);
+  INTERN(retaliationElementalMin); INTERN(retaliationElementalMax); INTERN(retaliationElementalChance);
+  INTERN(retaliationPercentCurrentLifeMin); INTERN(retaliationPercentCurrentLifeMax); INTERN(retaliationPercentCurrentLifeChance);
+  INTERN(retaliationGlobalChance);
+  INTERN(defensiveBlock); INTERN(defensiveBlockChance); INTERN(defensiveAbsorption); INTERN(defensivePetrify);
+  INTERN(offensivePierceRatioMin); INTERN(offensivePierceRatioMax); INTERN(offensivePierceRatioChance);
+  INTERN(offensivePierceRatioModifier); INTERN(offensivePierceRatioModifierChance);
+  INTERN(offensiveSlowRunSpeedMax);
+  INTERN(offensiveStunMax); INTERN(offensiveStunModifier);
+  INTERN(offensiveFreezeMax);
+  INTERN(offensiveSleepMin); INTERN(offensiveSleepMax); INTERN(offensiveSleepChance);
+  INTERN(offensiveSleepDurationMin); INTERN(offensiveSleepModifier);
+  INTERN(offensiveDisruptionMax); INTERN(offensiveDisruptionChance);
+  INTERN(offensiveBaseFireChance); INTERN(offensiveBaseColdChance); INTERN(offensiveBaseLightningChance);
+  INTERN(offensiveSlowLifeLeachDurationMax); INTERN(offensiveSlowManaLeachDurationMax);
+  INTERN(offensiveSlowBleedingDurationMax);
   INTERN(defensiveSlowLifeLeach); INTERN(defensiveSlowLifeLeachChance);
   INTERN(defensiveSlowManaLeach); INTERN(defensiveSlowManaLeachChance);
   INTERN(defensivePoisonDuration); INTERN(defensivePoisonDurationChance);
@@ -1029,6 +1172,7 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
   if(found < 3)
   {
     float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, 0);
+    float drain_max = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMax, 0);
     float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, 0);
     float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, 0);
     float val = (drain > 0.001f) ? drain : drain_ratio;
@@ -1048,12 +1192,18 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
       }
 
       char part[80];
+      char val_str[32];
+
+      if(drain_max > val)
+        snprintf(val_str, sizeof(val_str), "%.0f-%.0f", val, drain_max);
+      else
+        snprintf(val_str, sizeof(val_str), "%.0f", val);
 
       if(dmg_ratio > 0.001f)
-        snprintf(part, sizeof(part), "%.0f%% Energy Drain (%.0f%% as damage)", val, dmg_ratio);
+        snprintf(part, sizeof(part), "%s%% Energy Drain (%.0f%% as damage)", val_str, dmg_ratio);
 
       else
-        snprintf(part, sizeof(part), "%.0f%% Energy Drain", val);
+        snprintf(part, sizeof(part), "%s%% Energy Drain", val_str);
 
       size_t cur = strlen(buf), plen = strlen(part);
 
@@ -1294,18 +1444,50 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   if(!data)
     return;
 
-  // Note: offensiveGlobalChance exists in DBR templates but all *Global flag
-  // fields are always null on items/affixes.  The game engine uses these
-  // internally; vault tools should just display raw stat values without
-  // wrapping them in a "X% Chance of:" group (matching TQVaultAE behavior).
+  // Items without base weapon damage (relics, charms, armor, jewelry) wrap
+  // their proc-style offensive effects under an "X% Chance of:" header when
+  // offensiveGlobalChance > 0.  Weapons and shields are excluded because
+  // their offensivePhysicalMin etc. is base attack damage, not a proc.
+  const char *cls = record_get_string_fast(data, INT_Class);
+  bool is_proc_wrapped = cls && (strcasecmp(cls, "ItemRelic") == 0 ||
+                                 strcasecmp(cls, "ItemCharm") == 0 ||
+                                 strncasecmp(cls, "Armor", 5) == 0);
+  float global_chance = is_proc_wrapped
+                        ? dbr_get_float_fast(data, INT_offensiveGlobalChance, shard_index)
+                        : 0;
+  float retal_global_chance = is_proc_wrapped
+                              ? dbr_get_float_fast(data, INT_retaliationGlobalChance, shard_index)
+                              : 0;
+
   BufWriter *ow = w;
   const char *indent = "";
+  char ow_buffer[8192];
+  BufWriter ow_writer;
+
+  BufWriter *rw = w;
+  char rw_buffer[8192];
+  BufWriter rw_writer;
+  const char *retal_indent = "";
+
+  if(global_chance > 0)
+  {
+    buf_init(&ow_writer, ow_buffer, sizeof(ow_buffer));
+    ow = &ow_writer;
+    indent = "    ";
+  }
+
+  if(retal_global_chance > 0)
+  {
+    buf_init(&rw_writer, rw_buffer, sizeof(rw_buffer));
+    rw = &rw_writer;
+    retal_indent = "    ";
+  }
 
   // Flat damage ranges (min-max), with optional chance qualifier
   {
     static struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; } damage_types[] = {
       {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, &INT_offensivePhysicalChance, "Physical Damage"},
-      {&INT_offensiveFireMin, &INT_offensiveFireMax, NULL, "Fire Damage"},
+      {&INT_offensiveFireMin, &INT_offensiveFireMax, &INT_offensiveFireChance, "Fire Damage"},
       {&INT_offensiveColdMin, &INT_offensiveColdMax, &INT_offensiveColdChance, "Cold Damage"},
       {&INT_offensiveLightningMin, &INT_offensiveLightningMax, &INT_offensiveLightningChance, "Lightning Damage"},
       {&INT_offensivePoisonMin, &INT_offensivePoisonMax, &INT_offensivePoisonChance, "Poison Damage"},
@@ -1313,9 +1495,9 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       {&INT_offensiveElementalMin, &INT_offensiveElementalMax, &INT_offensiveElementalChance, "Elemental Damage"},
       {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech"},
       {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Physical Damage"},
-      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, NULL, "Cold Damage"},
-      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, NULL, "Fire Damage"},
-      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, NULL, "Lightning Damage"},
+      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage"},
+      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage"},
+      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage"},
       {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage"},
       {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage"},
       {&INT_offensiveLifeMin, &INT_offensiveLifeMax, &INT_offensiveLifeChance, "Vitality Damage"},
@@ -1345,10 +1527,10 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
         else
         {
           if(mx > mn)
-            buf_write(w, "<span color='%s'>%d - %d %s</span>\n", color, (int)round(mn), (int)round(mx), dmg_label);
+            buf_write(ow, "<span color='%s'>%s%d - %d %s</span>\n", color, indent, (int)round(mn), (int)round(mx), dmg_label);
 
           else
-            buf_write(w, "<span color='%s'>%d %s</span>\n", color, (int)round(mn), dmg_label);
+            buf_write(ow, "<span color='%s'>%s%d %s</span>\n", color, indent, (int)round(mn), dmg_label);
         }
       }
     }
@@ -1380,6 +1562,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       {&INT_offensiveSlowLifeMin,      &INT_offensiveSlowLifeMax,      &INT_offensiveSlowLifeDurationMin,      &INT_offensiveSlowLifeChance,      "Vitality Decay"},
       {&INT_offensiveSlowManaLeachMin, &INT_offensiveSlowManaLeachMax, &INT_offensiveSlowManaLeachDurationMin, &INT_offensiveSlowManaLeachChance, "Energy Leech"},
       {&INT_offensiveSlowBleedingMin,  &INT_offensiveSlowBleedingMax,  &INT_offensiveSlowBleedingDurationMin,  &INT_offensiveSlowBleedingChance,  "Bleeding Damage"},
+      {&INT_offensiveSlowPhysicalMin,  &INT_offensiveSlowPhysicalMax,  &INT_offensiveSlowPhysicalDurationMin,  &INT_offensiveSlowPhysicalChance,  "Physical Damage"},
       {NULL, NULL, NULL, NULL, NULL}
     };
 
@@ -1432,14 +1615,14 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     static const struct {
       const char **val; const char **max; const char **dur; const char **chance; const char *label;
     } retal_dots[] = {
-      {&INT_retaliationSlowFireMin,      NULL,                             &INT_retaliationSlowFireDurationMin,      &INT_retaliationSlowFireChance,      "Burn Retaliation"},
-      {&INT_retaliationSlowColdMin,      NULL,                             &INT_retaliationSlowColdDurationMin,      &INT_retaliationSlowColdChance,      "Frostburn Retaliation"},
-      {&INT_retaliationSlowLightningMin, NULL,                             &INT_retaliationSlowLightningDurationMin, &INT_retaliationSlowLightningChance, "Electrical Burn Retaliation"},
-      {&INT_retaliationSlowPoisonMin,    NULL,                             &INT_retaliationSlowPoisonDurationMin,    &INT_retaliationSlowPoisonChance,    "Poison Retaliation"},
-      {&INT_retaliationSlowLifeMin,      NULL,                             &INT_retaliationSlowLifeDurationMin,      &INT_retaliationSlowLifeChance,      "Vitality Decay Retaliation"},
-      {&INT_retaliationSlowBleedingMin,  NULL,                             &INT_retaliationSlowBleedingDurationMin,  &INT_retaliationSlowBleedingChance,  "Bleeding Retaliation"},
+      {&INT_retaliationSlowFireMin,      &INT_retaliationSlowFireMax,      &INT_retaliationSlowFireDurationMin,      &INT_retaliationSlowFireChance,      "Burn Retaliation"},
+      {&INT_retaliationSlowColdMin,      &INT_retaliationSlowColdMax,      &INT_retaliationSlowColdDurationMin,      &INT_retaliationSlowColdChance,      "Frostburn Retaliation"},
+      {&INT_retaliationSlowLightningMin, &INT_retaliationSlowLightningMax, &INT_retaliationSlowLightningDurationMin, &INT_retaliationSlowLightningChance, "Electrical Burn Retaliation"},
+      {&INT_retaliationSlowPoisonMin,    &INT_retaliationSlowPoisonMax,    &INT_retaliationSlowPoisonDurationMin,    &INT_retaliationSlowPoisonChance,    "Poison Retaliation"},
+      {&INT_retaliationSlowLifeMin,      &INT_retaliationSlowLifeMax,      &INT_retaliationSlowLifeDurationMin,      &INT_retaliationSlowLifeChance,      "Vitality Decay Retaliation"},
+      {&INT_retaliationSlowBleedingMin,  &INT_retaliationSlowBleedingMax,  &INT_retaliationSlowBleedingDurationMin,  &INT_retaliationSlowBleedingChance,  "Bleeding Retaliation"},
       {&INT_retaliationSlowLifeLeachMin, &INT_retaliationSlowLifeLeachMax, &INT_retaliationSlowLifeLeachDurationMin, &INT_retaliationSlowLifeLeachChance, "Life Leech Retaliation"},
-      {&INT_retaliationSlowManaLeachMin, NULL,                             &INT_retaliationSlowManaLeachDurationMin, &INT_retaliationSlowManaLeachChance, "Energy Leech Retaliation"},
+      {&INT_retaliationSlowManaLeachMin, &INT_retaliationSlowManaLeachMax, &INT_retaliationSlowManaLeachDurationMin, &INT_retaliationSlowManaLeachChance, "Energy Leech Retaliation"},
       {&INT_retaliationSlowAttackSpeedMin, NULL,                           &INT_retaliationSlowAttackSpeedDurationMin, NULL,                               "Reduced Attack Speed Retaliation"},
     };
 
@@ -1467,11 +1650,11 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       else
       {
         if(mx > mn)
-          buf_write(w, "<span color='%s'>%s%.0f - %.0f %s over %.1f Seconds</span>\n",
-                    color, indent, mn * dur, mx * dur, retal_dots[ri].label, dur);
+          buf_write(rw, "<span color='%s'>%s%.0f - %.0f %s over %.1f Seconds</span>\n",
+                    color, retal_indent, mn * dur, mx * dur, retal_dots[ri].label, dur);
         else
-          buf_write(w, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n",
-                    color, indent, mn * dur, retal_dots[ri].label, dur);
+          buf_write(rw, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n",
+                    color, retal_indent, mn * dur, retal_dots[ri].label, dur);
       }
     }
   }
@@ -1481,11 +1664,14 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     static const struct {
       const char **val; const char **max; const char **chance; const char *label;
     } retal_flat[] = {
-      {&INT_retaliationPhysicalMin,  NULL,                   &INT_retaliationPhysicalChance,  "Physical Retaliation"},
-      {&INT_retaliationFireMin,      NULL,                   &INT_retaliationFireChance,      "Fire Retaliation"},
-      {&INT_retaliationColdMin,      NULL,                   &INT_retaliationColdChance,      "Cold Retaliation"},
-      {&INT_retaliationLightningMin, NULL,                   &INT_retaliationLightningChance, "Lightning Retaliation"},
-      {&INT_retaliationPierceMin,    &INT_retaliationPierceMax, &INT_retaliationPierceChance, "Pierce Retaliation"},
+      {&INT_retaliationPhysicalMin,  &INT_retaliationPhysicalMax,  &INT_retaliationPhysicalChance,  "Physical Retaliation"},
+      {&INT_retaliationFireMin,      &INT_retaliationFireMax,      &INT_retaliationFireChance,      "Fire Retaliation"},
+      {&INT_retaliationColdMin,      &INT_retaliationColdMax,      &INT_retaliationColdChance,      "Cold Retaliation"},
+      {&INT_retaliationLightningMin, &INT_retaliationLightningMax, &INT_retaliationLightningChance, "Lightning Retaliation"},
+      {&INT_retaliationPierceMin,    &INT_retaliationPierceMax,    &INT_retaliationPierceChance,    "Pierce Retaliation"},
+      {&INT_retaliationLifeMin,      &INT_retaliationLifeMax,      &INT_retaliationLifeChance,      "Vitality Retaliation"},
+      {&INT_retaliationPoisonMin,    &INT_retaliationPoisonMax,    &INT_retaliationPoisonChance,    "Poison Retaliation"},
+      {&INT_retaliationElementalMin, &INT_retaliationElementalMax, &INT_retaliationElementalChance, "Elemental Retaliation"},
     };
 
     for(int ri = 0; ri < (int)(sizeof retal_flat / sizeof retal_flat[0]); ri++)
@@ -1511,12 +1697,104 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       else
       {
         if(mx > mn)
-          buf_write(w, "<span color='%s'>%d - %d %s</span>\n",
-                    color, (int)round(mn), (int)round(mx), retal_flat[ri].label);
+          buf_write(rw, "<span color='%s'>%s%d - %d %s</span>\n",
+                    color, retal_indent, (int)round(mn), (int)round(mx), retal_flat[ri].label);
         else
-          buf_write(w, "<span color='%s'>%d %s</span>\n",
-                    color, (int)round(mn), retal_flat[ri].label);
+          buf_write(rw, "<span color='%s'>%s%d %s</span>\n",
+                    color, retal_indent, (int)round(mn), retal_flat[ri].label);
       }
+    }
+  }
+
+  // Stun Retaliation (seconds, may have chance + max range)
+  {
+    float mn = dbr_get_float_fast(data, INT_retaliationStunMin, shard_index);
+
+    if(mn > 0)
+    {
+      float mx = dbr_get_float_fast(data, INT_retaliationStunMax, shard_index);
+      float ch = dbr_get_float_fast(data, INT_retaliationStunChance, shard_index);
+
+      if(ch > 0 && ch < 100)
+      {
+        if(mx > mn)
+          buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f - %.1f Second Stun Retaliation</span>\n", color, ch, mn, mx);
+        else
+          buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second Stun Retaliation</span>\n", color, ch, mn);
+      }
+      else
+      {
+        if(mx > mn)
+          buf_write(rw, "<span color='%s'>%s%.1f - %.1f Second Stun Retaliation</span>\n", color, retal_indent, mn, mx);
+        else
+          buf_write(rw, "<span color='%s'>%s%.1f Second Stun Retaliation</span>\n", color, retal_indent, mn);
+      }
+    }
+  }
+
+  // % of Current Life Retaliation (may have chance + max range)
+  {
+    float mn = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeMin, shard_index);
+
+    if(mn > 0)
+    {
+      float mx = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeMax, shard_index);
+      float ch = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeChance, shard_index);
+
+      if(ch > 0 && ch < 100)
+      {
+        if(mx > mn)
+          buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% - %.0f%% of Current Life Retaliation</span>\n", color, ch, mn, mx);
+        else
+          buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% of Current Life Retaliation</span>\n", color, ch, mn);
+      }
+      else
+      {
+        if(mx > mn)
+          buf_write(rw, "<span color='%s'>%s%.0f%% - %.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn, mx);
+        else
+          buf_write(rw, "<span color='%s'>%s%.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn);
+      }
+    }
+  }
+
+  // Slow / ability / damage-reduction retaliation debuffs (rate, not damage * duration)
+  {
+    static const struct {
+      const char **min; const char **max; const char **dur; const char **chance;
+      const char *label; bool is_percent;
+    } retal_debuffs[] = {
+      {&INT_retaliationSlowRunSpeedMin,         &INT_retaliationSlowRunSpeedMax,         &INT_retaliationSlowRunSpeedDurationMin,         &INT_retaliationSlowRunSpeedChance,         "Slow Retaliation",                          true},
+      {&INT_retaliationSlowDefensiveAbilityMin, &INT_retaliationSlowDefensiveAbilityMax, &INT_retaliationSlowDefensiveAbilityDurationMin, &INT_retaliationSlowDefensiveAbilityChance, "Reduced Defensive Ability Retaliation",     false},
+      {&INT_retaliationSlowOffensiveAbilityMin, &INT_retaliationSlowOffensiveAbilityMax, &INT_retaliationSlowOffensiveAbilityDurationMin, &INT_retaliationSlowOffensiveAbilityChance, "Reduced Offensive Ability Retaliation",     false},
+      {&INT_retaliationSlowOffensiveReductionMin, &INT_retaliationSlowOffensiveReductionMax, &INT_retaliationSlowOffensiveReductionDurationMin, &INT_retaliationSlowOffensiveReductionChance, "Reduced Damage Retaliation",            true},
+    };
+
+    for(int ri = 0; ri < (int)(sizeof retal_debuffs / sizeof retal_debuffs[0]); ri++)
+    {
+      float mn = dbr_get_float_fast(data, *retal_debuffs[ri].min, shard_index);
+      float dur = dbr_get_float_fast(data, *retal_debuffs[ri].dur, shard_index);
+
+      if(mn <= 0 || dur <= 0)
+        continue;
+
+      float mx = dbr_get_float_fast(data, *retal_debuffs[ri].max, shard_index);
+      float ch = dbr_get_float_fast(data, *retal_debuffs[ri].chance, shard_index);
+
+      char val_str[64];
+      const char *pct = retal_debuffs[ri].is_percent ? "%" : "";
+
+      if(mx > mn)
+        snprintf(val_str, sizeof(val_str), "%.0f%s - %.0f%s", mn, pct, mx, pct);
+      else
+        snprintf(val_str, sizeof(val_str), "%.0f%s", mn, pct);
+
+      if(ch > 0 && ch < 100)
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %s %s for %.1f Second(s)</span>\n",
+                  color, ch, val_str, retal_debuffs[ri].label, dur);
+      else
+        buf_write(rw, "<span color='%s'>%s%s %s for %.1f Second(s)</span>\n",
+                  color, retal_indent, val_str, retal_debuffs[ri].label, dur);
     }
   }
 
@@ -1557,6 +1835,23 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     }
   }
 
+  // Reduced Resistances (percent variant: e.g. "30% Reduced Resistances for 3 Sec")
+  {
+    float val = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentMin, shard_index);
+    float dur = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentDurationMin, shard_index);
+    float ch = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentChance, shard_index);
+
+    if(val > 0)
+    {
+      if(ch > 0 && ch < 100 && dur > 0)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Resistances for %.1f Second(s)</span>\n", color, indent, ch, val, dur);
+      else if(dur > 0)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances for %.1f Second(s)</span>\n", color, indent, val, dur);
+      else
+        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances</span>\n", color, indent, val);
+    }
+  }
+
   // Skill disruption protection (defensive, no duration) / offensive skill disruption (with duration)
   {
     float val = dbr_get_float_fast(data, INT_defensiveDisruption, shard_index);
@@ -1572,9 +1867,23 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   // Offensive skill disruption (offensiveDisruptionMin -- seconds of disruption)
   {
     float val = dbr_get_float_fast(data, INT_offensiveDisruptionMin, shard_index);
+    float val_max = dbr_get_float_fast(data, INT_offensiveDisruptionMax, shard_index);
+    float ch = dbr_get_float_fast(data, INT_offensiveDisruptionChance, shard_index);
 
     if(val > 0)
-      buf_write(ow, "<span color='%s'>%s%.1f Second(s) of Skill Disruption</span>\n", color, indent, val);
+    {
+      char val_str[64];
+
+      if(val_max > val)
+        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", val, val_max);
+      else
+        snprintf(val_str, sizeof(val_str), "%.1f", val);
+
+      if(ch > 0 && ch < 100)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Skill Disruption</span>\n", color, indent, ch, val_str);
+      else
+        buf_write(ow, "<span color='%s'>%s%s Second(s) of Skill Disruption</span>\n", color, indent, val_str);
+    }
   }
 
   // Reduced Attack Speed (value + duration)
@@ -1589,16 +1898,26 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed</span>\n", color, indent, val);
   }
 
-  // Reduced Run Speed (value + duration)
+  // Reduced Run Speed (value + duration, may have max range)
   {
     float val = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedMin, shard_index);
+    float val_max = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedMax, shard_index);
     float dur = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedDurationMin, shard_index);
 
-    if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Run Speed for %.1f Second(s)</span>\n", color, indent, val, dur);
+    if(val > 0)
+    {
+      char val_str[64];
 
-    else if(val > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Run Speed</span>\n", color, indent, val);
+      if(val_max > val)
+        snprintf(val_str, sizeof(val_str), "%.0f%% - %.0f%%", val, val_max);
+      else
+        snprintf(val_str, sizeof(val_str), "%.0f%%", val);
+
+      if(dur > 0)
+        buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed for %.1f Second(s)</span>\n", color, indent, val_str, dur);
+      else
+        buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed</span>\n", color, indent, val_str);
+    }
   }
 
   // Offensive damage modifiers (may have chance)
@@ -1632,6 +1951,37 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     }
   }
 
+  // Retaliation %-modifiers (may have chance)
+  {
+    static const struct { const char **val; const char **chance; const char *label; } retal_mod_defs[] = {
+      {&INT_retaliationPhysicalModifier,  &INT_retaliationPhysicalModifierChance,  "Physical Retaliation"},
+      {&INT_retaliationColdModifier,      &INT_retaliationColdModifierChance,      "Cold Retaliation"},
+      {&INT_retaliationFireModifier,      &INT_retaliationFireModifierChance,      "Fire Retaliation"},
+      {&INT_retaliationLightningModifier, &INT_retaliationLightningModifierChance, "Lightning Retaliation"},
+      {&INT_retaliationPoisonModifier,    &INT_retaliationPoisonModifierChance,    "Poison Retaliation"},
+      {&INT_retaliationPierceModifier,    &INT_retaliationPierceModifierChance,    "Pierce Retaliation"},
+      {&INT_retaliationLifeModifier,      &INT_retaliationLifeModifierChance,      "Vitality Retaliation"},
+      {&INT_retaliationStunModifier,      &INT_retaliationStunModifierChance,      "Stun Retaliation"},
+      {&INT_retaliationElementalModifier, &INT_retaliationElementalModifierChance, "Elemental Retaliation"},
+    };
+
+    for(int mi = 0; mi < (int)(sizeof retal_mod_defs / sizeof retal_mod_defs[0]); mi++)
+    {
+      float mv = dbr_get_float_fast(data, *retal_mod_defs[mi].val, shard_index);
+
+      if(fabs(mv) < 0.001f)
+        continue;
+
+      float mc = dbr_get_float_fast(data, *retal_mod_defs[mi].chance, shard_index);
+
+      if(mc > 0 && mc < 100)
+        buf_write(rw, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, retal_indent, mc, (int)round(mv), retal_mod_defs[mi].label);
+
+      else
+        buf_write(rw, "<span color='%s'>%s%+d%% %s</span>\n", color, retal_indent, (int)round(mv), retal_mod_defs[mi].label);
+    }
+  }
+
   // Percent current life reduction (may have chance, may have max range)
   {
     float pcl = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMin, shard_index);
@@ -1662,38 +2012,77 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   // Energy drain / energy burn (both DrainMin and DrainRatioMin are percentages)
   {
     float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, shard_index);
+    float drain_max = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMax, shard_index);
     float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, shard_index);
     float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, shard_index);
+    float chance = dbr_get_float_fast(data, INT_offensiveManaBurnChance, shard_index);
     float val = (drain > 0.001f) ? drain : drain_ratio;
 
     if(val > 0.001f)
     {
+      char val_str[64];
+
+      if(drain_max > val)
+        snprintf(val_str, sizeof(val_str), "%.0f - %.0f", val, drain_max);
+      else
+        snprintf(val_str, sizeof(val_str), "%.0f", val);
+
+      const char *prefix = (chance > 0 && chance < 100) ? "Chance of " : "";
+      char chance_buf[32] = "";
+
+      if(chance > 0 && chance < 100)
+        snprintf(chance_buf, sizeof(chance_buf), "%.0f%% ", chance);
+
       if(dmg_ratio > 0.001f)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Energy Drain (%.0f%% of lost energy as damage)</span>\n", color, indent, val, dmg_ratio);
+        buf_write(ow, "<span color='%s'>%s%s%s%s%% Energy Drain (%.0f%% of lost energy as damage)</span>\n", color, indent, chance_buf, prefix, val_str, dmg_ratio);
 
       else
-        buf_write(ow, "<span color='%s'>%s%.0f%% Energy Drain</span>\n", color, indent, val);
+        buf_write(ow, "<span color='%s'>%s%s%s%s%% Energy Drain</span>\n", color, indent, chance_buf, prefix, val_str);
+    }
+
+    // Damage to Burning Energy (RatioAdder is +X% damage modifier)
+    float ratio_adder = dbr_get_float_fast(data, INT_offensiveManaBurnRatioAdder, shard_index);
+
+    if(fabs(ratio_adder) > 0.001f)
+    {
+      float ra_chance = dbr_get_float_fast(data, INT_offensiveManaBurnRatioAdderChance, shard_index);
+
+      if(ra_chance > 0 && ra_chance < 100)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %+d%% Damage to Burning Energy</span>\n", color, indent, ra_chance, (int)round(ratio_adder));
+      else
+        buf_write(ow, "<span color='%s'>%s%+d%% Damage to Burning Energy</span>\n", color, indent, (int)round(ratio_adder));
     }
   }
 
-  // Offensive stun
+  // Offensive stun (may have range, chance, modifier)
   {
     float stun_min = dbr_get_float_fast(data, INT_offensiveStunMin, shard_index);
-    float stun_dur = dbr_get_float_fast(data, INT_offensiveStunDurationMin, shard_index);
+    float stun_max = dbr_get_float_fast(data, INT_offensiveStunMax, shard_index);
+    float stun_dur_min = dbr_get_float_fast(data, INT_offensiveStunDurationMin, shard_index);
+    float stun_lo = (stun_dur_min > 0) ? stun_dur_min : stun_min;
+    float stun_hi = (stun_max > stun_lo) ? stun_max : 0;
 
-    if(stun_dur <= 0)
-      stun_dur = stun_min;
-
-    float stun_chance = dbr_get_float_fast(data, INT_offensiveStunChance, shard_index);
-
-    if(stun_dur > 0)
+    if(stun_lo > 0)
     {
-      if(stun_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Stun</span>\n", color, indent, stun_chance, stun_dur);
+      char val_str[64];
 
+      if(stun_hi > stun_lo)
+        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", stun_lo, stun_hi);
       else
-        buf_write(ow, "<span color='%s'>%s%.1f Second(s) of Stun</span>\n", color, indent, stun_dur);
+        snprintf(val_str, sizeof(val_str), "%.1f", stun_lo);
+
+      float stun_chance = dbr_get_float_fast(data, INT_offensiveStunChance, shard_index);
+
+      if(stun_chance > 0)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Stun</span>\n", color, indent, stun_chance, val_str);
+      else
+        buf_write(ow, "<span color='%s'>%s%s Second(s) of Stun</span>\n", color, indent, val_str);
     }
+
+    float stun_mod = dbr_get_float_fast(data, INT_offensiveStunModifier, shard_index);
+
+    if(fabs(stun_mod) > 0.001f)
+      buf_write(ow, "<span color='%s'>%s%+d%% Stun Duration</span>\n", color, indent, (int)round(stun_mod));
   }
 
   // Offensive fumble (chance to fumble attacks -- melee)
@@ -1736,23 +2125,93 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     }
   }
 
-  // Offensive freeze
+  // Offensive freeze (may have range)
   {
     float freeze_min = dbr_get_float_fast(data, INT_offensiveFreezeMin, shard_index);
-    float freeze_dur = dbr_get_float_fast(data, INT_offensiveFreezeDurationMin, shard_index);
+    float freeze_max = dbr_get_float_fast(data, INT_offensiveFreezeMax, shard_index);
+    float freeze_dur_min = dbr_get_float_fast(data, INT_offensiveFreezeDurationMin, shard_index);
+    float lo = (freeze_dur_min > 0) ? freeze_dur_min : freeze_min;
+    float hi = (freeze_max > lo) ? freeze_max : 0;
 
-    if(freeze_dur <= 0)
-      freeze_dur = freeze_min;
-
-    if(freeze_dur > 0)
+    if(lo > 0)
     {
+      char val_str[64];
+
+      if(hi > lo)
+        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", lo, hi);
+      else
+        snprintf(val_str, sizeof(val_str), "%.1f", lo);
+
       float freeze_chance = dbr_get_float_fast(data, INT_offensiveFreezeChance, shard_index);
 
       if(freeze_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Freeze</span>\n", color, indent, freeze_chance, freeze_dur);
-
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Freeze</span>\n", color, indent, freeze_chance, val_str);
       else
-        buf_write(ow, "<span color='%s'>%s%.1f Second(s) of Freeze</span>\n", color, indent, freeze_dur);
+        buf_write(ow, "<span color='%s'>%s%s Second(s) of Freeze</span>\n", color, indent, val_str);
+    }
+  }
+
+  // Offensive sleep (range, chance, modifier — Atlantis content)
+  {
+    float sleep_min = dbr_get_float_fast(data, INT_offensiveSleepMin, shard_index);
+    float sleep_max = dbr_get_float_fast(data, INT_offensiveSleepMax, shard_index);
+    float sleep_dur_min = dbr_get_float_fast(data, INT_offensiveSleepDurationMin, shard_index);
+    float lo = (sleep_dur_min > 0) ? sleep_dur_min : sleep_min;
+    float hi = (sleep_max > lo) ? sleep_max : 0;
+
+    if(lo > 0)
+    {
+      char val_str[64];
+
+      if(hi > lo)
+        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", lo, hi);
+      else
+        snprintf(val_str, sizeof(val_str), "%.1f", lo);
+
+      float sleep_chance = dbr_get_float_fast(data, INT_offensiveSleepChance, shard_index);
+
+      if(sleep_chance > 0)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Sleep</span>\n", color, indent, sleep_chance, val_str);
+      else
+        buf_write(ow, "<span color='%s'>%s%s Second(s) of Sleep</span>\n", color, indent, val_str);
+    }
+
+    float sleep_mod = dbr_get_float_fast(data, INT_offensiveSleepModifier, shard_index);
+
+    if(fabs(sleep_mod) > 0.001f)
+      buf_write(ow, "<span color='%s'>%s%+d%% Sleep Duration</span>\n", color, indent, (int)round(sleep_mod));
+  }
+
+  // Pierce Ratio: damage converted to piercing (raw + modifier)
+  {
+    float pr_min = dbr_get_float_fast(data, INT_offensivePierceRatioMin, shard_index);
+    float pr_max = dbr_get_float_fast(data, INT_offensivePierceRatioMax, shard_index);
+    float pr_chance = dbr_get_float_fast(data, INT_offensivePierceRatioChance, shard_index);
+
+    if(pr_min > 0)
+    {
+      char val_str[64];
+
+      if(pr_max > pr_min)
+        snprintf(val_str, sizeof(val_str), "%.0f%% - %.0f%%", pr_min, pr_max);
+      else
+        snprintf(val_str, sizeof(val_str), "%.0f%%", pr_min);
+
+      if(pr_chance > 0 && pr_chance < 100)
+        buf_write(w, "<span color='%s'>%.1f%% Chance of %s Pierce Ratio</span>\n", color, pr_chance, val_str);
+      else
+        buf_write(w, "<span color='%s'>%s Pierce Ratio</span>\n", color, val_str);
+    }
+
+    float pr_mod = dbr_get_float_fast(data, INT_offensivePierceRatioModifier, shard_index);
+    float pr_mod_chance = dbr_get_float_fast(data, INT_offensivePierceRatioModifierChance, shard_index);
+
+    if(fabs(pr_mod) > 0.001f)
+    {
+      if(pr_mod_chance > 0 && pr_mod_chance < 100)
+        buf_write(w, "<span color='%s'>%.1f%% Chance of %+d%% Pierce Ratio</span>\n", color, pr_mod_chance, (int)round(pr_mod));
+      else
+        buf_write(w, "<span color='%s'>%+d%% Pierce Ratio</span>\n", color, (int)round(pr_mod));
     }
   }
 
@@ -1869,6 +2328,42 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(ow, "<span color='%s'>%s%+d%% Defensive Ability for %.1f Second(s)</span>\n", color, indent, (int)round(-da_mod), da_dur);
   }
 
+  // Reduced Defensive/Offensive Ability proc-style (Min/Max/Chance, applied to enemies)
+  {
+    static const struct {
+      const char **min; const char **max; const char **dur; const char **chance; const char *label;
+    } ability_debuffs[] = {
+      {&INT_offensiveSlowDefensiveAbilityMin, &INT_offensiveSlowDefensiveAbilityMax, &INT_offensiveSlowDefensiveAbilityDurationMin, &INT_offensiveSlowDefensiveAbilityChance, "Reduced Defensive Ability"},
+      {&INT_offensiveSlowOffensiveAbilityMin, &INT_offensiveSlowOffensiveAbilityMax, &INT_offensiveSlowOffensiveAbilityDurationMin, &INT_offensiveSlowOffensiveAbilityChance, "Reduced Offensive Ability"},
+    };
+
+    for(int ad = 0; ad < (int)(sizeof ability_debuffs / sizeof ability_debuffs[0]); ad++)
+    {
+      float mn = dbr_get_float_fast(data, *ability_debuffs[ad].min, shard_index);
+      float dur = dbr_get_float_fast(data, *ability_debuffs[ad].dur, shard_index);
+
+      if(mn <= 0 || dur <= 0)
+        continue;
+
+      float mx = dbr_get_float_fast(data, *ability_debuffs[ad].max, shard_index);
+      float ch = dbr_get_float_fast(data, *ability_debuffs[ad].chance, shard_index);
+
+      char val_str[64];
+
+      if(mx > mn)
+        snprintf(val_str, sizeof(val_str), "%.0f - %.0f", mn, mx);
+      else
+        snprintf(val_str, sizeof(val_str), "%.0f", mn);
+
+      if(ch > 0 && ch < 100)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s for %.1f Second(s)</span>\n",
+                  color, indent, ch, val_str, ability_debuffs[ad].label, dur);
+      else
+        buf_write(ow, "<span color='%s'>%s%s %s for %.1f Second(s)</span>\n",
+                  color, indent, val_str, ability_debuffs[ad].label, dur);
+    }
+  }
+
   // Slow total speed (with optional chance and duration)
   {
     float slow_min = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedMin, shard_index);
@@ -1889,6 +2384,30 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
   // -- End of offensive sections --
   // (non-offensive sections follow below, then chance group is flushed at the end)
+
+  // Shield block: raw value, raw chance, and absorption
+  {
+    float blk_val = dbr_get_float_fast(data, INT_defensiveBlock, shard_index);
+    float blk_ch = dbr_get_float_fast(data, INT_defensiveBlockChance, shard_index);
+    float blk_abs = dbr_get_float_fast(data, INT_defensiveAbsorption, shard_index);
+
+    if(blk_ch > 0)
+      buf_write(w, "<span color='%s'>%.0f%% Shield Block Chance</span>\n", color, blk_ch);
+
+    if(blk_val > 0)
+      buf_write(w, "<span color='%s'>%.0f Damage Blocked</span>\n", color, blk_val);
+
+    if(blk_abs > 0)
+      buf_write(w, "<span color='%s'>%.0f%% Damage Absorption</span>\n", color, blk_abs);
+  }
+
+  // Petrify resistance (% reduced petrify duration)
+  {
+    float val = dbr_get_float_fast(data, INT_defensivePetrify, shard_index);
+
+    if(val > 0)
+      buf_write(w, "<span color='%s'>%.0f%% Reduced Petrify Duration</span>\n", color, val);
+  }
 
   // Racial bonus
   {
@@ -1912,6 +2431,11 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
     if(fabs(def) > 0.001f)
       buf_write(w, "<span color='%s'>%d%% less damage from %ss</span>\n", color, (int)round(def), race);
+
+    float abs_def = dbr_get_float_fast(data, INT_racialBonusAbsoluteDefense, shard_index);
+
+    if(fabs(abs_def) > 0.001f)
+      buf_write(w, "<span color='%s'>%d Less Damage from %ss</span>\n", color, (int)round(abs_def), race);
   }
 
   // Mastery augmentation: "+N to all skills in X Mastery"
@@ -2172,5 +2696,19 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(w, "\n<span color='%s'>Bonus to All Pets:</span>\n", color);
       add_stats_from_record(pet_bonus, tr, w, color, shard_index);
     }
+  }
+
+  // Flush the global-chance-wrapped section (relics/charms/armor/jewelry).
+  if(global_chance > 0 && ow_writer.pos > 0)
+  {
+    buf_write(w, "<span color='%s'>%.0f%% Chance of:</span>\n", color, global_chance);
+    buf_write(w, "%s", ow_buffer);
+  }
+
+  // Flush the retaliation global-chance section (separate header, separate buffer).
+  if(retal_global_chance > 0 && rw_writer.pos > 0)
+  {
+    buf_write(w, "<span color='%s'>%.0f%% Chance of:</span>\n", color, retal_global_chance);
+    buf_write(w, "%s", rw_buffer);
   }
 }

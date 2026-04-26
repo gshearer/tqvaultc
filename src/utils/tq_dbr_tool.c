@@ -60,6 +60,7 @@ usage(const char *prog)
     "  arcls   <arc>                        List all files in an arc archive\n"
     "  archex  <arc> <file_pattern>         Extract and hex-dump a file from an arc archive\n"
     "  bonus   <arz> <item_path>            Follow bonus table chain for relic/charm/artifact\n"
+    "  coverage <arz> [path_substr]         Sorted list of all vars with non-zero values\n"
     "\n"
     "Examples:\n"
     "  %s dump testdata/database.arz records/xpack4/item/relics/x4_relic05.dbr\n"
@@ -373,6 +374,154 @@ cmd_stats(const char *arz_path, const char *pattern)
 
   printf("\n%d records with non-zero values.\n", count);
 
+  g_free(lower_pattern);
+  arz_free(arz);
+  return(0);
+}
+
+// Walks every item-class record in the database, collects all variable
+// names with at least one non-zero / non-null value, and prints a sorted
+// summary (var_name <tab> record_count <tab> sample_value).  Used to find
+// stat fields the tooltip code does not yet render.
+//
+// arz_path: path to the .arz database file.
+// path_substr: only count records whose path contains this substring
+//              (use "" to match all records, or "item" for items).
+// Returns 0 on success, 1 on failure.
+typedef struct {
+  const char *name;
+  uint32_t count;
+  char sample[64];
+} CovStat;
+
+static int
+cov_cmp(const void *a, const void *b)
+{
+  return(strcmp(((const CovStat *)a)->name, ((const CovStat *)b)->name));
+}
+
+static int
+cmd_coverage(const char *arz_path, const char *path_substr)
+{
+  TQArzFile *arz = arz_load(arz_path);
+  if(!arz)
+  {
+    fprintf(stderr, "Failed to load ARZ: %s\n", arz_path);
+    return(1);
+  }
+
+  char *lower_pattern = path_substr ? normalize_path(path_substr) : g_strdup("");
+  GHashTable *seen = g_hash_table_new(g_str_hash, g_str_equal);
+  uint32_t records_scanned = 0;
+
+  for(uint32_t i = 0; i < arz->num_records; i++)
+  {
+    if(!arz->records[i].path)
+      continue;
+
+    char *lower_path = g_ascii_strdown(arz->records[i].path, -1);
+    bool match = !lower_pattern[0] || strstr(lower_path, lower_pattern);
+    g_free(lower_path);
+
+    if(!match)
+      continue;
+
+    TQArzRecordData *data = arz_read_record(arz, arz->records[i].path);
+    if(!data)
+      continue;
+
+    records_scanned++;
+
+    for(uint32_t v = 0; v < data->num_vars; v++)
+    {
+      TQVariable *var = &data->vars[v];
+      bool has_value = false;
+      char sample[64] = "";
+
+      if(var->type == TQ_VAR_INT && var->value.i32)
+      {
+        for(uint32_t j = 0; j < var->count; j++)
+          if(var->value.i32[j] != 0)
+          {
+            has_value = true;
+            snprintf(sample, sizeof(sample), "%d", var->value.i32[j]);
+            break;
+          }
+      }
+      else if(var->type == TQ_VAR_FLOAT && var->value.f32)
+      {
+        for(uint32_t j = 0; j < var->count; j++)
+          if(fabsf(var->value.f32[j]) > 0.0001f)
+          {
+            has_value = true;
+            snprintf(sample, sizeof(sample), "%.2f", var->value.f32[j]);
+            break;
+          }
+      }
+      else if(var->type == TQ_VAR_STRING && var->value.str)
+      {
+        for(uint32_t j = 0; j < var->count; j++)
+          if(var->value.str[j] && var->value.str[j][0])
+          {
+            has_value = true;
+            snprintf(sample, sizeof(sample), "%.50s", var->value.str[j]);
+            break;
+          }
+      }
+
+      if(!has_value)
+        continue;
+
+      CovStat *cs = g_hash_table_lookup(seen, var->name);
+
+      if(!cs)
+      {
+        cs = g_malloc0(sizeof(*cs));
+        cs->name = g_strdup(var->name);
+        g_hash_table_insert(seen, (gpointer)cs->name, cs);
+      }
+
+      cs->count++;
+
+      if(!cs->sample[0])
+        snprintf(cs->sample, sizeof(cs->sample), "%s", sample);
+    }
+
+    arz_record_data_free(data);
+  }
+
+  // Collect into array, sort, print
+  uint32_t n = g_hash_table_size(seen);
+  CovStat *arr = g_new0(CovStat, n);
+  GHashTableIter iter;
+  gpointer key, value;
+  uint32_t idx = 0;
+
+  g_hash_table_iter_init(&iter, seen);
+
+  while(g_hash_table_iter_next(&iter, &key, &value))
+    arr[idx++] = *(CovStat *)value;
+
+  qsort(arr, n, sizeof(CovStat), cov_cmp);
+
+  printf("# coverage: %u records scanned (filter: \"%s\")\n", records_scanned, path_substr ? path_substr : "");
+  printf("# columns: count\tvar_name\tsample_value\n");
+
+  for(uint32_t k = 0; k < n; k++)
+    printf("%u\t%s\t%s\n", arr[k].count, arr[k].name, arr[k].sample);
+
+  fprintf(stderr, "\n%u distinct variable names with at least one non-zero/non-null value.\n", n);
+
+  g_hash_table_iter_init(&iter, seen);
+  while(g_hash_table_iter_next(&iter, &key, &value))
+  {
+    CovStat *cs = value;
+    g_free((char *)cs->name);
+    g_free(cs);
+  }
+
+  g_hash_table_destroy(seen);
+  g_free(arr);
   g_free(lower_pattern);
   arz_free(arz);
   return(0);
@@ -933,6 +1082,17 @@ main(int argc, char **argv)
     }
 
     return(cmd_bonus(argv[2], argv[3]));
+  }
+
+  if(strcmp(cmd, "coverage") == 0)
+  {
+    if(argc < 3)
+    {
+      fprintf(stderr, "Usage: %s coverage <arz> [path_substr]\n", argv[0]);
+      return(1);
+    }
+
+    return(cmd_coverage(argv[2], argc >= 4 ? argv[3] : ""));
   }
 
   fprintf(stderr, "Unknown command: %s\n", cmd);
