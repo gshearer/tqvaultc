@@ -1,5 +1,5 @@
 project('TQVaultC', 'c',
-  version: '0.2',
+  version: '0.5',
   default_options: ['warning_level=3'])
 
 # 1. Define Dependencies

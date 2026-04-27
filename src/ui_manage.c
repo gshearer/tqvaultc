@@ -536,7 +536,7 @@ on_duplicate_ok(GtkButton *btn, gpointer user_data)
   }
 
   // Patch myPlayerName in the copied Player.chr so the game recognises it
-  char chr_path[1024];
+  char chr_path[1100];
 
   snprintf(chr_path, sizeof(chr_path), "%s/Player.chr", target);
 
@@ -1162,7 +1162,7 @@ on_rename_char_ok(GtkButton *btn, gpointer user_data)
   }
 
   // Patch Player.chr with the new name
-  char chr_path[1024];
+  char chr_path[1100];
 
   snprintf(chr_path, sizeof(chr_path), "%s/Player.chr", target);
 

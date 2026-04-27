@@ -6,6 +6,13 @@
 #include <string.h>
 #include <MagickWand/MagickWand.h>
 
+static void
+pixbuf_free_pixels(guchar *pixels, gpointer user_data)
+{
+  (void)user_data;
+  free(pixels);
+}
+
 // normalize_path - convert forward slashes to backslashes for ARC path matching
 // path: input path string
 // returns: newly allocated string with normalized separators (caller must free)
@@ -144,7 +151,7 @@ texture_load_from_data(uint8_t *raw_data, size_t raw_size)
 
     pixbuf = gdk_pixbuf_new_from_data(pixels, GDK_COLORSPACE_RGB, TRUE, 8,
         (int)width, (int)height, (int)width * 4,
-        (GdkPixbufDestroyNotify)free, NULL);
+        pixbuf_free_pixels, NULL);
   }
   else
   {
@@ -263,7 +270,9 @@ texture_create_with_number(GdkPixbuf *base, int number)
   cairo_surface_t *surface = cairo_image_surface_create(CAIRO_FORMAT_ARGB32, width, height);
   cairo_t *cr = cairo_create(surface);
 
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   gdk_cairo_set_source_pixbuf(cr, base, 0, 0);
+  G_GNUC_END_IGNORE_DEPRECATIONS
   cairo_paint(cr);
 
   char text[4];
@@ -301,7 +310,9 @@ texture_create_with_number(GdkPixbuf *base, int number)
 
   cairo_destroy(cr);
 
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   GdkPixbuf *result = gdk_pixbuf_get_from_surface(surface, 0, 0, width, height);
+  G_GNUC_END_IGNORE_DEPRECATIONS
 
   cairo_surface_destroy(surface);
 

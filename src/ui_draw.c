@@ -91,7 +91,9 @@ draw_relic_overlay(cairo_t *cr, AppWidgets *widgets,
   cairo_save(cr);
   cairo_translate(cr, ox, oy);
   cairo_scale(cr, draw_w / (double)ow, draw_h / (double)oh);
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   gdk_cairo_set_source_pixbuf(cr, overlay, 0, 0);
+  G_GNUC_END_IGNORE_DEPRECATIONS
   cairo_paint(cr);
   cairo_restore(cr);
   g_object_unref(overlay);
@@ -283,7 +285,9 @@ draw_equip_slot(cairo_t *cr, AppWidgets *widgets,
         cairo_save(cr);
         cairo_translate(cr, dx, dy);
         cairo_scale(cr, draw_w / (double)pw, draw_h / (double)ph);
+        G_GNUC_BEGIN_IGNORE_DEPRECATIONS
         gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
+        G_GNUC_END_IGNORE_DEPRECATIONS
         cairo_paint(cr);
         cairo_restore(cr);
         g_object_unref(pixbuf);
@@ -552,7 +556,9 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
       cairo_save(cr);
       cairo_translate(cr, x + 2, y + 2);
       cairo_scale(cr, (rw - 4) / pw, (rh - 4) / ph);
+      G_GNUC_BEGIN_IGNORE_DEPRECATIONS
       gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
+      G_GNUC_END_IGNORE_DEPRECATIONS
       cairo_paint(cr);
       cairo_restore(cr);
       g_object_unref(pixbuf);
@@ -577,7 +583,7 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
 
       if(max_shards > 0 && shard_count < (uint32_t)max_shards)
       {
-        char num_text[4];
+        char num_text[16];
 
         snprintf(num_text, sizeof(num_text), "%u", shard_count);
         cairo_save(cr);
@@ -624,7 +630,7 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
 
     if(display_qty > 1 && !rc_complete)
     {
-      char num_text[8];
+      char num_text[16];
 
       snprintf(num_text, sizeof(num_text), "%d", display_qty);
       cairo_save(cr);
@@ -1117,7 +1123,9 @@ held_overlay_draw_cb(GtkDrawingArea *da, cairo_t *cr,
   cairo_save(cr);
   cairo_translate(cr, ix, iy);
   cairo_scale(cr, rw / (double)pw, rh / (double)ph);
+  G_GNUC_BEGIN_IGNORE_DEPRECATIONS
   gdk_cairo_set_source_pixbuf(cr, hi->texture, 0, 0);
+  G_GNUC_END_IGNORE_DEPRECATIONS
   cairo_paint_with_alpha(cr, 0.7);
   cairo_restore(cr);
 }
