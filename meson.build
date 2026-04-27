@@ -2,11 +2,19 @@ project('TQVaultC', 'c',
   version: '0.5',
   default_options: ['warning_level=3'])
 
+# Generated GResource bundles emit single string literals well past the
+# C99 4095-char minimum; -Wno-overlength-strings keeps that out of our
+# build log without affecting our hand-written code.
+add_project_arguments('-Wno-overlength-strings', language: 'c')
+
 # 1. Define Dependencies
-gtk_dep = dependency('gtk4')
-json_dep = dependency('json-c')
-zlib_dep = dependency('zlib')
-magick_dep = dependency('MagickWand')
+# include_type: 'system' converts -I to -isystem so pedantic warnings from
+# third-party headers (e.g. gtkaccessiblehypertext.h's stray ';') are
+# suppressed while still firing for our own code.
+gtk_dep = dependency('gtk4', include_type: 'system')
+json_dep = dependency('json-c', include_type: 'system')
+zlib_dep = dependency('zlib', include_type: 'system')
+magick_dep = dependency('MagickWand', include_type: 'system')
 m_dep = meson.get_compiler('c').find_library('m', required : false)
 
 # 2. Version info
