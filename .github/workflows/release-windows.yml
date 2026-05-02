@@ -15,35 +15,41 @@ permissions:
 
 jobs:
   build:
-    name: Cross-compile + NSIS installer
-    runs-on: ubuntu-latest
-    container:
-      image: archlinux:base-devel
+    name: MSYS2 native build + NSIS installer
+    runs-on: windows-latest
+
+    # Make every "run" step execute inside the MSYS2 mingw64 shell, so PATH,
+    # MSYSTEM, and pkgconf wrapper all point at the mingw64 toolchain.
+    defaults:
+      run:
+        shell: msys2 {0}
 
     steps:
-      - name: Refresh pacman keyring + install build deps
-        # Arch's base-devel image is minimal — pull in everything we need:
-        #   - native tools: git, meson, ninja, nsis, pkgconf
-        #   - mingw-w64 toolchain + GTK4 stack for cross-compile
-        # Mirror the package list in BUILD.md.
-        run: |
-          pacman -Sy --noconfirm archlinux-keyring
-          pacman -Syu --noconfirm
-          pacman -S --noconfirm --needed \
-            git meson ninja nsis pkgconf \
-            mingw-w64-gcc mingw-w64-binutils mingw-w64-crt mingw-w64-headers \
-            mingw-w64-pkg-config mingw-w64-winpthreads \
-            mingw-w64-gtk4 mingw-w64-json-c mingw-w64-zlib \
-            mingw-w64-adwaita-icon-theme mingw-w64-hicolor-icon-theme
+      - name: Set up MSYS2 (mingw64)
+        # Pulls precompiled GTK4 + json-c + zlib + nsis from the official MSYS2
+        # repos. Avoids the AUR/extra split that breaks the Arch container
+        # approach (mingw-w64-gtk4 et al. aren't in core/extra).
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: MINGW64
+          update: true
+          install: >-
+            git
+            base-devel
+            mingw-w64-x86_64-gcc
+            mingw-w64-x86_64-binutils
+            mingw-w64-x86_64-meson
+            mingw-w64-x86_64-ninja
+            mingw-w64-x86_64-pkgconf
+            mingw-w64-x86_64-gtk4
+            mingw-w64-x86_64-json-c
+            mingw-w64-x86_64-zlib
+            mingw-w64-x86_64-adwaita-icon-theme
+            mingw-w64-x86_64-nsis
 
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0   # need tags + history for the release notes step
-
-      - name: Mark workspace safe for git inside container
-        # GH Actions' container runs as root but the workspace is owned by
-        # the runner UID, which trips git's safe.directory check.
-        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+          fetch-depth: 0   # need history for auto-generated release notes
 
       - name: Derive release version from tag
         id: version
@@ -58,6 +64,8 @@ jobs:
           fi
 
       - name: Build Windows installer
+        # MSYSTEM=MINGW64 is set by the msys2 shell wrapper, so package-windows.sh
+        # auto-detects /mingw64/ as the runtime root.
         run: ./scripts/build-installer.sh
 
       - name: Show installer size

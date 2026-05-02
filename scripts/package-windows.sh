@@ -11,9 +11,22 @@
 
 set -euo pipefail
 
-MINGW_ROOT=/usr/x86_64-w64-mingw32
-MINGW_BIN=$MINGW_ROOT/bin
-SRC_BIN=build-win/tqvaultc.exe
+# Auto-detect the mingw-w64 environment we're running in:
+#   - MSYS2 mingw64 (CI / native Windows builds): /mingw64/, native objdump
+#   - Arch Linux cross-compile:                   /usr/x86_64-w64-mingw32/,
+#                                                 x86_64-w64-mingw32-objdump
+# Override either with MINGW_ROOT / OBJDUMP env vars if needed.
+if [ "${MSYSTEM:-}" = "MINGW64" ] || [ "${MSYSTEM:-}" = "UCRT64" ]; then
+  MINGW_ROOT="${MINGW_ROOT:-/mingw64}"
+  OBJDUMP="${OBJDUMP:-objdump}"
+  SRC_BIN="${SRC_BIN:-build-win/tqvaultc.exe}"
+else
+  MINGW_ROOT="${MINGW_ROOT:-/usr/x86_64-w64-mingw32}"
+  OBJDUMP="${OBJDUMP:-x86_64-w64-mingw32-objdump}"
+  SRC_BIN="${SRC_BIN:-build-win/tqvaultc.exe}"
+fi
+
+MINGW_BIN="$MINGW_ROOT/bin"
 OUT_DIR=${1:-dist-win}
 
 if [ ! -x "$SRC_BIN" ]; then
@@ -38,7 +51,7 @@ queue=("$OUT_DIR/bin/tqvaultc.exe")
 
 while [ ${#queue[@]} -gt 0 ]; do
   f="${queue[0]}"; queue=("${queue[@]:1}")
-  for dll in $(x86_64-w64-mingw32-objdump -p "$f" 2>/dev/null | awk '/DLL Name:/{print $3}'); do
+  for dll in $("$OBJDUMP" -p "$f" 2>/dev/null | awk '/DLL Name:/{print $3}'); do
     [ -n "${seen[$dll]:-}" ] && continue
     if [ -f "$MINGW_BIN/$dll" ]; then
       seen[$dll]=1

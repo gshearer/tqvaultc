@@ -20,9 +20,14 @@ NSI_FILE=installer/tqvaultc.nsi
 VERSION=${RELEASE_VERSION:-$(awk -F"'" '/^project\(/{f=1} f && /version:/ {print $2; exit}' meson.build)}
 OUT_FILE="tqvaultc-${VERSION}-setup.exe"
 
-# 1. Cross-compile if needed
+# 1. Build (cross from Linux, or native from MSYS2)
 if [ ! -d "$BUILD_DIR" ]; then
-  meson setup "$BUILD_DIR" --cross-file "$CROSS_FILE"
+  if [ "${MSYSTEM:-}" = "MINGW64" ] || [ "${MSYSTEM:-}" = "UCRT64" ]; then
+    # Native MSYS2 build — host == target == Windows, no cross file.
+    meson setup "$BUILD_DIR"
+  else
+    meson setup "$BUILD_DIR" --cross-file "$CROSS_FILE"
+  fi
 fi
 meson compile -C "$BUILD_DIR"
 
