@@ -12,7 +12,6 @@
 #include "affix_table.h"
 #include "item_stats.h"
 #include "prefetch.h"
-#include <MagickWand/MagickWand.h>
 
 static int g_saved_argc;
 static char **g_saved_argv;
@@ -145,6 +144,24 @@ on_activate(GtkApplication *app, gpointer user_data)
 int
 main(int argc, char **argv)
 {
+#ifdef _WIN32
+  // The Windows GUI subsystem detaches stdout/stderr — redirect them to a
+  // logfile under our cache dir so init traces, GLib warnings, and
+  // config_save errors are captured for support.
+  {
+    char *log_dir = tqvc_cache_dir_new();
+    char *log_path = g_build_filename(log_dir, "tqvaultc.log", NULL);
+    FILE *log = freopen(log_path, "w", stderr);
+    if(log)
+      setvbuf(log, NULL, _IOLBF, 0);
+    freopen(log_path, "w", stdout);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fprintf(stderr, "tqvaultc: log opened at %s\n", log_path);
+    g_free(log_path);
+    g_free(log_dir);
+  }
+#endif
+
   const char *config_override = NULL;
   bool debug_mode = false;
 

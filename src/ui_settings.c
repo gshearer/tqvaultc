@@ -4,10 +4,96 @@
 #include "config.h"
 #include "translation.h"
 #include "item_stats.h"
+#include "asset_lookup.h"
+#include "arz.h"
+#include "affix_table.h"
 #include "version.h"
 #include "build_number.h"
 #include <stdio.h>
 #include <string.h>
+
+// ── Folder validation ───────────────────────────────────────────────────
+
+// Validate a candidate game folder. Returns NULL on success, or a
+// caller-owned error message describing what's wrong (free with g_free).
+static char *
+validate_game_folder(const char *path)
+{
+  if(!path || !*path)
+    return(g_strdup("Game folder is empty. Please choose your Titan Quest install directory."));
+
+  if(!g_file_test(path, G_FILE_TEST_IS_DIR))
+    return(g_strdup_printf("Game folder does not exist:\n%s", path));
+
+  // The install must contain Database/database.arz and Resources/.
+  // We check for those two specifically because they're the inputs
+  // asset_manager_init walks; if either is missing the index will be empty.
+  char *db = g_build_filename(path, "Database", "database.arz", NULL);
+  char *res = g_build_filename(path, "Resources", NULL);
+  bool db_ok = g_file_test(db, G_FILE_TEST_IS_REGULAR);
+  bool res_ok = g_file_test(res, G_FILE_TEST_IS_DIR);
+  char *err = NULL;
+
+  if(!db_ok || !res_ok)
+  {
+    err = g_strdup_printf(
+      "This doesn't look like a Titan Quest install folder:\n"
+      "%s\n\n"
+      "Expected to find:\n"
+      "  • %s%s\n"
+      "  • %s%s\n\n"
+      "Pick the folder that contains the Database and Resources subfolders "
+      "(typically \"…/steamapps/common/Titan Quest Anniversary Edition\").",
+      path,
+      "Database\\database.arz", db_ok ? " ✓" : " ✗ missing",
+      "Resources\\",            res_ok ? " ✓" : " ✗ missing");
+  }
+
+  g_free(db);
+  g_free(res);
+  return(err);
+}
+
+// Validate a candidate save folder. Returns NULL on success, or a
+// caller-owned error message (free with g_free).
+static char *
+validate_save_folder(const char *path)
+{
+  if(!path || !*path)
+    return(g_strdup("Save folder is empty. Please choose your Titan Quest save directory."));
+
+  if(!g_file_test(path, G_FILE_TEST_IS_DIR))
+    return(g_strdup_printf("Save folder does not exist:\n%s", path));
+
+  // TQ saves live under <save_folder>/SaveData/Main/_<charname>/.
+  char *save_data = g_build_filename(path, "SaveData", NULL);
+  bool ok = g_file_test(save_data, G_FILE_TEST_IS_DIR);
+
+  g_free(save_data);
+  if(!ok)
+  {
+    return(g_strdup_printf(
+      "This doesn't look like a Titan Quest save folder:\n"
+      "%s\n\n"
+      "Expected to find a SaveData subfolder. Pick the folder that contains "
+      "SaveData (typically \"…/Documents/My Games/Titan Quest - Immortal Throne\").",
+      path));
+  }
+  return(NULL);
+}
+
+// Show a modal error dialog with the given message and run the optional
+// callback when the user dismisses it. Used to keep folder-picker wizards
+// open after a validation failure.
+static void
+show_error(GtkWindow *parent, const char *message)
+{
+  GtkAlertDialog *dlg = gtk_alert_dialog_new("%s", message);
+
+  gtk_alert_dialog_set_modal(dlg, TRUE);
+  gtk_alert_dialog_show(dlg, parent);
+  g_object_unref(dlg);
+}
 
 // ── Browse folder helpers (shared by settings + first-run) ──────────────
 
@@ -81,12 +167,24 @@ on_settings_close(GtkButton *btn, gpointer user_data)
 {
   (void)btn;
   SettingsWidgets *sw = (SettingsWidgets *)user_data;
-
-  config_set_save_folder(gtk_editable_get_text(GTK_EDITABLE(sw->save_folder_entry)));
-  config_set_game_folder(gtk_editable_get_text(GTK_EDITABLE(sw->game_folder_entry)));
-  config_save();
-
   GtkWidget *window = gtk_widget_get_ancestor(GTK_WIDGET(sw->save_folder_entry), GTK_TYPE_WINDOW);
+
+  const char *game = gtk_editable_get_text(GTK_EDITABLE(sw->game_folder_entry));
+  const char *save = gtk_editable_get_text(GTK_EDITABLE(sw->save_folder_entry));
+
+  char *err = validate_game_folder(game);
+  if(!err)
+    err = validate_save_folder(save);
+  if(err)
+  {
+    show_error(GTK_WINDOW(window), err);
+    g_free(err);
+    return;  // keep settings open
+  }
+
+  config_set_save_folder(save);
+  config_set_game_folder(game);
+  config_save();
 
   gtk_window_destroy(GTK_WINDOW(window));
 
@@ -378,17 +476,41 @@ on_first_run_save(GtkButton *btn, gpointer user_data)
 {
   (void)btn;
   FirstRunData *fr = user_data;
+  GtkWidget *win = gtk_widget_get_ancestor(GTK_WIDGET(fr->save_folder_entry), GTK_TYPE_WINDOW);
 
-  config_set_save_folder(gtk_editable_get_text(GTK_EDITABLE(fr->save_folder_entry)));
-  config_set_game_folder(gtk_editable_get_text(GTK_EDITABLE(fr->game_folder_entry)));
+  const char *game = gtk_editable_get_text(GTK_EDITABLE(fr->game_folder_entry));
+  const char *save = gtk_editable_get_text(GTK_EDITABLE(fr->save_folder_entry));
+
+  char *err = validate_game_folder(game);
+  if(!err)
+    err = validate_save_folder(save);
+  if(err)
+  {
+    show_error(GTK_WINDOW(win), err);
+    g_free(err);
+    return;  // keep the wizard open
+  }
+
+  config_set_save_folder(save);
+  config_set_game_folder(game);
   config_save();
 
-  GtkWidget *win = gtk_widget_get_ancestor(GTK_WIDGET(fr->save_folder_entry), GTK_TYPE_WINDOW);
   GtkApplication *app = fr->app;
 
   gtk_window_destroy(GTK_WINDOW(win));
 
-  // Now launch the real UI
+  // Run the same init sequence as on_activate(). Without this, the asset
+  // manager (DBR cache, ARZ mmaps), intern table, item stats, and affix
+  // tables stay uninitialized — which on first run produces missing item
+  // textures and "g_hash_table_lookup: hash_table != NULL" spam.
+  if(global_config.game_folder)
+  {
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+  }
+
   ui_app_activate(app, NULL);
 }
 

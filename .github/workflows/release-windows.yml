@@ -1,0 +1,84 @@
+name: Build & Release Windows installer
+
+# Trigger on:
+#   - any push of a "v*" tag (e.g. v0.6, v1.0) → build + create a GitHub Release
+#   - manual run from the Actions tab → build + upload artifact only (no release)
+#   - any push to main → build + upload artifact (catches breakage early)
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write   # needed to create a Release and upload assets
+
+jobs:
+  build:
+    name: Cross-compile + NSIS installer
+    runs-on: ubuntu-latest
+    container:
+      image: archlinux:base-devel
+
+    steps:
+      - name: Refresh pacman keyring + install build deps
+        # Arch's base-devel image is minimal — pull in everything we need:
+        #   - native tools: git, meson, ninja, nsis, pkgconf
+        #   - mingw-w64 toolchain + GTK4 stack for cross-compile
+        # Mirror the package list in BUILD.md.
+        run: |
+          pacman -Sy --noconfirm archlinux-keyring
+          pacman -Syu --noconfirm
+          pacman -S --noconfirm --needed \
+            git meson ninja nsis pkgconf \
+            mingw-w64-gcc mingw-w64-binutils mingw-w64-crt mingw-w64-headers \
+            mingw-w64-pkg-config mingw-w64-winpthreads \
+            mingw-w64-gtk4 mingw-w64-json-c mingw-w64-zlib \
+            mingw-w64-adwaita-icon-theme mingw-w64-hicolor-icon-theme
+
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # need tags + history for the release notes step
+
+      - name: Mark workspace safe for git inside container
+        # GH Actions' container runs as root but the workspace is owned by
+        # the runner UID, which trips git's safe.directory check.
+        run: git config --global --add safe.directory "$GITHUB_WORKSPACE"
+
+      - name: Derive release version from tag
+        id: version
+        # On a "v0.6" tag push, RELEASE_VERSION=0.6. Otherwise leave empty so
+        # build-installer.sh falls back to meson.build's version.
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            echo "RELEASE_VERSION=${GITHUB_REF#refs/tags/v}" >> "$GITHUB_ENV"
+            echo "is_release=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "is_release=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Build Windows installer
+        run: ./scripts/build-installer.sh
+
+      - name: Show installer size
+        run: ls -lh tqvaultc-*-setup.exe
+
+      - name: Upload installer as workflow artifact
+        # Always upload — useful for debugging non-tag builds.
+        uses: actions/upload-artifact@v4
+        with:
+          name: tqvaultc-windows-installer
+          path: tqvaultc-*-setup.exe
+          if-no-files-found: error
+
+      - name: Create GitHub Release
+        # Only on tag pushes. Auto-generates release notes from PR/commit
+        # history since the previous tag and attaches the installer.
+        if: steps.version.outputs.is_release == 'true'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: tqvaultc-*-setup.exe
+          generate_release_notes: true
+          name: TQVaultC ${{ github.ref_name }}
+          draft: false
+          prerelease: false

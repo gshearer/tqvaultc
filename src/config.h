@@ -52,4 +52,16 @@ bool config_is_first_run(void);
 // config_free - free resources used by the configuration
 void config_free(void);
 
+// tqvc_cache_dir_new - return a newly-allocated path to the per-user cache
+// directory used by tqvaultc (for the resource index, log file, etc).
+//
+// On Linux this is g_get_user_cache_dir()/tqvaultc. On Windows we deliberately
+// avoid g_get_user_cache_dir() because GLib maps it to FOLDERID_InternetCache
+// (the IE temp cache, which Windows can auto-purge); we use
+// g_get_user_config_dir() instead so the cache lives in
+// %LOCALAPPDATA%\tqvaultc next to the config file.
+//
+// Caller frees with g_free(). The directory is created if missing.
+char *tqvc_cache_dir_new(void);
+
 #endif

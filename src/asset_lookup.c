@@ -1,8 +1,10 @@
 #include "asset_lookup.h"
 #include "platform_mmap.h"
+#include "config.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <errno.h>
 #include <zlib.h>
 #include <glib.h>
 
@@ -231,7 +233,12 @@ builder_process_arc(IndexBuilder *b, const char *path, const char *rel_path, int
   char prefix[512] = "";
   const char *p = rel_path;
 
-  if(strncasecmp(p, "Resources/", 10) == 0)
+  // rel_path uses the OS-native separator (backslash on Windows) because
+  // g_build_filename() produced it. Match either form when stripping the
+  // Resources/ prefix so the on-disk-path -> in-archive-key derivation
+  // gives the same result on both platforms.
+  if(strncasecmp(p, "Resources/", 10) == 0 ||
+     strncasecmp(p, "Resources\\", 10) == 0)
     p += 10;
 
   char *copy = strdup(p);
@@ -352,10 +359,15 @@ static void
 builder_scan_dir(IndexBuilder *b, const char *base_path, const char *sub_path)
 {
   char *full_dir = g_build_filename(base_path, sub_path, NULL);
-  GDir *d = g_dir_open(full_dir, 0, NULL);
+  GError *open_err = NULL;
+  GDir *d = g_dir_open(full_dir, 0, &open_err);
 
   if(!d)
   {
+    fprintf(stderr, "builder_scan_dir: g_dir_open(%s) failed: %s\n",
+            full_dir, open_err ? open_err->message : "(no error info)");
+    if(open_err)
+      g_error_free(open_err);
     g_free(full_dir);
     return;
   }
@@ -440,8 +452,13 @@ asset_index_build(const char *game_path, const char *index_path)
   builder_scan_dir(&b, game_path, "Database");
   builder_scan_dir(&b, game_path, "Resources");
 
+  fprintf(stderr, "asset_index_build: scan of %s found %d files, %d entries\n",
+          game_path, b.num_files, b.num_entries);
+
   if(b.num_entries == 0)
   {
+    fprintf(stderr, "asset_index_build: no entries — game_path is wrong or "
+            "Database/Resources subdirs not found. Aborting (no index written).\n");
     free(b.entries);
     free(b.files);
     return;
@@ -462,7 +479,11 @@ asset_index_build(const char *game_path, const char *index_path)
   FILE *fp = fopen(index_path, "wb");
 
   if(!fp)
+  {
+    fprintf(stderr, "asset_index_build: fopen(%s, wb) failed: %s\n",
+            index_path, strerror(errno));
     return;
+  }
 
   TQIndexHeader header;
 
@@ -540,18 +561,27 @@ asset_manager_init(const char *game_path)
 {
   g_game_path = strdup(game_path);
 
-  char *cache_subdir = g_build_filename(g_get_user_cache_dir(), "tqvaultc", NULL);
-
-  g_mkdir_with_parents(cache_subdir, 0755);
+  char *cache_subdir = tqvc_cache_dir_new();
   char *index_path = g_build_filename(cache_subdir, "tqvc-resource-index.bin", NULL);
 
   g_free(cache_subdir);
 
   if(!asset_index_load(index_path))
   {
+    fprintf(stderr, "asset_manager_init: building index at %s\n", index_path);
     asset_index_build(game_path, index_path);
     asset_index_load(index_path);
   }
+
+  fprintf(stderr, "asset_manager_init: game_path=%s, index has %d files, %u entries\n",
+          game_path, g_num_files,
+          g_index_header ? g_index_header->num_entries : 0);
+
+  // Sanity-check the index with a known asset that ships with every TQ install.
+  const char *probe = "Items\\AnimalRelics\\AnimalPart07B_L.tex";
+  const TQAssetEntry *e = asset_lookup(probe);
+  fprintf(stderr, "asset_manager_init: probe '%s' -> %s\n",
+          probe, e ? "FOUND" : "NOT FOUND (game folder may be wrong)");
 
   g_free(index_path);
 

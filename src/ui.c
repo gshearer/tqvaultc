@@ -1150,6 +1150,14 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
     g_object_unref(test_relic);
   }
 
+  // Force GTK to use Adwaita's dark variant. On Linux this honors the
+  // user's system theme by default, but on Windows there's typically no
+  // GTK theme installed and we'd otherwise inherit the bright Adwaita
+  // light defaults which clash with our dark inventory grid CSS.
+  g_object_set(gtk_settings_get_default(),
+               "gtk-application-prefer-dark-theme", TRUE,
+               NULL);
+
   GtkCssProvider *provider = gtk_css_provider_new();
 
   gtk_css_provider_load_from_resource(provider, "/org/tqvaultc/style.css");

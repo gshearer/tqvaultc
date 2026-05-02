@@ -14,7 +14,6 @@ add_project_arguments('-Wno-overlength-strings', language: 'c')
 gtk_dep = dependency('gtk4', include_type: 'system')
 json_dep = dependency('json-c', include_type: 'system')
 zlib_dep = dependency('zlib', include_type: 'system')
-magick_dep = dependency('MagickWand', include_type: 'system')
 m_dep = meson.get_compiler('c').find_library('m', required : false)
 
 # 2. Version info
@@ -27,23 +26,10 @@ version_h = custom_target('version_header',
     '--', '@OUTPUT@'],
   build_always_stale: true)
 
-if host_machine.system() == 'windows'
-  build_number = custom_target('build_number',
-    output: 'build_number.h',
-    command: [find_program('python3', 'python'), '-c',
-      'import sys,os;' +
-      'f=os.path.join(os.path.dirname(sys.argv[2]),"build_number.txt");' +
-      'n=int(open(f).read().strip()) + 1 if os.path.exists(f) else 1;' +
-      'open(f,"w").write(str(n));' +
-      'open(sys.argv[1],"w").write("/* Auto-generated */\\n#define TQVAULTC_BUILD_NUMBER %d\\n" % n)',
-      '@OUTPUT@', meson.project_source_root()],
-    build_always_stale: true)
-else
-  build_number = custom_target('build_number',
-    output: 'build_number.h',
-    command: [find_program('bash'), meson.project_source_root() / 'build_number.sh', '@OUTPUT@'],
-    build_always_stale: true)
-endif
+build_number = custom_target('build_number',
+  output: 'build_number.h',
+  command: [find_program('bash'), meson.project_source_root() / 'build_number.sh', '@OUTPUT@'],
+  build_always_stale: true)
 
 gnome = import('gnome')
 app_resources = gnome.compile_resources('tqvaultc-resources',
@@ -63,6 +49,7 @@ app_sources = [
   'src/config.c',
   'src/arc.c',
   'src/texture.c',
+  'src/dds_decode.c',
   'src/asset_lookup.c',
   'src/translation.c',
   'src/item_stats.c',
@@ -88,9 +75,15 @@ app_sources = [
 ]
 
 # 5. Build the GUI Application
+# On Windows, link as a GUI subsystem binary so launching the .exe doesn't
+# spawn a console window. stdout/stderr from the GUI build go to the void;
+# the CLI tools below stay on the console subsystem so --help etc. work.
 executable('tqvaultc',
   app_sources + platform_sources + [version_h, build_number, app_resources],
-  dependencies: [gtk_dep, json_dep, zlib_dep, magick_dep, m_dep],
+  dependencies: [gtk_dep, json_dep, zlib_dep, m_dep],
+  # On Windows, link as a GUI subsystem binary so launching the .exe
+  # doesn't spawn a console window.
+  win_subsystem: 'windows',
   install: true)
 
 # 6. Build the CLI Character Parser
@@ -119,6 +112,6 @@ executable('tq-quest-tool',
 
 # 10. Build the Texture Extractor
 executable('extract-textures',
-  ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c'] + platform_sources,
-  dependencies: [gtk_dep, json_dep, zlib_dep, magick_dep],
+  ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c'] + platform_sources,
+  dependencies: [gtk_dep, json_dep, zlib_dep],
   install: true)

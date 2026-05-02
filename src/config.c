@@ -3,6 +3,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include <glib.h>
 
 #define CONFIG_FILENAME "tqvc-config.json"
@@ -16,10 +17,16 @@ static bool g_first_run = false;
 static void
 load_from_file(const char *path)
 {
-  FILE *fp = fopen(path, "r");
+  // Open in binary mode: Windows text mode translates CRLF on read, so the
+  // byte count returned by fread() is smaller than the on-disk size that
+  // ftell() reports — which our size-mismatch check below would reject.
+  FILE *fp = fopen(path, "rb");
 
   if(!fp)
+  {
+    fprintf(stderr, "load_from_file: fopen(%s) failed: %s\n", path, strerror(errno));
     return;
+  }
 
   fseek(fp, 0, SEEK_END);
   long size = ftell(fp);
@@ -35,6 +42,7 @@ load_from_file(const char *path)
 
   if(fread(buffer, 1, size, fp) != (size_t)size)
   {
+    fprintf(stderr, "load_from_file: short read from %s\n", path);
     free(buffer);
     fclose(fp);
     return;
@@ -77,11 +85,17 @@ load_from_file(const char *path)
 void
 config_init(const char *override_path)
 {
+  fprintf(stderr, "config_init: g_get_user_config_dir() = %s\n",
+          g_get_user_config_dir());
+
   if(override_path)
   {
     load_from_file(override_path);
     if(global_config.config_path)
+    {
+      fprintf(stderr, "config_init: loaded override %s\n", override_path);
       return;
+    }
   }
 
   // try current folder
@@ -97,16 +111,20 @@ config_init(const char *override_path)
 
   if(g_file_test(path, G_FILE_TEST_EXISTS))
   {
+    fprintf(stderr, "config_init: loading existing %s\n", path);
     load_from_file(path);
-    g_free(path);
   }
   else
   {
-    // if not found, set default save path for later
-    global_config.config_path = g_strdup(path);
-    g_free(path);
+    fprintf(stderr, "config_init: no existing config; first-run path = %s\n", path);
     g_first_run = true;
   }
+
+  // Always set config_path so subsequent saves work, even if load_from_file
+  // bailed out (e.g. parse error, partial write from a previous crash).
+  if(!global_config.config_path)
+    global_config.config_path = g_strdup(path);
+  g_free(path);
 
 #ifdef _WIN32
   // set default game folder if not loaded (Windows Steam path)
@@ -259,12 +277,18 @@ bool
 config_save(void)
 {
   if(!global_config.config_path)
+  {
+    fprintf(stderr, "config_save: no config_path set, aborting\n");
     return(false);
+  }
+
+  fprintf(stderr, "config_save: writing %s\n", global_config.config_path);
 
   // ensure directory exists
   char *dir_path = g_path_get_dirname(global_config.config_path);
 
-  g_mkdir_with_parents(dir_path, 0755);
+  if(g_mkdir_with_parents(dir_path, 0755) != 0)
+    fprintf(stderr, "config_save: g_mkdir_with_parents(%s) failed\n", dir_path);
   g_free(dir_path);
 
   struct json_object *root = json_object_new_object();
@@ -281,10 +305,15 @@ config_save(void)
       json_object_new_int(global_config.last_vault_bag));
 
   const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PRETTY);
-  FILE *fp = fopen(global_config.config_path, "w");
+  // Binary mode: keeps the on-disk size honest so the read-back path's
+  // size check doesn't reject our own file (Windows text mode would
+  // expand "\n" to "\r\n" on write).
+  FILE *fp = fopen(global_config.config_path, "wb");
 
   if(!fp)
   {
+    fprintf(stderr, "config_save: fopen(%s, w) failed: %s\n",
+            global_config.config_path, strerror(errno));
     json_object_put(root);
     return(false);
   }
@@ -292,7 +321,24 @@ config_save(void)
   fputs(json_str, fp);
   fclose(fp);
   json_object_put(root);
+  fprintf(stderr, "config_save: success\n");
   return(true);
+}
+
+// tqvc_cache_dir_new - per-user cache dir (avoids GLib's INetCache mapping
+// of g_get_user_cache_dir() on Windows). See config.h for details.
+char *
+tqvc_cache_dir_new(void)
+{
+#ifdef _WIN32
+  const char *base = g_get_user_config_dir();  // -> %LOCALAPPDATA%
+#else
+  const char *base = g_get_user_cache_dir();
+#endif
+  char *dir = g_build_filename(base, "tqvaultc", NULL);
+
+  g_mkdir_with_parents(dir, 0755);
+  return(dir);
 }
 
 // config_free - free all resources used by the global configuration

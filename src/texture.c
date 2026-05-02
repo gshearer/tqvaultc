@@ -1,10 +1,10 @@
 #include "texture.h"
 #include "config.h"
 #include "asset_lookup.h"
+#include "dds_decode.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <MagickWand/MagickWand.h>
 
 static void
 pixbuf_free_pixels(guchar *pixels, gpointer user_data)
@@ -66,109 +66,29 @@ texture_load_from_data(uint8_t *raw_data, size_t raw_size)
   uint8_t *dds_data = raw_data + header_size;
   size_t dds_size = raw_size - header_size;
 
-  // fix up the DDS header so ImageMagick correctly interprets alpha.
-  // ported from TQVaultAE BitmapService.cs LoadFromTexMemory().
-  if(dds_size >= 128)
-  {
-    uint32_t magic;
-
-    memcpy(&magic, dds_data, 4);
-
-    // accept both "DDS " (0x20534444) and "DDSR" (0x52534444)
-    if(magic == 0x52534444 || magic == 0x20534444)
-    {
-      // normalise magic to "DDS "
-      dds_data[0] = 'D'; dds_data[1] = 'D'; dds_data[2] = 'S'; dds_data[3] = ' ';
-
-      uint32_t header_sz, pf_sz;
-
-      memcpy(&header_sz, dds_data + 4, 4);
-      memcpy(&pf_sz, dds_data + 76, 4);
-
-      if(header_sz == 124 && pf_sz == 32)
-      {
-        int32_t bit_depth;
-
-        memcpy(&bit_depth, dds_data + 88, 4);
-
-        if(bit_depth >= 24)
-        {
-          // set RGB pixel masks to A8R8G8B8 layout
-          // red mask = 0x00FF0000
-          dds_data[92] = 0; dds_data[93] = 0; dds_data[94] = 0xFF; dds_data[95] = 0;
-          // green mask = 0x0000FF00
-          dds_data[96] = 0; dds_data[97] = 0xFF; dds_data[98] = 0; dds_data[99] = 0;
-          // blue mask = 0x000000FF
-          dds_data[100] = 0xFF; dds_data[101] = 0; dds_data[102] = 0; dds_data[103] = 0;
-
-          if(bit_depth == 32)
-          {
-            // enable DDPF_ALPHAPIXELS flag
-            dds_data[80] |= 1;
-            // alpha mask = 0xFF000000
-            dds_data[104] = 0; dds_data[105] = 0; dds_data[106] = 0; dds_data[107] = 0xFF;
-          }
-        }
-        // set DDS caps flag
-        dds_data[109] |= 0x10;
-      }
-    }
-  }
-  else if(dds_size >= 4 && memcmp(dds_data, "DDSR", 4) == 0)
-  {
-    // short DDS: just fix the magic
+  // .tex files commonly use the variant magic "DDSR" instead of "DDS ";
+  // normalise so dds_decode() recognises it.
+  if(dds_size >= 4 && memcmp(dds_data, "DDSR", 4) == 0)
     dds_data[3] = ' ';
-  }
 
-  if(tqvc_debug)
-    printf("  Initializing MagickWand...\n");
+  uint32_t width = 0;
+  uint32_t height = 0;
+  uint8_t *pixels = dds_decode(dds_data, dds_size, &width, &height);
 
-  MagickWand *wand = NewMagickWand();
   GdkPixbuf *pixbuf = NULL;
 
-  if(tqvc_debug)
-    printf("  Reading image blob (size %zu)...\n", dds_size);
-
-  if(MagickReadImageBlob(wand, dds_data, dds_size) == MagickTrue)
+  if(pixels)
   {
-    if(tqvc_debug)
-      printf("  Image read success. Converting to RGBA...\n");
-
-    MagickSetImageFormat(wand, "RGBA");
-    size_t width = MagickGetImageWidth(wand);
-    size_t height = MagickGetImageHeight(wand);
-
-    uint8_t *pixels = malloc(width * height * 4);
-
-    if(!pixels)
-    {
-      DestroyMagickWand(wand);
-      free(raw_data);
-      return(NULL);
-    }
-
-    MagickExportImagePixels(wand, 0, 0, width, height, "RGBA", CharPixel, pixels);
-
     pixbuf = gdk_pixbuf_new_from_data(pixels, GDK_COLORSPACE_RGB, TRUE, 8,
         (int)width, (int)height, (int)width * 4,
         pixbuf_free_pixels, NULL);
   }
-  else
+  else if(tqvc_debug)
   {
-    char *description;
-    ExceptionType severity;
-
-    description = MagickGetException(wand, &severity);
-    fprintf(stderr, "MagickWand error: %s\n", description);
-    MagickRelinquishMemory(description);
+    fprintf(stderr, "dds_decode: failed (size=%zu)\n", dds_size);
   }
 
-  if(tqvc_debug)
-    printf("  Destroying MagickWand...\n");
-
-  DestroyMagickWand(wand);
   free(raw_data);
-
   return(pixbuf);
 }
 
@@ -178,23 +98,51 @@ texture_load_from_data(uint8_t *raw_data, size_t raw_size)
 GdkPixbuf *
 texture_load(const char *tex_path)
 {
+  // First-call diagnostic: log the first few attempts (success or failure)
+  // unconditionally so Windows users can debug without --debug.
+  static int diag_count = 0;
+  bool diag = (diag_count < 5);
+
+  if(diag)
+    diag_count++;
+
   const TQAssetEntry *entry = asset_lookup(tex_path);
 
   if(!entry)
+  {
+    if(diag)
+      fprintf(stderr, "texture_load[%d]: asset_lookup(%s) = NULL\n", diag_count, tex_path);
     return(NULL);
+  }
 
   TQArcFile *arc = asset_get_arc(entry->file_id);
 
   if(!arc)
+  {
+    if(diag)
+      fprintf(stderr, "texture_load[%d]: asset_get_arc(file_id=%u) = NULL for %s\n",
+              diag_count, entry->file_id, tex_path);
     return(NULL);
+  }
 
   size_t raw_size;
   uint8_t *raw_data = arc_extract_file_at(arc, entry->offset, entry->size, entry->real_size, &raw_size);
 
   if(!raw_data)
+  {
+    if(diag)
+      fprintf(stderr, "texture_load[%d]: arc_extract_file_at failed (offset=%u sz=%u real=%u) for %s\n",
+              diag_count, entry->offset, entry->size, entry->real_size, tex_path);
     return(NULL);
+  }
 
-  return(texture_load_from_data(raw_data, raw_size));
+  GdkPixbuf *pb = texture_load_from_data(raw_data, raw_size);
+
+  if(diag)
+    fprintf(stderr, "texture_load[%d]: %s for %s\n",
+            diag_count, pb ? "OK" : "decode-FAILED", tex_path);
+
+  return(pb);
 }
 
 // texture_load_from_arc - load a .tex file from an ARC archive by path
