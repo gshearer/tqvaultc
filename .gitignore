@@ -1,0 +1,58 @@
+# Build output
+build/
+build-win/
+dist-win/
+*-setup.exe
+_build/
+.cache/
+.claude/
+
+# Meson private directory
+.meson/
+
+# Generated files
+src/version.h
+build_number.h
+build_number.txt
+database-arz.txt
+debug.log
+
+# Test data — contains game files, not redistributable
+testdata/
+
+# snapshot script
+snap.sh
+
+# TQVaultAE C# reference — not part of this project
+TQVaultAE/
+tqrespec/
+
+# Internal planning and session notes
+plans/
+
+# Recordings and screenshots (keep screenshot1.png intentionally if desired)
+*.mp4
+*.mkv
+
+# Ad-hoc debug captures dropped in the repo root for AI review
+/windows.png
+/linux.png
+*.log
+
+# Editor and IDE
+.vscode/
+*.swp
+*.swo
+*~
+.idea/
+
+# Compiled objects left in-tree
+*.o
+*.a
+*.so
+
+# Claude Code AI context (optional — safe to include but not useful to contributors)
+CLAUDE.md
+AGENTS.md
+TODO.md
+PLAN_atlantis_quest_tokens.md

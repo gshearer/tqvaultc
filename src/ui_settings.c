@@ -371,7 +371,8 @@ on_about_btn_clicked(GtkButton *btn, gpointer user_data)
   gtk_box_append(GTK_BOX(vbox), gtk_label_new(ver_str));
 
   gtk_box_append(GTK_BOX(vbox), gtk_label_new(""));
-  gtk_box_append(GTK_BOX(vbox), gtk_label_new("Written by Grge Shearer"));
+  gtk_box_append(GTK_BOX(vbox), gtk_label_new("Designed by George Shearer"));
+  gtk_box_append(GTK_BOX(vbox), gtk_label_new("Written by Claude"));
   gtk_box_append(GTK_BOX(vbox), gtk_label_new("george@shearer.tech"));
   gtk_box_append(GTK_BOX(vbox), gtk_label_new("https://github.com/gshearer/tqvaultc"));
 
@@ -561,7 +562,8 @@ show_first_run_about(gpointer user_data)
   gtk_box_append(GTK_BOX(avbox), gtk_label_new(ver_str));
 
   gtk_box_append(GTK_BOX(avbox), gtk_label_new(""));
-  gtk_box_append(GTK_BOX(avbox), gtk_label_new("Written by George Shearer"));
+  gtk_box_append(GTK_BOX(avbox), gtk_label_new("Designed by George Shearer"));
+  gtk_box_append(GTK_BOX(avbox), gtk_label_new("Written by Claude"));
   gtk_box_append(GTK_BOX(avbox), gtk_label_new("george@shearer.tech"));
   gtk_box_append(GTK_BOX(avbox), gtk_label_new("https://github.com/gshearer/tqvaultc"));
 

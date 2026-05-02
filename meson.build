@@ -1,5 +1,5 @@
 project('TQVaultC', 'c',
-  version: '0.5',
+  version: '0.6',
   default_options: ['warning_level=3'])
 
 # Generated GResource bundles emit single string literals well past the
