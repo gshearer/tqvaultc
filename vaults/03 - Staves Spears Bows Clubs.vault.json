@@ -1,20 +1,7 @@
-﻿{
-  "disabledtooltip": [
-    0,
-    1,
-    2,
-    3,
-    4,
-    5,
-    6,
-    7,
-    8,
-    9,
-    10,
-    11
-  ],
+{
+  "disabledtooltip": [],
   "currentlyFocusedSackNumber": 0,
-  "currentlySelectedSackNumber": 8,
+  "currentlySelectedSackNumber": 0,
   "sacks": [
     {
       "iconinfo": null,
@@ -411,6 +398,21 @@
         },
         {
           "stackSize": 1,
+          "seed": 6371,
+          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTWEAPON\\STAFF\\U_L_03.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 16,
+          "pointY": 8
+        },
+        {
+          "stackSize": 1,
           "seed": 20014,
           "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTWEAPON\\STAFF\\U_L_02.DBR",
           "prefixName": "",
@@ -497,6 +499,21 @@
           "relicBonus2": "",
           "var2": 2035248,
           "pointX": 10,
+          "pointY": 12
+        },
+        {
+          "stackSize": 1,
+          "seed": 7945,
+          "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\STAFF\\U_L_PRIDEOFTHEFALLEN.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 12,
           "pointY": 12
         },
         {
@@ -588,36 +605,6 @@
           "var2": 2035248,
           "pointX": 6,
           "pointY": 16
-        },
-        {
-          "stackSize": 1,
-          "seed": 6371,
-          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTWEAPON\\STAFF\\U_L_03.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 16,
-          "pointY": 8
-        },
-        {
-          "stackSize": 1,
-          "seed": 7945,
-          "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\STAFF\\U_L_PRIDEOFTHEFALLEN.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 12,
-          "pointY": 12
         },
         {
           "stackSize": 1,
@@ -4658,6 +4645,21 @@
           "var2": 2035248,
           "pointX": 9,
           "pointY": 0
+        },
+        {
+          "stackSize": 1,
+          "seed": 10814,
+          "baseName": "records\\xpack3\\items\\equipmentweapon\\spear\\m_l_embalmedpriest.dbr",
+          "prefixName": "Records\\Item\\LootMagicalAffixes\\Prefix\\Default\\Rare_PierceBleed_05.dbr",
+          "suffixName": "records\\xpack3\\items\\lootmagicalaffixes\\suffix\\default\\rare_extrarelic_01.dbr",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 1065353216,
+          "pointX": 17,
+          "pointY": 15
         }
       ]
     },

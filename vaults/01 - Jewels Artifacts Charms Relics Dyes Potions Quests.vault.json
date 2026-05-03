@@ -7932,7 +7932,7 @@
           "pointY": 4
         },
         {
-          "stackSize": 500,
+          "stackSize": 1,
           "seed": 4580,
           "baseName": "records\\xpack3\\items\\miscellaneous\\oneshot\\potionxp_legendary.dbr",
           "prefixName": "",
@@ -7947,7 +7947,7 @@
           "pointY": 19
         },
         {
-          "stackSize": 500,
+          "stackSize": 1,
           "seed": 8568,
           "baseName": "records\\xpack3\\items\\miscellaneous\\oneshot\\potionxp_epic.dbr",
           "prefixName": "",
@@ -7962,7 +7962,7 @@
           "pointY": 19
         },
         {
-          "stackSize": 500,
+          "stackSize": 1,
           "seed": 23760,
           "baseName": "Records\\Item\\Miscellaneous\\OneShot\\PotionHealth_06.dbr",
           "prefixName": "",
@@ -7977,7 +7977,7 @@
           "pointY": 19
         },
         {
-          "stackSize": 500,
+          "stackSize": 1,
           "seed": 2276,
           "baseName": "records\\xpack\\item\\miscellaneous\\oneshot\\potionhealth_07.dbr",
           "prefixName": "",
@@ -7992,7 +7992,7 @@
           "pointY": 19
         },
         {
-          "stackSize": 500,
+          "stackSize": 1,
           "seed": 19341,
           "baseName": "Records\\xpack\\item\\miscellaneous\\oneshot\\potionmana_07.dbr",
           "prefixName": "",
@@ -8007,7 +8007,7 @@
           "pointY": 19
         },
         {
-          "stackSize": 500,
+          "stackSize": 1,
           "seed": 30027,
           "baseName": "Records\\Item\\Miscellaneous\\OneShot\\PotionMana_06.dbr",
           "prefixName": "",
@@ -8248,21 +8248,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 4977,
-          "baseName": "RECORDS\\ITEM\\HCDUNGEON\\X4POT_POTIONOFSKILLRESET_ALL5_01.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 15,
-          "pointY": 18
-        },
-        {
-          "stackSize": 63,
           "seed": 25066,
           "baseName": "RECORDS\\ITEM\\HCDUNGEON\\X4POT_POTIONOFSKILLRESET_ALL5_01.DBR",
           "prefixName": "",
@@ -8273,7 +8258,7 @@
           "relicName2": "",
           "relicBonus2": "",
           "var2": 2035248,
-          "pointX": 14,
+          "pointX": 15,
           "pointY": 18
         }
       ]
@@ -18597,21 +18582,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 23621,
-          "baseName": "RECORDS\\ITEM\\RELICS\\03_ACT3_YENLOWANGSBLOODLETTING.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "Records\\Item\\LootMagicalAffixes\\Relics\\Bonuses\\Offensive_DamageBonus_05.dbr",
-          "var1": 3,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 4,
-          "pointY": 10
-        },
-        {
-          "stackSize": 1,
           "seed": 4866,
           "baseName": "RECORDS\\ITEM\\RELICS\\03_ACT3_YENLOWANGSBLOODLETTING.DBR",
           "prefixName": "",
@@ -22359,6 +22329,21 @@
           "var2": 2035248,
           "pointX": 10,
           "pointY": 16
+        },
+        {
+          "stackSize": 1,
+          "seed": 23621,
+          "baseName": "RECORDS\\ITEM\\RELICS\\03_ACT3_YENLOWANGSBLOODLETTING.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "Records\\Item\\LootMagicalAffixes\\Relics\\Bonuses\\Offensive_DamageBonus_05.dbr",
+          "var1": 3,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 4,
+          "pointY": 10
         }
       ]
     },
@@ -22784,21 +22769,6 @@
           "var2": 2035248,
           "pointX": 16,
           "pointY": 4
-        },
-        {
-          "stackSize": 1,
-          "seed": 8407,
-          "baseName": "RECORDS\\ITEM\\ANIMALRELICS\\03_ACT3_RAPTORTOOTH.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "Records\\Item\\LootMagicalAffixes\\Suffix\\Default\\Character_AbilityOffensive_04.dbr",
-          "var1": 5,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 16,
-          "pointY": 5
         },
         {
           "stackSize": 1,
@@ -24434,6 +24404,21 @@
           "var2": 2035248,
           "pointX": 3,
           "pointY": 0
+        },
+        {
+          "stackSize": 1,
+          "seed": 8407,
+          "baseName": "RECORDS\\ITEM\\ANIMALRELICS\\03_ACT3_RAPTORTOOTH.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "Records\\Item\\LootMagicalAffixes\\Suffix\\Default\\Character_AbilityOffensive_04.dbr",
+          "var1": 5,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 16,
+          "pointY": 5
         }
       ]
     }

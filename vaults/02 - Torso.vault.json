@@ -5583,21 +5583,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 13733,
-          "baseName": "RECORDS\\XPACK\\ITEM\\EQUIPMENTARMOR\\TORSO\\MI_L_ANOURANMAGE.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 0,
-          "pointY": 18
-        },
-        {
-          "stackSize": 1,
           "seed": 25324,
           "baseName": "RECORDS\\XPACK\\ITEM\\EQUIPMENTARMOR\\TORSO\\MI_N_ANOURANMAGE.DBR",
           "prefixName": "",
@@ -6015,6 +6000,21 @@
           "var2": 2035248,
           "pointX": 16,
           "pointY": 15
+        },
+        {
+          "stackSize": 1,
+          "seed": 7295,
+          "baseName": "RECORDS\\XPACK\\ITEM\\EQUIPMENTARMOR\\TORSO\\MI_L_ANOURANMAGE.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 0,
+          "pointY": 18
         }
       ]
     },

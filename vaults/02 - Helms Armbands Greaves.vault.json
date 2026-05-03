@@ -5063,21 +5063,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 26379,
-          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\HELM\\MI_N_CORALGUARDIANMELEE.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 0,
-          "pointY": 18
-        },
-        {
-          "stackSize": 1,
           "seed": 22712,
           "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\HELM\\MI_E_CORALGUARDIANMELEE.DBR",
           "prefixName": "",
@@ -5089,21 +5074,6 @@
           "relicBonus2": "",
           "var2": 2035248,
           "pointX": 2,
-          "pointY": 18
-        },
-        {
-          "stackSize": 1,
-          "seed": 15889,
-          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\HELM\\MI_L_CORALGUARDIANMELEE.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 4,
           "pointY": 18
         },
         {
@@ -5210,6 +5180,36 @@
           "var2": 2035248,
           "pointX": 2,
           "pointY": 12
+        },
+        {
+          "stackSize": 1,
+          "seed": 15889,
+          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\HELM\\MI_L_CORALGUARDIANMELEE.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 0,
+          "pointY": 18
+        },
+        {
+          "stackSize": 1,
+          "seed": 26379,
+          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\HELM\\MI_N_CORALGUARDIANMELEE.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 4,
+          "pointY": 18
         }
       ]
     },
