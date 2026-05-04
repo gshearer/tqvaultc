@@ -48,6 +48,11 @@ mastery_display_name(const char *dbr_path)
 
   memcpy(buf, base, len);
   buf[len] = '\0';
+
+  // Cosmetic: display "Rogue" instead of "Stealth" mastery name
+  if(strcasecmp(buf, "Stealth") == 0)
+    return("Rogue");
+
   return(buf);
 }
 
@@ -901,6 +906,28 @@ update_ui(AppWidgets *widgets, TQCharacter *chr)
 
   snprintf(buffer, sizeof(buffer), "%u", chr->kills);
   gtk_label_set_text(GTK_LABEL(widgets->kills_label), buffer);
+
+  // Total armor: sum defensiveProtection across all equipped items, applying
+  // any item-local defensiveProtectionModifier percentage bonus.
+  float total_armor = 0.0f;
+
+  for(int i = 0; i < 12; i++)
+  {
+    if(!chr->equipment[i])
+      continue;
+
+    float base = item_get_guaranteed_stat(chr->equipment[i], "defensiveProtection");
+
+    if(base <= 0.001f)
+      continue;
+
+    float pct = item_get_guaranteed_stat(chr->equipment[i], "defensiveProtectionModifier");
+
+    total_armor += base * (1.0f + pct / 100.0f);
+  }
+
+  snprintf(buffer, sizeof(buffer), "%d", (int)(total_armor + 0.5f));
+  gtk_label_set_text(GTK_LABEL(widgets->armor_label), buffer);
 
   gtk_widget_queue_draw(widgets->equip_drawing_area);
   gtk_widget_queue_draw(widgets->inv_drawing_area);

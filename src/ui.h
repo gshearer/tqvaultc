@@ -150,6 +150,7 @@ typedef struct {
     GtkWidget *mana_label;
     GtkWidget *deaths_label;
     GtkWidget *kills_label;
+    GtkWidget *armor_label;
     GtkWidget *vault_drawing_area;
     GtkWidget *character_combo;
     GtkWidget *vault_combo;

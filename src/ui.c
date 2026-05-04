@@ -1645,6 +1645,10 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
     gtk_box_append(GTK_BOX(kdbox), widgets->deaths_label);
     gtk_grid_attach(GTK_GRID(stats_grid), kdbox, 2, sg_row, 1, 1);
   }
+  sg_row++;
+
+  // Row 3: Armor (total from equipped items)
+  STAT_CELL(0, "Armor", &widgets->armor_label);
 
   #undef STAT_CELL
 
