@@ -195,12 +195,10 @@ static AttributeMap attr_maps[] = {
 
   // Misc
   {"characterTotalSpeedModifier", "%+d%% Total Speed", true, NULL},
-  {"skillCooldownReduction", "-%.0f%% Recharge", false, NULL},
+  // skillCooldownReduction / skillManaCostReduction handled in dedicated
+  // block to merge value + ModifierChance into "X% Chance of -Y% Recharge"
   {"skillCooldownReductionModifier", "+%d%% Recharge", true, NULL},
-  {"skillCooldownReductionChance", "%.0f%% Chance of Recharge Reduction", false, NULL},
-  {"skillManaCostReduction", "-%.0f%% Energy Cost", false, NULL},
   {"skillManaCostReductionModifier", "+%d%% Energy Cost", true, NULL},
-  {"skillManaCostReductionChance", "%.0f%% Chance of Energy Cost Reduction", false, NULL},
   {"augmentAllLevel", "+%d to all Skills", false, NULL},
   {"characterIncreasedExperience", "%+d%% Increased Experience", false, NULL},
 
@@ -251,6 +249,12 @@ static const char *INT_offensiveSlowLifeMin, *INT_offensiveSlowLifeMax, *INT_off
 static const char *INT_offensiveSlowManaLeachMin, *INT_offensiveSlowManaLeachMax, *INT_offensiveSlowManaLeachDurationMin, *INT_offensiveSlowManaLeachChance;
 static const char *INT_offensiveSlowBleedingMin, *INT_offensiveSlowBleedingMax, *INT_offensiveSlowBleedingDurationMin, *INT_offensiveSlowBleedingChance;
 static const char *INT_offensiveSlowBleedingModifier, *INT_offensiveSlowBleedingModifierChance;
+static const char *INT_offensiveSlowFireModifier, *INT_offensiveSlowFireModifierChance;
+static const char *INT_offensiveSlowColdModifier, *INT_offensiveSlowColdModifierChance;
+static const char *INT_offensiveSlowLightningModifier, *INT_offensiveSlowLightningModifierChance;
+static const char *INT_offensiveSlowPoisonModifier, *INT_offensiveSlowPoisonModifierChance;
+static const char *INT_offensiveSlowLifeModifier, *INT_offensiveSlowLifeModifierChance;
+static const char *INT_offensiveSlowLifeLeachModifier, *INT_offensiveSlowLifeLeachModifierChance;
 static const char *INT_offensiveSlowDefensiveReductionMin, *INT_offensiveSlowDefensiveReductionDurationMin;
 static const char *INT_offensiveSlowAttackSpeedMin, *INT_offensiveSlowAttackSpeedDurationMin;
 static const char *INT_offensiveSlowRunSpeedMin, *INT_offensiveSlowRunSpeedDurationMin;
@@ -314,6 +318,8 @@ static const char *INT_retaliationElementalModifier, *INT_retaliationElementalMo
 static const char *INT_racialBonusPercentDamage, *INT_racialBonusPercentDefense, *INT_racialBonusRace;
 static const char *INT_petBonusName;
 static const char *INT_skillCooldownTime, *INT_refreshTime;
+static const char *INT_skillCooldownReduction, *INT_skillCooldownReductionChance;
+static const char *INT_skillManaCostReduction, *INT_skillManaCostReductionChance;
 static const char *INT_skillTargetNumber, *INT_skillActiveDuration, *INT_skillTargetRadius;
 static const char *INT_offensiveGlobalChance;
 static const char *INT_offensiveDisruptionMin;
@@ -402,6 +408,14 @@ item_stats_init(void)
     "offensiveSlowBleedingMin", "offensiveSlowBleedingMax", "offensiveSlowBleedingDurationMin", "offensiveSlowBleedingChance",
     "offensiveSlowManaLeachMin", "offensiveSlowManaLeachMax", "offensiveSlowManaLeachDurationMin", "offensiveSlowManaLeachChance",
     "offensiveSlowBleedingModifier", "offensiveSlowBleedingModifierChance",
+    "offensiveSlowFireModifier", "offensiveSlowFireModifierChance",
+    "offensiveSlowColdModifier", "offensiveSlowColdModifierChance",
+    "offensiveSlowLightningModifier", "offensiveSlowLightningModifierChance",
+    "offensiveSlowPoisonModifier", "offensiveSlowPoisonModifierChance",
+    "offensiveSlowLifeModifier", "offensiveSlowLifeModifierChance",
+    "offensiveSlowLifeLeachModifier", "offensiveSlowLifeLeachModifierChance",
+    "skillCooldownReduction", "skillCooldownReductionChance",
+    "skillManaCostReduction", "skillManaCostReductionChance",
     "offensiveSlowDefensiveReductionMin", "offensiveSlowDefensiveReductionDurationMin",
     "offensiveSlowAttackSpeedMin", "offensiveSlowAttackSpeedDurationMin",
     "offensiveSlowRunSpeedMin", "offensiveSlowRunSpeedDurationMin",
@@ -546,6 +560,12 @@ item_stats_init(void)
   INTERN(offensiveSlowManaLeachMin); INTERN(offensiveSlowManaLeachMax); INTERN(offensiveSlowManaLeachDurationMin); INTERN(offensiveSlowManaLeachChance);
   INTERN(offensiveSlowBleedingMin); INTERN(offensiveSlowBleedingMax); INTERN(offensiveSlowBleedingDurationMin); INTERN(offensiveSlowBleedingChance);
   INTERN(offensiveSlowBleedingModifier); INTERN(offensiveSlowBleedingModifierChance);
+  INTERN(offensiveSlowFireModifier); INTERN(offensiveSlowFireModifierChance);
+  INTERN(offensiveSlowColdModifier); INTERN(offensiveSlowColdModifierChance);
+  INTERN(offensiveSlowLightningModifier); INTERN(offensiveSlowLightningModifierChance);
+  INTERN(offensiveSlowPoisonModifier); INTERN(offensiveSlowPoisonModifierChance);
+  INTERN(offensiveSlowLifeModifier); INTERN(offensiveSlowLifeModifierChance);
+  INTERN(offensiveSlowLifeLeachModifier); INTERN(offensiveSlowLifeLeachModifierChance);
   INTERN(offensiveSlowDefensiveReductionMin); INTERN(offensiveSlowDefensiveReductionDurationMin);
   INTERN(offensiveSlowAttackSpeedMin); INTERN(offensiveSlowAttackSpeedDurationMin);
   INTERN(offensiveSlowRunSpeedMin); INTERN(offensiveSlowRunSpeedDurationMin);
@@ -609,6 +629,8 @@ item_stats_init(void)
   INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
   INTERN(petBonusName);
   INTERN(skillCooldownTime); INTERN(refreshTime);
+  INTERN(skillCooldownReduction); INTERN(skillCooldownReductionChance);
+  INTERN(skillManaCostReduction); INTERN(skillManaCostReductionChance);
   INTERN(skillTargetNumber); INTERN(skillActiveDuration); INTERN(skillTargetRadius);
   INTERN(offensiveGlobalChance);
   INTERN(offensiveDisruptionMin);
@@ -1481,6 +1503,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   const char *cls = record_get_string_fast(data, INT_Class);
   bool is_proc_wrapped = cls && (strcasecmp(cls, "ItemRelic") == 0 ||
                                  strcasecmp(cls, "ItemCharm") == 0 ||
+                                 strcasecmp(cls, "ItemArtifact") == 0 ||
                                  strncasecmp(cls, "Armor", 5) == 0 ||
                                  strncasecmp(cls, "Weapon", 6) == 0);
   float global_chance = is_proc_wrapped
@@ -1644,16 +1667,40 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     }
   }
 
-  // Bleeding damage modifier with chance
+  // DoT damage modifiers (may have chance).  Each routes to the chance
+  // block only when its corresponding offensiveSlow*Global flag is set;
+  // otherwise it stays top-level.
   {
-    float mod = dbr_get_float_fast(data, INT_offensiveSlowBleedingModifier, shard_index);
-    float chance = dbr_get_float_fast(data, INT_offensiveSlowBleedingModifierChance, shard_index);
+    static const struct { const char **val; const char **chance; const char *label; const char *prefix; } slow_mod_defs[] = {
+      {&INT_offensiveSlowFireModifier,      &INT_offensiveSlowFireModifierChance,      "Burn Damage",            "SlowFire"},
+      {&INT_offensiveSlowColdModifier,      &INT_offensiveSlowColdModifierChance,      "Frostburn Damage",       "SlowCold"},
+      {&INT_offensiveSlowLightningModifier, &INT_offensiveSlowLightningModifierChance, "Electrical Burn Damage", "SlowLightning"},
+      {&INT_offensiveSlowPoisonModifier,    &INT_offensiveSlowPoisonModifierChance,    "Poison Damage",          "SlowPoison"},
+      {&INT_offensiveSlowLifeModifier,      &INT_offensiveSlowLifeModifierChance,      "Vitality Decay",         "SlowLife"},
+      {&INT_offensiveSlowLifeLeachModifier, &INT_offensiveSlowLifeLeachModifierChance, "Life Leech",             "SlowLifeLeach"},
+      {&INT_offensiveSlowBleedingModifier,  &INT_offensiveSlowBleedingModifierChance,  "Bleeding Damage",        "SlowBleeding"},
+    };
 
-    if(fabs(mod) > 0.001f && chance > 0)
-      buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %+d%% Bleeding Damage</span>\n", color, indent, chance, (int)round(mod));
+    for(int mi = 0; mi < (int)(sizeof slow_mod_defs / sizeof slow_mod_defs[0]); mi++)
+    {
+      float mv = dbr_get_float_fast(data, *slow_mod_defs[mi].val, shard_index);
 
-    else if(fabs(mod) > 0.001f)
-      buf_write(ow, "<span color='%s'>%s%+d%% Bleeding Damage</span>\n", color, indent, (int)round(mod));
+      if(fabs(mv) < 0.001f)
+        continue;
+
+      float mc = dbr_get_float_fast(data, *slow_mod_defs[mi].chance, shard_index);
+
+      bool in_chance = global_chance > 0
+                       && offensive_proc_in_chance(data, slow_mod_defs[mi].prefix, shard_index);
+      BufWriter *target = in_chance ? ow : w;
+      const char *target_indent = in_chance ? indent : "";
+
+      if(mc > 0 && mc < 100)
+        buf_write(target, "<span color='%s'>%s%.1f%% Chance of %+d%% %s</span>\n", color, target_indent, mc, (int)round(mv), slow_mod_defs[mi].label);
+
+      else
+        buf_write(target, "<span color='%s'>%s%+d%% %s</span>\n", color, target_indent, (int)round(mv), slow_mod_defs[mi].label);
+    }
   }
 
   // Retaliation DoTs (damage over time triggered on retaliation, may have chance)
@@ -1966,18 +2013,21 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     }
   }
 
-  // Offensive damage modifiers (may have chance)
+  // Offensive damage modifiers (may have chance).  Each routes to the
+  // chance block only when its corresponding offensive*Global flag is
+  // set; otherwise it stays top-level.  TotalDamage has no Global
+  // partner and always renders top-level.
   {
-    static const struct { const char **val; const char **chance; const char *label; } off_mod_defs[] = {
-      {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage"},
-      {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage"},
-      {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage"},
-      {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage"},
-      {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage"},
-      {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage"},
-      {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage"},
-      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damage"},
-      {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage"},
+    static const struct { const char **val; const char **chance; const char *label; const char *prefix; } off_mod_defs[] = {
+      {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage",  "Physical"},
+      {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage",      "Fire"},
+      {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage",      "Cold"},
+      {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage", "Lightning"},
+      {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage",    "Poison"},
+      {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage",  "Life"},
+      {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage",    "Pierce"},
+      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damage", "Elemental"},
+      {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage", NULL},
     };
 
     for(int mi = 0; mi < (int)(sizeof off_mod_defs / sizeof off_mod_defs[0]); mi++)
@@ -1989,11 +2039,17 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
       float mc = dbr_get_float_fast(data, *off_mod_defs[mi].chance, shard_index);
 
+      bool in_chance = global_chance > 0
+                       && off_mod_defs[mi].prefix
+                       && offensive_proc_in_chance(data, off_mod_defs[mi].prefix, shard_index);
+      BufWriter *target = in_chance ? ow : w;
+      const char *target_indent = in_chance ? indent : "";
+
       if(mc > 0 && mc < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, indent, mc, (int)round(mv), off_mod_defs[mi].label);
+        buf_write(target, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, target_indent, mc, (int)round(mv), off_mod_defs[mi].label);
 
       else
-        buf_write(ow, "<span color='%s'>%s%+d%% %s</span>\n", color, indent, (int)round(mv), off_mod_defs[mi].label);
+        buf_write(target, "<span color='%s'>%s%+d%% %s</span>\n", color, target_indent, (int)round(mv), off_mod_defs[mi].label);
     }
   }
 
@@ -2580,6 +2636,32 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       }
 
       buf_write(w, "<span color='%s'>+%d to %s</span>\n", color, (int)round(val), skill_name);
+    }
+  }
+
+  // Skill cost/cooldown reductions: merge value + chance into one line.
+  // "X% Chance of -Y% Recharge" is one effect; the standalone Chance and
+  // value fields should not render as separate lines.
+  {
+    static const struct { const char **val; const char **chance; const char *label; } skill_red[] = {
+      {&INT_skillCooldownReduction, &INT_skillCooldownReductionChance, "Recharge"},
+      {&INT_skillManaCostReduction, &INT_skillManaCostReductionChance, "Energy Cost"},
+    };
+
+    for(int s = 0; s < (int)(sizeof skill_red / sizeof skill_red[0]); s++)
+    {
+      float val = dbr_get_float_fast(data, *skill_red[s].val, shard_index);
+
+      if(val < 0.001f)
+        continue;
+
+      float chance = dbr_get_float_fast(data, *skill_red[s].chance, shard_index);
+
+      if(chance > 0 && chance < 100)
+        buf_write(w, "<span color='%s'>%.0f%% Chance of -%.0f%% %s</span>\n", color, chance, val, skill_red[s].label);
+
+      else
+        buf_write(w, "<span color='%s'>-%.0f%% %s</span>\n", color, val, skill_red[s].label);
     }
   }
 

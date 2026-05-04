@@ -69,7 +69,7 @@ static const MasteryDef mastery_defs[] = {
   { "Rune",     "records\\xpack2\\skills\\runemaster\\runemaster_mastery.dbr",
                 "records\\xpack2\\skills\\runemaster\\",
                 "records/xpack2/skills/runemaster/runemaster_skilltree.dbr" },
-  { "Stealth",  "records\\skills\\stealth\\stealthmastery.dbr",
+  { "Rogue",    "records\\skills\\stealth\\stealthmastery.dbr",
                 "records\\skills\\stealth\\",
                 "records/skills/stealth/stealthskilltree.dbr" },
   { "Neidan",   "records\\xpack4\\skills\\neidan\\neidanmastery.dbr",
@@ -118,6 +118,7 @@ typedef struct {
 
 typedef struct {
   int mastery_def_idx;           // index into mastery_defs[], -1 = none
+  int initial_mastery_def_idx;   // value at dialog open; for change detection
   int mastery_chr_skill_idx;     // index into TQCharacter.skills[] for mastery itself
   int mastery_level;             // working copy of mastery level
 
@@ -189,6 +190,12 @@ static bool
 has_changes(SkillsDialogState *st)
 {
   TQCharacter *chr = st->widgets->current_character;
+
+  for(int p = 0; p < 2; p++)
+  {
+    if(st->panes[p].mastery_def_idx != st->panes[p].initial_mastery_def_idx)
+      return(true);
+  }
 
   for(int i = 0; i < st->num_chr_skills; i++)
   {
@@ -785,14 +792,25 @@ on_mastery_changed(GtkDropDown *dd, GParamSpec *pspec, gpointer user_data)
   if(st->panes[other].mastery_def_idx == new_def)
     return;
 
-  // Zero out all points in old mastery + its skills
-  if(mp->mastery_chr_skill_idx >= 0)
-    st->work_levels[mp->mastery_chr_skill_idx] = 0;
+  // Zero out every chr->skills entry that belongs to the old mastery —
+  // refund all spent points.  Walk the full skill list rather than the
+  // currently-loaded tree so out-of-tree or expansion-shifted skills
+  // don't leak through.
+  TQCharacter *chr = st->widgets->current_character;
+  int old_def = mp->mastery_def_idx;
 
-  for(int i = 0; i < mp->num_skills; i++)
+  if(old_def >= 0 && chr)
   {
-    if(mp->skills[i].chr_skill_idx >= 0)
-      st->work_levels[mp->skills[i].chr_skill_idx] = 0;
+    for(int i = 0; i < chr->num_skills; i++)
+    {
+      const char *path = chr->skills[i].skill_name;
+
+      if(!path || !path[0])
+        continue;
+
+      if(find_mastery_for_skill(path) == old_def)
+        st->work_levels[i] = 0;
+    }
   }
 
   mp->mastery_level = 0;
@@ -885,6 +903,10 @@ on_apply_clicked(GtkButton *btn, gpointer user_data)
     chr->skills[i].skill_level = st->work_levels[i];
 
   chr->skill_points = (uint32_t)compute_avail(st);
+
+  // Mark character dirty so "Save Character" stays available even when
+  // the only change is a mastery swap (no inventory/equipment edits).
+  st->widgets->char_dirty = true;
 
   if(character_save_skills(chr) == 0)
     update_ui(st->widgets, chr);
@@ -1378,7 +1400,10 @@ show_skills_dialog(AppWidgets *widgets)
 
   // Identify which masteries the character has
   for(int p = 0; p < 2; p++)
+  {
     st->panes[p].mastery_def_idx = -1;
+    st->panes[p].initial_mastery_def_idx = -1;
+  }
 
   for(int i = 0; i < chr->num_skills; i++)
   {
@@ -1393,6 +1418,7 @@ show_skills_dialog(AppWidgets *widgets)
     if(st->panes[0].mastery_def_idx < 0)
     {
       st->panes[0].mastery_def_idx = mdef;
+      st->panes[0].initial_mastery_def_idx = mdef;
       st->panes[0].mastery_chr_skill_idx = i;
       st->panes[0].mastery_level = (int)st->work_levels[i];
     }
@@ -1400,6 +1426,7 @@ show_skills_dialog(AppWidgets *widgets)
     else if(st->panes[1].mastery_def_idx < 0)
     {
       st->panes[1].mastery_def_idx = mdef;
+      st->panes[1].initial_mastery_def_idx = mdef;
       st->panes[1].mastery_chr_skill_idx = i;
       st->panes[1].mastery_level = (int)st->work_levels[i];
     }

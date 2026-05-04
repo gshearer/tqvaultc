@@ -12,11 +12,36 @@
 #include "affix_table.h"
 #include "item_stats.h"
 #include "prefetch.h"
+#include "translation.h"
 
 static int g_saved_argc;
 static char **g_saved_argv;
 
-// Dumps all variables from a DBR record to stdout.
+// Strips Pango markup tags from a string in-place.
+// s: nul-terminated string to clean.
+static void
+strip_markup_inplace(char *s)
+{
+  char *r = s, *w = s;
+
+  while(*r)
+  {
+    if(*r == '<')
+    {
+      while(*r && *r != '>')
+        r++;
+
+      if(*r == '>')
+        r++;
+    }
+    else
+      *w++ = *r++;
+  }
+
+  *w = '\0';
+}
+
+// Dumps all variables and the rendered tooltip from a DBR record.
 // record_path: the backslash-delimited DBR path (e.g. "records\\...\\foo.dbr")
 static void
 dump_dbr(const char *record_path)
@@ -63,6 +88,28 @@ dump_dbr(const char *record_path)
       printf("  %s = (type=%d count=%u)\n", v->name, v->type, v->count);
     }
   }
+
+  TQTranslation *tr = translation_init();
+  if(tr && global_config.game_folder)
+  {
+    char trans_path[1024];
+
+    snprintf(trans_path, sizeof(trans_path), "%s/Text/Text_EN.arc", global_config.game_folder);
+    translation_load_from_arc(tr, trans_path);
+  }
+
+  char buf[16384];
+  BufWriter w;
+
+  buf_init(&w, buf, sizeof(buf));
+  add_stats_from_record(record_path, tr, &w, "white", 0);
+
+  printf("\n--- Tooltip render: %s ---\n", record_path);
+  strip_markup_inplace(buf);
+  printf("%s", buf);
+
+  if(tr)
+    translation_free(tr);
 }
 
 // Runs debug tests: prints config paths, tests asset lookup, and dumps
@@ -165,6 +212,9 @@ main(int argc, char **argv)
   const char *config_override = NULL;
   bool debug_mode = false;
 
+  bool tooltip_only = false;
+  const char *tooltip_path = NULL;
+
   for(int i = 1; i < argc; i++)
   {
     if(strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
@@ -175,6 +225,11 @@ main(int argc, char **argv)
     else if(strcmp(argv[i], "--debug") == 0)
     {
       debug_mode = true;
+    }
+    else if(strcmp(argv[i], "--tooltip") == 0 && i + 1 < argc)
+    {
+      tooltip_only = true;
+      tooltip_path = argv[++i];
     }
     else
     {
@@ -187,6 +242,27 @@ main(int argc, char **argv)
 
   g_saved_argc = argc;
   g_saved_argv = argv;
+
+  if(tooltip_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --tooltip: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+    dump_dbr(tooltip_path);
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(0);
+  }
 
   // Strip our custom flags so GTK doesn't see them
   int gtk_argc = 0;
