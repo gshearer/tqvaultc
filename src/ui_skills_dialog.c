@@ -904,14 +904,16 @@ on_apply_clicked(GtkButton *btn, gpointer user_data)
 
   chr->skill_points = (uint32_t)compute_avail(st);
 
-  // Mark character dirty so "Save Character" stays available even when
-  // the only change is a mastery swap (no inventory/equipment edits).
-  st->widgets->char_dirty = true;
-
   if(character_save_skills(chr) == 0)
     update_ui(st->widgets, chr);
   else
     fprintf(stderr, "Skills: failed to save\n");
+
+  // Mark dirty AFTER update_ui() (which clears it). character_save_skills
+  // only writes skill levels/points in-place; mastery-name changes need
+  // the full character_save() via the Save Character button.
+  st->widgets->char_dirty = true;
+  update_save_button_sensitivity(st->widgets);
 
   gtk_window_close(GTK_WINDOW(st->dialog));
 }

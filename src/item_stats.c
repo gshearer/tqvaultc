@@ -62,9 +62,9 @@ static AttributeMap attr_maps[] = {
   {"characterDexterityModifier", "+%d%% Dexterity", true, NULL},
   {"characterIntelligence", "%d Intelligence", false, NULL},
   {"characterIntelligenceModifier", "+%d%% Intelligence", true, NULL},
-  {"characterLife", "%d Health", false, NULL},
+  {"characterLife", "%+d Health", false, NULL},
   {"characterLifeModifier", "+%d%% Health", true, NULL},
-  {"characterMana", "%d Energy", false, NULL},
+  {"characterMana", "%+d Energy", false, NULL},
   {"characterManaModifier", "+%d%% Energy", true, NULL},
   {"characterLifeRegen", "%+.1f Health Regeneration per second", false, NULL},
   {"characterManaRegen", "%+.1f Energy Regeneration per second", false, NULL},
@@ -520,6 +520,7 @@ item_stats_init(void)
     "retaliationSlowOffensiveReductionMin", "retaliationSlowOffensiveReductionMax", "retaliationSlowOffensiveReductionDurationMin", "retaliationSlowOffensiveReductionChance",
     "retaliationSlowLifeLeachMin", "retaliationSlowLifeLeachMax", "retaliationSlowLifeLeachDurationMin", "retaliationSlowLifeLeachChance",
     "racialBonusPercentDamage", "racialBonusPercentDefense", "racialBonusRace",
+    "defensiveProtection",  // emitted at the top of add_stats_from_record so Armor leads the tooltip
     NULL
   };
 
@@ -1537,6 +1538,21 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     retal_indent = "    ";
   }
 
+  // Skill / mastery augmentations are deferred to the end of the tooltip so
+  // they appear last (matching in-game ordering) and are colored yellow.
+  char skill_buffer[2048];
+  BufWriter skill_writer;
+  buf_init(&skill_writer, skill_buffer, sizeof(skill_buffer));
+  const char *skill_color = "#FFCC00";
+
+  // Armor first -- matches in-game tooltip ordering for armor pieces.
+  {
+    float armor = dbr_get_float_fast(data, arz_intern("defensiveProtection"), shard_index);
+
+    if(armor > 0)
+      buf_write(w, "<span color='%s'>%d Armor</span>\n", color, (int)round(armor));
+  }
+
   // Flat damage ranges (min-max), with optional chance qualifier
   {
     // prefix: stat name segment used to look up offensive<Prefix>Global.
@@ -2502,7 +2518,10 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     if(blk_val > 0)
       buf_write(w, "<span color='%s'>%.0f Damage Blocked</span>\n", color, blk_val);
 
-    if(blk_abs > 0)
+    // defensiveAbsorption is only meaningful on shields (paired with block).
+    // Non-shield items (e.g. greaves) sometimes carry a stray value that the
+    // game engine ignores -- suppress it here too.
+    if(blk_abs > 0 && (blk_val > 0 || blk_ch > 0))
       buf_write(w, "<span color='%s'>%.0f%% Damage Absorption</span>\n", color, blk_abs);
   }
 
@@ -2584,7 +2603,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
           mastery_name = translated;
       }
 
-      buf_write(w, "<span color='%s'>+%d to all skills in %s</span>\n", color, (int)round(val), mastery_name);
+      buf_write(&skill_writer, "<span color='%s'>+%d to all skills in %s</span>\n", skill_color, (int)round(val), mastery_name);
     }
   }
 
@@ -2635,7 +2654,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
         }
       }
 
-      buf_write(w, "<span color='%s'>+%d to %s</span>\n", color, (int)round(val), skill_name);
+      buf_write(&skill_writer, "<span color='%s'>+%d to %s</span>\n", skill_color, (int)round(val), skill_name);
     }
   }
 
@@ -2776,9 +2795,9 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       float rc = dbr_get_float_fast(data, INT_defensiveReflectChance, shard_index);
 
       if(rc > 0 && rc < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of %d Damage Reflected</span>\n", color, rc, (int)round(rv));
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %d%% Damage Reflected</span>\n", color, rc, (int)round(rv));
       else
-        buf_write(w, "<span color='%s'>%d Damage Reflected</span>\n", color, (int)round(rv));
+        buf_write(w, "<span color='%s'>%d%% Damage Reflected</span>\n", color, (int)round(rv));
     }
   }
 
@@ -2842,4 +2861,8 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     buf_write(w, "<span color='%s'>%.0f%% Chance of:</span>\n", color, retal_global_chance);
     buf_write(w, "%s", rw_buffer);
   }
+
+  // Flush deferred skill / mastery augmentations last (yellow, in-game ordering).
+  if(skill_writer.pos > 0)
+    buf_write(w, "%s", skill_buffer);
 }
