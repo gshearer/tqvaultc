@@ -68,21 +68,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 19658,
-          "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\AXE\\U_L_PANGUSFALL.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 8,
-          "pointY": 0
-        },
-        {
-          "stackSize": 1,
           "seed": 958,
           "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\AXE\\US_L_DRAGONKINGAXE.DBR",
           "prefixName": "",
@@ -545,6 +530,21 @@
           "var2": 2035248,
           "pointX": 12,
           "pointY": 9
+        },
+        {
+          "stackSize": 1,
+          "seed": 19658,
+          "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\AXE\\U_L_PANGUSFALL.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 8,
+          "pointY": 0
         }
       ]
     },
