@@ -138,6 +138,135 @@ confirm_unsaved_character(AppWidgets *widgets)
 
 // ── Character combo repopulation helper ──────────────────────────────
 
+// Compare two string pointers for qsort (forward decl; defined below).
+static int compare_strings(const void *a, const void *b);
+
+// Build the character's "type" string from its masteries. See header for details.
+void
+character_type_string(const TQCharacter *chr, TQTranslation *tr,
+                      bool with_masteries, char *out, size_t outsz)
+{
+  if(!out || outsz == 0)
+    return;
+
+  out[0] = '\0';
+  if(!chr)
+    return;
+
+  if(chr->mastery1 && chr->mastery2)
+  {
+    char m1[64], m2[64];
+
+    character_mastery_display_name(chr->mastery1, m1, sizeof(m1));
+    character_mastery_display_name(chr->mastery2, m2, sizeof(m2));
+
+    // Dual mastery: prefer the translated class title from the save's tag.
+    const char *cls = (tr && chr->class_tag) ? translation_get(tr, chr->class_tag) : NULL;
+
+    if(cls && cls[0])
+    {
+      if(with_masteries)
+        g_snprintf(out, outsz, "%s (%s + %s)", cls, m1, m2);
+      else
+        g_strlcpy(out, cls, outsz);
+    }
+    else
+    {
+      // Fallback (e.g. no game files loaded): just combine the mastery names.
+      g_snprintf(out, outsz, "%s + %s", m1, m2);
+    }
+  }
+  else if(chr->mastery1)
+  {
+    character_mastery_display_name(chr->mastery1, out, outsz);
+  }
+}
+
+// Build the dropdown display label (Pango markup) for one character folder.
+// Format: "name <dim>- Type . Lv N</dim>", with the leading '_' stripped.
+//   folder - save folder name (e.g. "_wu")
+//   chr    - loaded character (may be NULL on load failure)
+//   tr     - translation table (may be NULL)
+// Returns a newly-allocated markup string (caller frees).
+static char *
+build_char_display_markup(const char *folder, const TQCharacter *chr, TQTranslation *tr)
+{
+  const char *display_name = (folder[0] == '_') ? folder + 1 : folder;
+  char *name_esc = g_markup_escape_text(display_name, -1);
+
+  if(!chr)
+  {
+    char *out = g_strdup(name_esc);
+
+    g_free(name_esc);
+    return(out);
+  }
+
+  char type[96];
+
+  character_type_string(chr, tr, false, type, sizeof(type));
+
+  char *type_esc = g_markup_escape_text(type, -1);
+  char *detail;
+
+  if(type[0])
+    detail = g_strdup_printf(" \xe2\x80\x94 %s \xc2\xb7 Lv %u", type_esc, chr->level);
+  else
+    detail = g_strdup_printf(" \xc2\xb7 Lv %u", chr->level);
+
+  char *out = g_strdup_printf("%s<span alpha='55%%'>%s</span>", name_esc, detail);
+
+  g_free(name_esc);
+  g_free(type_esc);
+  g_free(detail);
+  return(out);
+}
+
+// GtkSignalListItemFactory "setup": create the row's label widget.
+static void
+char_item_setup(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer user_data)
+{
+  (void)factory; (void)user_data;
+  GtkWidget *label = gtk_label_new(NULL);
+
+  gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+  gtk_label_set_use_markup(GTK_LABEL(label), TRUE);
+  gtk_list_item_set_child(item, label);
+}
+
+// GtkSignalListItemFactory "bind": fill the label from the display map,
+// keyed by the folder name held in the model's GtkStringObject.
+static void
+char_item_bind(GtkSignalListItemFactory *factory, GtkListItem *item, gpointer user_data)
+{
+  (void)factory;
+  AppWidgets *widgets = (AppWidgets *)user_data;
+  GtkWidget *label = gtk_list_item_get_child(item);
+  GtkStringObject *obj = gtk_list_item_get_item(item);
+
+  if(!label || !obj)
+    return;
+
+  const char *folder = gtk_string_object_get_string(obj);
+  const char *markup = folder ? g_hash_table_lookup(widgets->char_display_map, folder) : NULL;
+
+  if(markup)
+    gtk_label_set_markup(GTK_LABEL(label), markup);
+  else
+    gtk_label_set_text(GTK_LABEL(label), folder ? folder : "");
+}
+
+void
+install_character_combo_factory(AppWidgets *widgets)
+{
+  GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+
+  g_signal_connect(factory, "setup", G_CALLBACK(char_item_setup), widgets);
+  g_signal_connect(factory, "bind", G_CALLBACK(char_item_bind), widgets);
+  gtk_drop_down_set_factory(GTK_DROP_DOWN(widgets->character_combo), factory);
+  g_object_unref(factory);
+}
+
 // Rebuild the character dropdown, scanning the SaveData/Main directory.
 // If select_name is non-NULL, select that entry; otherwise use the config default.
 //   widgets     - app state
@@ -166,15 +295,49 @@ repopulate_character_combo(AppWidgets *widgets, const char *select_name)
     return;
   }
 
+  // Collect character folders, then sort alphabetically before inserting.
   const gchar *name;
+  char **names = NULL;
+  int count = 0, cap = 0;
 
   while((name = g_dir_read_name(d)) != NULL)
   {
     if(name[0] != '_')
       continue;
-    gtk_string_list_append(sl, name);
+
+    if(count >= cap)
+    {
+      cap = cap ? cap * 2 : 16;
+      names = realloc(names, (size_t)cap * sizeof(char *));
+      if(!names)
+        break;
+    }
+    names[count++] = strdup(name);
   }
   g_dir_close(d);
+  qsort(names, (size_t)count, sizeof(char *), compare_strings);
+
+  // Rebuild the display-name map (folder -> pretty markup) and the model.
+  g_hash_table_remove_all(widgets->char_display_map);
+
+  for(int i = 0; i < count; i++)
+  {
+    char chr_path[1024];
+
+    snprintf(chr_path, sizeof(chr_path), "%s/SaveData/Main/%s/Player.chr",
+             global_config.save_folder, names[i]);
+
+    TQCharacter *chr = character_load(chr_path);
+    char *markup = build_char_display_markup(names[i], chr, widgets->translations);
+
+    g_hash_table_insert(widgets->char_display_map, strdup(names[i]), markup);
+    if(chr)
+      character_free(chr);
+
+    gtk_string_list_append(sl, names[i]);
+    free(names[i]);
+  }
+  free(names);
 
   guint active_idx = 0;
   const char *target = select_name ? select_name : global_config.last_character_path;

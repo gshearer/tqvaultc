@@ -141,8 +141,7 @@ typedef struct {
     GtkWidget *main_window;
     GtkWidget *name_label;
     GtkWidget *level_label;
-    GtkWidget *mastery1_label;
-    GtkWidget *mastery2_label;
+    GtkWidget *type_label;      // character type, e.g. "Warlock (Spirit + Rogue)"
     GtkWidget *strength_label;
     GtkWidget *dexterity_label;
     GtkWidget *intelligence_label;
@@ -156,6 +155,7 @@ typedef struct {
     GtkWidget *vault_combo;
     gulong vault_combo_handler;
     gulong char_combo_handler;
+    GHashTable *char_display_map;   // folder name -> pretty label (owned strings)
     int current_sack;
     GtkWidget *equip_drawing_area;
     GtkWidget *inv_drawing_area;      // 12x5 character main inventory
@@ -345,6 +345,26 @@ repopulate_vault_combo(AppWidgets *widgets, const char *select_name);
 // select_name: character name to select after repopulation, or NULL.
 void
 repopulate_character_combo(AppWidgets *widgets, const char *select_name);
+
+// Install the custom list-item factory on the character dropdown so each row
+// renders "name - Type . Lv N" instead of the raw folder name. The underlying
+// model still holds folder names (used as save-path keys).
+// widgets: the application widget state.
+void
+install_character_combo_factory(AppWidgets *widgets);
+
+// Build the character's "type" string from its masteries.
+// Dual mastery -> the translated class title (e.g. "Warlock"); with_masteries
+//   also appends the two mastery names, e.g. "Warlock (Spirit + Rogue)".
+// Single mastery -> that mastery's name (e.g. "Spirit"). No mastery -> empty.
+// chr:            the character (may be NULL -> empty result).
+// tr:             translation table for class titles (may be NULL -> falls back
+//                 to combining the mastery names).
+// with_masteries: when true and dual-mastery, append " (M1 + M2)".
+// out/outsz:      destination buffer.
+void
+character_type_string(const TQCharacter *chr, TQTranslation *tr,
+                      bool with_masteries, char *out, size_t outsz);
 
 // Pick up a vault item and attach it to the cursor for click-to-move.
 // widgets: the application widget state.
@@ -719,6 +739,12 @@ update_ui(AppWidgets *widgets, TQCharacter *chr);
 // chr: the character whose equipment to scan.
 void
 update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr);
+
+// Update the equipment-dependent summary stats (buffed attributes + armor).
+// widgets: the application widget state.
+// chr: the character whose equipment to scan (NULL is a no-op).
+void
+update_equip_summary_stats(AppWidgets *widgets, TQCharacter *chr);
 
 // Build the stat table grid widgets and add them to tables_inner.
 // widgets: the application widget state.

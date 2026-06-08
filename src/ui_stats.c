@@ -9,51 +9,58 @@
 #include <string.h>
 #include <strings.h>
 
-// Extract a readable mastery name from a full DBR path.
-// e.g. "Records/Skills/Masteries/MasteryWarfare.dbr" -> "Warfare"
-// @param dbr_path  full path to a mastery DBR record
-// @return pointer into a static buffer (not thread-safe)
-static const char *
-mastery_display_name(const char *dbr_path)
+// Sum a guaranteed stat (base + affixes + relics) across all equipped items.
+// @param chr   the character
+// @param attr  DBR attribute name
+// @return total contribution from equipment
+static float
+equip_stat_sum(TQCharacter *chr, const char *attr)
 {
-  static char buf[64];
+  float total = 0.0f;
 
-  if(!dbr_path)
-  {
-    buf[0] = '\0';
-    return(buf);
-  }
+  for(int i = 0; i < 12; i++)
+    if(chr->equipment[i])
+      total += item_get_guaranteed_stat(chr->equipment[i], attr);
 
-  // find last path separator
-  const char *base = dbr_path;
+  return(total);
+}
 
-  for(const char *p = dbr_path; *p; p++)
-    if(*p == '/' || *p == '\\')
-      base = p + 1;
+// Compute an attribute's equipment-inclusive total, mirroring the game formula:
+//   total = (base + flatBonus) * (100 + percentModifier) / 100
+// @param chr        the character
+// @param base       the character's base attribute value
+// @param flat_attr  DBR key for the flat bonus (e.g. "characterStrength")
+// @param mod_attr   DBR key for the percent modifier (e.g. "characterStrengthModifier")
+// @return the buffed total
+static float
+buffed_attr(TQCharacter *chr, float base, const char *flat_attr, const char *mod_attr)
+{
+  float flat = equip_stat_sum(chr, flat_attr);
+  float pct  = equip_stat_sum(chr, mod_attr);
 
-  // strip leading "Mastery" (case-insensitive)
-  if(strncasecmp(base, "Mastery", 7) == 0)
-    base += 7;
+  return((base + flat) * (1.0f + pct / 100.0f));
+}
 
-  // copy up to (but not including) the last '.'
-  const char *dot = strrchr(base, '.');
-  size_t len = dot ? (size_t)(dot - base) : strlen(base);
+// Set a stat label to the rounded total, colouring it green when equipment
+// raised it above base, or red when it lowered it.
+// @param label  the value label widget
+// @param base   the unbuffed base value
+// @param total  the equipment-inclusive total
+static void
+set_buffed_label(GtkWidget *label, float base, float total)
+{
+  char buf[32];
 
-  // strip trailing "Mastery" (e.g. "EarthMastery" -> "Earth")
-  if(len >= 7 && strncasecmp(base + len - 7, "Mastery", 7) == 0)
-    len -= 7;
+  snprintf(buf, sizeof(buf), "%d", (int)(total + 0.5f));
+  gtk_label_set_text(GTK_LABEL(label), buf);
 
-  if(len >= sizeof(buf))
-    len = sizeof(buf) - 1;
+  gtk_widget_remove_css_class(label, "stats-cell-buffed");
+  gtk_widget_remove_css_class(label, "stats-cell-debuffed");
 
-  memcpy(buf, base, len);
-  buf[len] = '\0';
-
-  // Cosmetic: display "Rogue" instead of "Stealth" mastery name
-  if(strcasecmp(buf, "Stealth") == 0)
-    return("Rogue");
-
-  return(buf);
+  if(total > base + 0.5f)
+    gtk_widget_add_css_class(label, "stats-cell-buffed");
+  else if(total < base - 0.5f)
+    gtk_widget_add_css_class(label, "stats-cell-debuffed");
 }
 
 // Update all resistance, damage, speed, health, and ability stat tables
@@ -851,6 +858,59 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
   }
 }
 
+// Update the equipment-dependent summary stats: the five attributes (with
+// equipment buffs applied and coloured) and total armor. Called both on
+// character load and whenever equipment changes, so the panel stays in sync.
+// @param widgets  application widget tree
+// @param chr      the character (NULL is a no-op)
+void
+update_equip_summary_stats(AppWidgets *widgets, TQCharacter *chr)
+{
+  if(!chr)
+    return;
+
+  // Attributes include equipment buffs: (base + flat) * (1 + pct/100).
+  // The value is coloured when gear changes it (green up, red down).
+  set_buffed_label(widgets->strength_label, chr->strength,
+    buffed_attr(chr, chr->strength, "characterStrength", "characterStrengthModifier"));
+
+  set_buffed_label(widgets->dexterity_label, chr->dexterity,
+    buffed_attr(chr, chr->dexterity, "characterDexterity", "characterDexterityModifier"));
+
+  set_buffed_label(widgets->intelligence_label, chr->intelligence,
+    buffed_attr(chr, chr->intelligence, "characterIntelligence", "characterIntelligenceModifier"));
+
+  set_buffed_label(widgets->health_label, chr->health,
+    buffed_attr(chr, chr->health, "characterLife", "characterLifeModifier"));
+
+  set_buffed_label(widgets->mana_label, chr->mana,
+    buffed_attr(chr, chr->mana, "characterMana", "characterManaModifier"));
+
+  // Total armor: sum defensiveProtection across all equipped items, applying
+  // any item-local defensiveProtectionModifier percentage bonus.
+  float total_armor = 0.0f;
+
+  for(int i = 0; i < 12; i++)
+  {
+    if(!chr->equipment[i])
+      continue;
+
+    float base = item_get_guaranteed_stat(chr->equipment[i], "defensiveProtection");
+
+    if(base <= 0.001f)
+      continue;
+
+    float pct = item_get_guaranteed_stat(chr->equipment[i], "defensiveProtectionModifier");
+
+    total_armor += base * (1.0f + pct / 100.0f);
+  }
+
+  char buffer[32];
+
+  snprintf(buffer, sizeof(buffer), "%d", (int)(total_armor + 0.5f));
+  gtk_label_set_text(GTK_LABEL(widgets->armor_label), buffer);
+}
+
 // Update the main character info panel and trigger stat table refresh.
 // @param widgets  application widget tree
 // @param chr      newly-loaded character (takes ownership if different from current)
@@ -880,54 +940,24 @@ update_ui(AppWidgets *widgets, TQCharacter *chr)
   snprintf(buffer, sizeof(buffer), "%u", chr->level);
   gtk_label_set_text(GTK_LABEL(widgets->level_label), buffer);
 
-  gtk_label_set_text(GTK_LABEL(widgets->mastery1_label),
-                     chr->mastery1 ? mastery_display_name(chr->mastery1) : "-");
+  // Character type: class title plus masteries, e.g. "Warlock (Spirit + Rogue)"
+  // for a dual mastery, or just the mastery name for a single one.
+  char type_str[128];
 
-  gtk_label_set_text(GTK_LABEL(widgets->mastery2_label),
-                     chr->mastery2 ? mastery_display_name(chr->mastery2) : "-");
+  character_type_string(chr, widgets->translations, true, type_str, sizeof(type_str));
+  gtk_label_set_text(GTK_LABEL(widgets->type_label),
+                     type_str[0] ? type_str : "-");
 
-  snprintf(buffer, sizeof(buffer), "%.0f", chr->strength);
-  gtk_label_set_text(GTK_LABEL(widgets->strength_label), buffer);
-
-  snprintf(buffer, sizeof(buffer), "%.0f", chr->dexterity);
-  gtk_label_set_text(GTK_LABEL(widgets->dexterity_label), buffer);
-
-  snprintf(buffer, sizeof(buffer), "%.0f", chr->intelligence);
-  gtk_label_set_text(GTK_LABEL(widgets->intelligence_label), buffer);
-
-  snprintf(buffer, sizeof(buffer), "%.0f", chr->health);
-  gtk_label_set_text(GTK_LABEL(widgets->health_label), buffer);
-
-  snprintf(buffer, sizeof(buffer), "%.0f", chr->mana);
-  gtk_label_set_text(GTK_LABEL(widgets->mana_label), buffer);
+  // Attributes include equipment buffs: (base + flat) * (1 + pct/100).
+  // Attributes and armor depend on equipment, so they live in their own helper
+  // that is also invoked when gear is added/removed (see queue_redraw_equip).
+  update_equip_summary_stats(widgets, chr);
 
   snprintf(buffer, sizeof(buffer), "%u", chr->deaths);
   gtk_label_set_text(GTK_LABEL(widgets->deaths_label), buffer);
 
   snprintf(buffer, sizeof(buffer), "%u", chr->kills);
   gtk_label_set_text(GTK_LABEL(widgets->kills_label), buffer);
-
-  // Total armor: sum defensiveProtection across all equipped items, applying
-  // any item-local defensiveProtectionModifier percentage bonus.
-  float total_armor = 0.0f;
-
-  for(int i = 0; i < 12; i++)
-  {
-    if(!chr->equipment[i])
-      continue;
-
-    float base = item_get_guaranteed_stat(chr->equipment[i], "defensiveProtection");
-
-    if(base <= 0.001f)
-      continue;
-
-    float pct = item_get_guaranteed_stat(chr->equipment[i], "defensiveProtectionModifier");
-
-    total_armor += base * (1.0f + pct / 100.0f);
-  }
-
-  snprintf(buffer, sizeof(buffer), "%d", (int)(total_armor + 0.5f));
-  gtk_label_set_text(GTK_LABEL(widgets->armor_label), buffer);
 
   gtk_widget_queue_draw(widgets->equip_drawing_area);
   gtk_widget_queue_draw(widgets->inv_drawing_area);

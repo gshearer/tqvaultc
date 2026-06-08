@@ -466,6 +466,15 @@ queue_redraw_equip(AppWidgets *widgets)
   gtk_widget_queue_draw(widgets->inv_drawing_area);
   gtk_widget_queue_draw(widgets->bag_drawing_area);
   gtk_widget_queue_draw(widgets->equip_drawing_area);
+
+  // The held-item overlay floats above the equip area; placing or swapping an
+  // item changes the held-item state, so the overlay must be repainted too.
+  // Otherwise its last frame (the held item at the drop position) lingers as a
+  // ghost slightly offset from the slot, until some other action redraws it.
+  if(widgets->held_overlay)
+    gtk_widget_queue_draw(widgets->held_overlay);
+
+  update_equip_summary_stats(widgets, widgets->current_character);
   update_resist_damage_tables(widgets, widgets->current_character);
 }
 
@@ -1055,6 +1064,7 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   AppWidgets *widgets = g_malloc0(sizeof(AppWidgets));
 
   widgets->texture_cache = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_object_unref);
+  widgets->char_display_map = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, g_free);
   widgets->last_equip_tooltip_slot = -1;
   widgets->context_equip_slot = -1;
 
@@ -1426,6 +1436,7 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_box_append(GTK_BOX(main_hbox), char_panel);
 
   widgets->character_combo = gtk_drop_down_new_from_strings(NULL);
+  install_character_combo_factory(widgets);
   gtk_box_append(GTK_BOX(char_panel), widgets->character_combo);
   widgets->char_combo_handler = g_signal_connect(widgets->character_combo,
     "notify::selected", G_CALLBACK(on_character_changed), widgets);
@@ -1606,10 +1617,18 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
     gtk_grid_attach(GTK_GRID(stats_grid), _box, (col), sg_row, 1, 1); \
   } while(0)
 
-  // Row 0: Level, Mastery 1, Mastery 2
+  // Row 0: Level, then the character type spanning the remaining two columns
+  // (e.g. "Warlock (Spirit + Rogue)").
   STAT_CELL(0, "Lv",  &widgets->level_label);
-  STAT_CELL(1, "",     &widgets->mastery1_label);
-  STAT_CELL(2, "",     &widgets->mastery2_label);
+  {
+    GtkWidget *_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 3);
+
+    widgets->type_label = gtk_label_new("-");
+    gtk_widget_add_css_class(widgets->type_label, "stats-cell-val");
+    gtk_label_set_xalign(GTK_LABEL(widgets->type_label), 0.0f);
+    gtk_box_append(GTK_BOX(_box), widgets->type_label);
+    gtk_grid_attach(GTK_GRID(stats_grid), _box, 1, sg_row, 2, 1);
+  }
   sg_row++;
 
   // Row 1: Str, Dex, Int

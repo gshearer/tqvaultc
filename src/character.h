@@ -44,7 +44,8 @@ typedef struct {
 
     // Extracted statistics
     char *character_name;
-    char *class_name;
+    char *class_name;   // playerCharacterClass, e.g. "Sorceress"
+    char *class_tag;    // playerClassTag, e.g. "tagCClass36" / "x4tagNeidanEarth"
     uint32_t level;
     uint32_t experience;
     uint32_t kills;
@@ -106,6 +107,16 @@ character_load(const char *filepath);
 // character: the character to free.
 void
 character_free(TQCharacter *character);
+
+// Convert a mastery DBR path to a short display name.
+// e.g. "Records\Skills\Earth\EarthMastery.dbr" -> "Earth",
+//      "...\neidanmastery.dbr" -> "Neidan". Applies the "Stealth"->"Rogue"
+// cosmetic. Writes a NUL-terminated string into out.
+// dbr_path: full mastery DBR path (may be NULL -> empty result).
+// out:      destination buffer.
+// outsz:    size of out.
+void
+character_mastery_display_name(const char *dbr_path, char *out, size_t outsz);
 
 // Save a character to disk (full binary rewrite).
 // character: the character to save.

@@ -13,7 +13,7 @@ static const char *const default_string_keys[] = {
   "playerTexture", "greatestMonsterKilledName",
   "lastMonsterHit", "lastMonsterHitBy", "teleportUIDsName",
   "itemName", "bitmapDownName", "bitmapUpName", "defaultText",
-  "scrollName", "description", "oTokens", "playerClassTag",
+  "scrollName", "description", "oTokens",
   "uniqueId", "streamData", NULL
 };
 
@@ -895,6 +895,13 @@ parse_char_stats(ParseState *ps, const char *key)
     return(1);
   }
 
+  if(strcmp(key, "playerClassTag") == 0)
+  {
+    free(ps->chr->class_tag);
+    ps->chr->class_tag = read_string(ps->data, *ps->offset, ps->offset);
+    return(1);
+  }
+
   if(strcmp(key, "modifierPoints") == 0)
   {
     ps->chr->modifier_points = read_u32(ps->data, *ps->offset);
@@ -979,6 +986,24 @@ parse_char_stats(ParseState *ps, const char *key)
   return(0);
 }
 
+// Case-insensitive test for whether a string ends with the given suffix.
+// Used to detect mastery skill records, whose casing varies between the
+// base game ("EarthMastery.dbr") and expansions ("neidanmastery.dbr").
+// s:      string to test.
+// suffix: lowercase suffix to match.
+// Returns: 1 if s ends with suffix (ignoring case), 0 otherwise.
+static int
+ends_with_ci(const char *s, const char *suffix)
+{
+  size_t ls = strlen(s);
+  size_t lf = strlen(suffix);
+
+  if(lf > ls)
+    return(0);
+
+  return(strcasecmp(s + ls - lf, suffix) == 0);
+}
+
 // Parse skill-related keys (skillPoints, skillName, skillLevel, skillEnabled,
 // skillActive, skillSubLevel, skillTransition).
 // ps: parser state.
@@ -999,7 +1024,10 @@ parse_skills(ParseState *ps, const char *key)
   {
     char *skill = read_string(ps->data, *ps->offset, ps->offset);
 
-    if(skill && strstr(skill, "Mastery.dbr"))
+    // Case-insensitive: some masteries store lowercase "mastery.dbr"
+    // (e.g. Neidan: "...Neidan\neidanmastery.dbr") vs. base-game
+    // "...EarthMastery.dbr".
+    if(skill && ends_with_ci(skill, "mastery.dbr"))
     {
       if(!ps->chr->mastery1)
         ps->chr->mastery1 = strdup(skill);
@@ -1283,6 +1311,77 @@ character_load(const char *filepath)
   return(character);
 }
 
+// Convert a mastery DBR path to a short display name. See header for details.
+void
+character_mastery_display_name(const char *dbr_path, char *out, size_t outsz)
+{
+  if(!out || outsz == 0)
+    return;
+
+  out[0] = '\0';
+  if(!dbr_path)
+    return;
+
+  // Match the mastery folder keyword in the path to a canonical display name.
+  // This is robust to the inconsistent casing of the DBR files themselves
+  // (e.g. "neidanmastery.dbr" is all lowercase, "RuneMaster_Mastery.dbr" is
+  // mixed) and mirrors the naming used by the skill manager.
+  static const struct { const char *key; const char *name; } mastery_names[] = {
+    { "defensive",  "Defense" },
+    { "earth",      "Earth"   },
+    { "hunting",    "Hunting" },
+    { "nature",     "Nature"  },
+    { "spirit",     "Spirit"  },
+    { "storm",      "Storm"   },
+    { "warfare",    "Warfare" },
+    { "dream",      "Dream"   },
+    { "runemaster", "Rune"    },
+    { "stealth",    "Rogue"   },  // "Stealth" is displayed as "Rogue"
+    { "neidan",     "Neidan"  },
+  };
+
+  // Lowercased copy of the path for case-insensitive substring matching.
+  char low[256];
+  size_t i = 0;
+
+  for(; dbr_path[i] && i < sizeof(low) - 1; i++)
+    low[i] = (char)tolower((unsigned char)dbr_path[i]);
+  low[i] = '\0';
+
+  for(size_t t = 0; t < sizeof(mastery_names) / sizeof(mastery_names[0]); t++)
+    if(strstr(low, mastery_names[t].key))
+    {
+      g_strlcpy(out, mastery_names[t].name, outsz);
+      return;
+    }
+
+  // Fallback for an unknown/future mastery: derive a name from the file stem,
+  // stripping a "Mastery" suffix and any trailing separator, then capitalise.
+  const char *base = dbr_path;
+
+  for(const char *p = dbr_path; *p; p++)
+    if(*p == '/' || *p == '\\')
+      base = p + 1;
+
+  const char *dot = strrchr(base, '.');
+  size_t len = dot ? (size_t)(dot - base) : strlen(base);
+
+  if(len >= 7 && strncasecmp(base + len - 7, "Mastery", 7) == 0)
+    len -= 7;
+
+  while(len > 0 && (base[len - 1] == '_' || base[len - 1] == '-' || base[len - 1] == ' '))
+    len--;
+
+  if(len >= outsz)
+    len = outsz - 1;
+
+  memcpy(out, base, len);
+  out[len] = '\0';
+
+  if(out[0])
+    out[0] = (char)toupper((unsigned char)out[0]);
+}
+
 // Free all memory associated with a character.
 // character: the character to free (NULL is a no-op).
 void
@@ -1295,6 +1394,7 @@ character_free(TQCharacter *character)
   free(character->raw_data);
   free(character->character_name);
   free(character->class_name);
+  free(character->class_tag);
   free(character->mastery1);
   free(character->mastery2);
 
