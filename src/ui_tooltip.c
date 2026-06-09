@@ -155,9 +155,11 @@ update_instant_tooltip(AppWidgets *widgets)
 
       widgets->last_tooltip_item = item;
       widgets->last_tooltip_markup[0] = '\0';
-      vault_item_format_stats(item, widgets->translations,
-                              widgets->last_tooltip_markup,
-                              sizeof(widgets->last_tooltip_markup));
+      ItemReqReduction red;
+      item_req_reduction(widgets->current_character, item->base_name, &red);
+      vault_item_format_stats_ex(item, widgets->translations, &red,
+                                 widgets->last_tooltip_markup,
+                                 sizeof(widgets->last_tooltip_markup));
 
       if(widgets->tooltip_parent != w)
       {
@@ -201,9 +203,11 @@ update_instant_tooltip(AppWidgets *widgets)
 
       widgets->last_inv_tooltip_item = item;
       widgets->last_inv_tooltip_markup[0] = '\0';
-      vault_item_format_stats(item, widgets->translations,
-                              widgets->last_inv_tooltip_markup,
-                              sizeof(widgets->last_inv_tooltip_markup));
+      ItemReqReduction red;
+      item_req_reduction(widgets->current_character, item->base_name, &red);
+      vault_item_format_stats_ex(item, widgets->translations, &red,
+                                 widgets->last_inv_tooltip_markup,
+                                 sizeof(widgets->last_inv_tooltip_markup));
 
       if(widgets->tooltip_parent != w)
       {
@@ -249,9 +253,11 @@ update_instant_tooltip(AppWidgets *widgets)
 
       widgets->last_bag_tooltip_item = item;
       widgets->last_bag_tooltip_markup[0] = '\0';
-      vault_item_format_stats(item, widgets->translations,
-                              widgets->last_bag_tooltip_markup,
-                              sizeof(widgets->last_bag_tooltip_markup));
+      ItemReqReduction red;
+      item_req_reduction(widgets->current_character, item->base_name, &red);
+      vault_item_format_stats_ex(item, widgets->translations, &red,
+                                 widgets->last_bag_tooltip_markup,
+                                 sizeof(widgets->last_bag_tooltip_markup));
 
       if(widgets->tooltip_parent != w)
       {
@@ -309,7 +315,9 @@ update_instant_tooltip(AppWidgets *widgets)
              gtk_widget_get_visible(popover)) return;                          \
           widgets->cache_item = item;                                          \
           widgets->cache_markup[0] = '\0';                                     \
-          vault_item_format_stats(item, widgets->translations,                 \
+          ItemReqReduction red;                                                \
+          item_req_reduction(widgets->current_character, item->base_name, &red); \
+          vault_item_format_stats_ex(item, widgets->translations, &red,         \
                                   widgets->cache_markup,                        \
                                   sizeof(widgets->cache_markup));               \
           if(widgets->tooltip_parent != w) {                                   \
@@ -378,9 +386,11 @@ update_instant_tooltip(AppWidgets *widgets)
       vi.relic_bonus2= eq->relic_bonus2;
       vi.var1        = eq->var1;
       vi.var2        = eq->var2;
-      vault_item_format_stats(&vi, widgets->translations,
-                              widgets->last_equip_tooltip_markup,
-                              sizeof(widgets->last_equip_tooltip_markup));
+      ItemReqReduction red;
+      item_req_reduction(widgets->current_character, vi.base_name, &red);
+      vault_item_format_stats_ex(&vi, widgets->translations, &red,
+                                 widgets->last_equip_tooltip_markup,
+                                 sizeof(widgets->last_equip_tooltip_markup));
 
       if(widgets->tooltip_parent != w)
       {
@@ -425,7 +435,9 @@ on_motion(GtkEventControllerMotion *ctrl, double x, double y, gpointer user_data
   widgets->cursor_y = y;
   widgets->cursor_widget = w;
 
-  if(widgets->held_item)
+  // Redraw to track the held-item placement preview, or the hover
+  // equippability highlight (only meaningful when a character is loaded).
+  if(widgets->held_item || widgets->current_character)
     gtk_widget_queue_draw(w);
 
   update_instant_tooltip(widgets);
@@ -444,7 +456,8 @@ on_motion_leave(GtkEventControllerMotion *ctrl, gpointer user_data)
 
   widgets->cursor_widget = NULL;
 
-  if(widgets->held_item)
+  // Clear the held-item preview or the hover equippability highlight.
+  if(widgets->held_item || widgets->current_character)
     queue_redraw_all(widgets);
 
   if(widgets->tooltip_popover)

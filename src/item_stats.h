@@ -15,6 +15,16 @@ item_stats_init(void);
 void
 item_stats_free(void);
 
+// Per-attribute requirement-reduction percentages (0-100) that apply to a
+// specific item for the active character.  Used to annotate the tooltip's
+// requirement lines with the reduced value.  All-zero means no reduction.
+typedef struct {
+  int level;
+  int strength;
+  int dexterity;
+  int intelligence;
+} ItemReqReduction;
+
 // Format stats for a character equipment item into buffer.
 // item: the equipment item.
 // tr: translation table for display names.
@@ -30,6 +40,16 @@ item_format_stats(TQItem *item, TQTranslation *tr, char *buffer, size_t size);
 // size: buffer capacity.
 void
 vault_item_format_stats(TQVaultItem *item, TQTranslation *tr, char *buffer, size_t size);
+
+// As above, but annotates requirement lines with reduced values when the given
+// requirement reduction is non-zero.  Pass NULL for `reduction` to disable the
+// annotation (equivalent to the non-_ex variants).
+void
+item_format_stats_ex(TQItem *item, TQTranslation *tr,
+                     const ItemReqReduction *reduction, char *buffer, size_t size);
+void
+vault_item_format_stats_ex(TQVaultItem *item, TQTranslation *tr,
+                          const ItemReqReduction *reduction, char *buffer, size_t size);
 
 // Returns total resistance (summed across all item components) for the given
 // DBR attribute name, e.g. attr_name = "defensiveFire".
@@ -141,6 +161,21 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w,
 // Case-insensitive substring search within a path.
 bool
 path_contains_ci(const char *path, const char *needle);
+
+// Compute the level/dex/int/str requirements for a single DBR record.
+// out is filled with [level, dexterity, intelligence, strength]; entries that
+// are not set on the record are left as 0.  Reads static requirement fields and
+// falls back to itemCost level-scaling equations for gear.
+void
+item_record_requirements(const char *record_path, int out[4]);
+
+// Compute the aggregate requirements of a full item across its base, prefix,
+// suffix and socketed relic records, keeping the maximum per requirement type.
+// NULL/empty paths are skipped.  out: [level, dexterity, intelligence, strength].
+void
+item_requirements(const char *base_name, const char *prefix_name,
+                  const char *suffix_name, const char *relic_name,
+                  const char *relic_name2, int out[4]);
 
 // Pre-interned variable name pointers (shared across item_stats modules)
 extern const char *INT_itemNameTag, *INT_description, *INT_lootRandomizerName, *INT_FileDescription;

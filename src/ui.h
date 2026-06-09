@@ -10,6 +10,7 @@
 #include "vault.h"
 #include "stash.h"
 #include "translation.h"
+#include "item_stats.h"
 
 // strcasestr is a GNU extension — provide a portable fallback for mingw
 // and other non-glibc targets.
@@ -664,6 +665,35 @@ int
 item_can_accept_relic_equip(const TQItem *eq,
                             const char *relic_base_name, TQTranslation *tr);
 
+// Determine whether the loaded character meets an item's requirements (player
+// level, strength, dexterity, intelligence), after any gear/skill requirement
+// reduction, and could equip it.  Returns true when chr is NULL or the item has
+// no requirements.
+// chr: the loaded character.
+// it: the item to test.
+bool
+item_is_equippable(TQCharacter *chr, const TQVaultItem *it);
+
+// Compute the requirement-reduction percentages (level/str/dex/int) the
+// character's gear/skills grant for a specific item, resolving the item's gear
+// category from its DBR Class.  Used to annotate tooltips and by the
+// equippability check.  Zeroed when chr is NULL.
+void
+item_req_reduction(TQCharacter *chr, const char *base_name, ItemReqReduction *out);
+
+// Compute the character's equipment-inclusive strength/dexterity/intelligence
+// (the values the game checks against item requirements).  Any out pointer may
+// be NULL; outputs are 0 when chr is NULL.
+void
+character_buffed_attributes(TQCharacter *chr, float *out_str,
+                            float *out_dex, float *out_int);
+
+// Sum any per-character stat (masteries/skills + equipped gear) by DBR variable
+// name.  Returns 0 when chr is NULL.  Used for attribute bonuses and for
+// requirement-reduction percentages.
+float
+character_stat_total(TQCharacter *chr, const char *attr);
+
 // Find the item at a given cell position in a sack.
 // widgets: the application widget state.
 // sack: the sack to search.
@@ -855,9 +885,9 @@ show_affix_dialog(AppWidgets *widgets, struct TQItemAffixes_tag *override_affixe
 void
 show_stats_dialog(AppWidgets *widgets);
 
-// ── Entry points in ui_skills_dialog.c ─────────────────────────────────────
+// ── Entry points in ui_skills_tree.c ───────────────────────────────────────
 
-// Show the skill point editing dialog.
+// Show the visual skill-tree editing dialog.
 // widgets: the application widget state.
 void
 show_skills_dialog(AppWidgets *widgets);

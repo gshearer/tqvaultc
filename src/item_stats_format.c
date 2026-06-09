@@ -355,12 +355,25 @@ class_to_equation_prefix(const char *item_class)
   return(NULL);
 }
 
-// Add item requirements (level, str, dex, int) to the tooltip.
-// record_path: DBR path to the base item.
-// w: BufWriter to append to.
-static void
-add_requirements(const char *record_path, BufWriter *w)
+// Requirement slot order shared by the requirement helpers below.
+// Index 0 = level, 1 = dexterity, 2 = intelligence, 3 = strength.
+static const struct { const char **interned; const char *eq_suffix; } req_slots[4] = {
+  {&INT_levelRequirement,        "LevelEquation"},
+  {&INT_dexterityRequirement,    "DexterityEquation"},
+  {&INT_intelligenceRequirement, "IntelligenceEquation"},
+  {&INT_strengthRequirement,     "StrengthEquation"},
+};
+
+// Compute the level/dex/int/str requirements for a single DBR record.
+// record_path: DBR path to a base item or affix record.
+// out: filled with [level, dexterity, intelligence, strength]; zero where unset.
+// Reads the static requirement fields; for any that remain zero on a gear
+// record, falls back to the itemCost level-scaling equations.
+void
+item_record_requirements(const char *record_path, int out[4])
 {
+  out[0] = out[1] = out[2] = out[3] = 0;
+
   if(!record_path || !record_path[0])
     return;
 
@@ -369,95 +382,167 @@ add_requirements(const char *record_path, BufWriter *w)
   if(!data)
     return;
 
-  buf_write(w, "\n");
-
-  static struct { const char **interned; const char *label; const char *eq_suffix; } req_types[] = {
-    {&INT_levelRequirement,        "Required Player Level", "LevelEquation"},
-    {&INT_dexterityRequirement,    "Required Dexterity",    "DexterityEquation"},
-    {&INT_intelligenceRequirement, "Required Intelligence", "IntelligenceEquation"},
-    {&INT_strengthRequirement,     "Required Strength",     "StrengthEquation"},
-    {NULL, NULL, NULL}
-  };
-
   // Read static requirement values
-  int vals[4] = {0};
-
-  for(int r = 0; req_types[r].interned; r++)
+  for(int r = 0; r < 4; r++)
   {
-    TQVariable *v = arz_record_get_var(data, *req_types[r].interned);
+    TQVariable *v = arz_record_get_var(data, *req_slots[r].interned);
 
     if(!v || v->count == 0)
       continue;
 
-    vals[r] = (v->type == TQ_VAR_FLOAT) ? (int)v->value.f32[0] : v->value.i32[0];
+    out[r] = (v->type == TQ_VAR_FLOAT) ? (int)v->value.f32[0] : v->value.i32[0];
   }
 
   // For any requirement type still zero, try dynamic computation via equations
   int needs_dynamic = 0;
 
-  for(int r = 0; req_types[r].interned; r++)
+  for(int r = 0; r < 4; r++)
   {
-    if(vals[r] <= 0)
+    if(out[r] <= 0)
     {
       needs_dynamic = 1;
       break;
     }
   }
 
-  if(needs_dynamic)
+  if(!needs_dynamic)
+    return;
+
+  const char *item_class = record_get_string_fast(data, INT_Class);
+  const char *eq_prefix = class_to_equation_prefix(item_class);
+
+  if(!eq_prefix)
+    return;
+
+  TQVariable *lvl_var = arz_record_get_var(data, INT_itemLevel);
+  double item_level = 0;
+
+  if(lvl_var && lvl_var->count > 0)
+    item_level = (lvl_var->type == TQ_VAR_FLOAT) ? lvl_var->value.f32[0] : (double)lvl_var->value.i32[0];
+
+  if(item_level <= 0)
+    return;
+
+  const char *cost_path = record_get_string_fast(data, INT_itemCostName);
+  TQArzRecordData *cost_data = NULL;
+
+  if(cost_path && cost_path[0])
+    cost_data = asset_get_dbr(cost_path);
+
+  if(!cost_data)
+    cost_data = asset_get_dbr("records\\game\\itemcost.dbr");
+
+  if(!cost_data)
+    return;
+
+  for(int r = 0; r < 4; r++)
   {
-    const char *item_class = record_get_string_fast(data, INT_Class);
-    const char *eq_prefix = class_to_equation_prefix(item_class);
+    if(out[r] > 0)
+      continue;
 
-    if(eq_prefix)
-    {
-      TQVariable *lvl_var = arz_record_get_var(data, INT_itemLevel);
-      double item_level = 0;
+    char eq_name[128];
 
-      if(lvl_var && lvl_var->count > 0)
-        item_level = (lvl_var->type == TQ_VAR_FLOAT) ? lvl_var->value.f32[0] : (double)lvl_var->value.i32[0];
+    snprintf(eq_name, sizeof(eq_name), "%s%s", eq_prefix, req_slots[r].eq_suffix);
 
-      if(item_level > 0)
-      {
-        const char *cost_path = record_get_string_fast(data, INT_itemCostName);
-        TQArzRecordData *cost_data = NULL;
+    const char *equation = record_get_string_fast(cost_data, arz_intern(eq_name));
 
-        if(cost_path && cost_path[0])
-          cost_data = asset_get_dbr(cost_path);
+    if(!equation || !equation[0])
+      continue;
 
-        if(!cost_data)
-          cost_data = asset_get_dbr("records\\game\\itemcost.dbr");
+    int val = (int)ceil(eval_equation(equation, item_level, 0.0));
 
-        if(cost_data)
-        {
-          for(int r = 0; req_types[r].interned; r++)
-          {
-            if(vals[r] > 0)
-              continue;
+    if(val > 0)
+      out[r] = val;
+  }
+}
 
-            char eq_name[128];
+// Compute the aggregate requirements of a full item across its base, prefix,
+// suffix and socketed relic/charm records, keeping the maximum per type (the
+// game enforces the highest requirement among an item's components).  Any
+// NULL/empty path is skipped.  out: [level, dexterity, intelligence, strength].
+void
+item_requirements(const char *base_name, const char *prefix_name,
+                  const char *suffix_name, const char *relic_name,
+                  const char *relic_name2, int out[4])
+{
+  out[0] = out[1] = out[2] = out[3] = 0;
 
-            snprintf(eq_name, sizeof(eq_name), "%s%s", eq_prefix, req_types[r].eq_suffix);
+  const char *paths[5] = {base_name, prefix_name, suffix_name,
+                          relic_name, relic_name2};
 
-            const char *equation = record_get_string_fast(cost_data, arz_intern(eq_name));
+  for(int p = 0; p < 5; p++)
+  {
+    int r[4];
 
-            if(!equation || !equation[0])
-              continue;
+    item_record_requirements(paths[p], r);
 
-            int val = (int)ceil(eval_equation(equation, item_level, 0.0));
+    for(int i = 0; i < 4; i++)
+      if(r[i] > out[i])
+        out[i] = r[i];
+  }
+}
 
-            if(val > 0)
-              vals[r] = val;
-          }
-        }
-      }
-    }
+// Add item requirements (level, str, dex, int) to the tooltip.
+// When `reduction` is non-NULL, requirement lines whose value is lowered by a
+// gear/skill requirement reduction also show the reduced value in parentheses,
+// e.g. "Required Intelligence: 632 (518 reduction)".
+// record_path: DBR path to the base item.
+// reduction: per-attribute reduction percentages, or NULL for none.
+// w: BufWriter to append to.
+static void
+add_requirements(const char *record_path, const ItemReqReduction *reduction,
+                 BufWriter *w)
+{
+  if(!record_path || !record_path[0])
+    return;
+
+  if(!asset_get_dbr(record_path))
+    return;
+
+  int vals[4];
+
+  item_record_requirements(record_path, vals);
+
+  static const char *labels[4] = {
+    "Required Player Level",
+    "Required Dexterity",
+    "Required Intelligence",
+    "Required Strength",
+  };
+
+  // Reduction percentages in the same slot order as vals/labels
+  // ([level, dexterity, intelligence, strength]).
+  int red_pct[4] = {0, 0, 0, 0};
+
+  if(reduction)
+  {
+    red_pct[0] = reduction->level;
+    red_pct[1] = reduction->dexterity;
+    red_pct[2] = reduction->intelligence;
+    red_pct[3] = reduction->strength;
   }
 
-  for(int r = 0; req_types[r].interned; r++)
+  buf_write(w, "\n");
+
+  for(int r = 0; r < 4; r++)
   {
-    if(vals[r] > 0)
-      buf_write(w, "%s: %d\n", req_types[r].label, vals[r]);
+    if(vals[r] <= 0)
+      continue;
+
+    int pct = red_pct[r];
+
+    if(pct > 100)
+      pct = 100;
+
+    // Effective requirement after reduction.  The (int) truncation matches
+    // apply_reduction() used by the equippability highlight.
+    int reduced = (pct > 0) ? (int)((float)vals[r] * (1.0f - (float)pct / 100.0f)) : vals[r];
+
+    if(reduced < vals[r])
+      buf_write(w, "%s: %d <span color='#66CC66'>(%d reduction)</span>\n",
+                labels[r], vals[r], reduced);
+    else
+      buf_write(w, "%s: %d\n", labels[r], vals[r]);
   }
 }
 
@@ -481,7 +566,8 @@ static void
 format_stats_common(uint32_t seed, const char *base_name, const char *prefix_name,
     const char *suffix_name, const char *relic_name, const char *relic_bonus,
     uint32_t var1, const char *relic_name2, const char *relic_bonus2,
-    uint32_t var2, TQTranslation *tr, char *buffer, size_t size)
+    uint32_t var2, TQTranslation *tr, const ItemReqReduction *reduction,
+    char *buffer, size_t size)
 {
   BufWriter w;
 
@@ -988,7 +1074,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   }
 
   // Requirements
-  add_requirements(base_name, &w);
+  add_requirements(base_name, reduction, &w);
 }
 
 // resistance lookup (used by UI resistance table)
@@ -1374,12 +1460,20 @@ item_get_guaranteed_dot(TQItem *item, const char *min_attr, const char *dur_attr
 void
 item_format_stats(TQItem *item, TQTranslation *tr, char *buffer, size_t size)
 {
+  item_format_stats_ex(item, tr, NULL, buffer, size);
+}
+
+// As item_format_stats, with optional requirement-reduction annotation.
+void
+item_format_stats_ex(TQItem *item, TQTranslation *tr,
+                     const ItemReqReduction *reduction, char *buffer, size_t size)
+{
   if(!item)
     return;
 
   format_stats_common(item->seed, item->base_name, item->prefix_name, item->suffix_name,
       item->relic_name, item->relic_bonus, item->var1,
-      item->relic_name2, item->relic_bonus2, item->var2, tr, buffer, size);
+      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction, buffer, size);
 }
 
 // Format stats for a vault item into buffer.
@@ -1390,10 +1484,18 @@ item_format_stats(TQItem *item, TQTranslation *tr, char *buffer, size_t size)
 void
 vault_item_format_stats(TQVaultItem *item, TQTranslation *tr, char *buffer, size_t size)
 {
+  vault_item_format_stats_ex(item, tr, NULL, buffer, size);
+}
+
+// As vault_item_format_stats, with optional requirement-reduction annotation.
+void
+vault_item_format_stats_ex(TQVaultItem *item, TQTranslation *tr,
+                          const ItemReqReduction *reduction, char *buffer, size_t size)
+{
   if(!item)
     return;
 
   format_stats_common(item->seed, item->base_name, item->prefix_name, item->suffix_name,
       item->relic_name, item->relic_bonus, item->var1,
-      item->relic_name2, item->relic_bonus2, item->var2, tr, buffer, size);
+      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction, buffer, size);
 }

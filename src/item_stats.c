@@ -321,6 +321,7 @@ static const char *INT_skillCooldownTime, *INT_refreshTime;
 static const char *INT_skillCooldownReduction, *INT_skillCooldownReductionChance;
 static const char *INT_skillManaCostReduction, *INT_skillManaCostReductionChance;
 static const char *INT_skillTargetNumber, *INT_skillActiveDuration, *INT_skillTargetRadius;
+static const char *INT_skillLifeBonus, *INT_skillManaCost;
 static const char *INT_offensiveGlobalChance;
 static const char *INT_offensiveDisruptionMin;
 static const char *INT_offensiveSlowLightningDurationMax, *INT_offensiveSlowFireDurationMax;
@@ -633,6 +634,7 @@ item_stats_init(void)
   INTERN(skillCooldownReduction); INTERN(skillCooldownReductionChance);
   INTERN(skillManaCostReduction); INTERN(skillManaCostReductionChance);
   INTERN(skillTargetNumber); INTERN(skillActiveDuration); INTERN(skillTargetRadius);
+  INTERN(skillLifeBonus); INTERN(skillManaCost);
   INTERN(offensiveGlobalChance);
   INTERN(offensiveDisruptionMin);
   INTERN(offensiveSlowLightningDurationMax); INTERN(offensiveSlowFireDurationMax);
@@ -2810,6 +2812,22 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
 
     if(cooldown > 0)
       buf_write(w, "<span color='%s'>%.1f Second(s) Recharge</span>\n", color, cooldown);
+  }
+
+  // Skill parameters: life restored (e.g. Regrowth heal)
+  {
+    float life = dbr_get_float_fast(data, INT_skillLifeBonus, shard_index);
+
+    if(life > 0)
+      buf_write(w, "<span color='%s'>+%d Health Restored</span>\n", color, (int)round(life));
+  }
+
+  // Skill parameters: energy cost to cast
+  {
+    float cost = dbr_get_float_fast(data, INT_skillManaCost, shard_index);
+
+    if(cost > 0)
+      buf_write(w, "<span color='%s'>%d Energy Cost</span>\n", color, (int)round(cost));
   }
 
   // Skill parameters: target number

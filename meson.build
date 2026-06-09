@@ -70,7 +70,8 @@ app_sources = [
   'src/quest_tokens.c',
   'src/ui_checklist_dialog.c',
   'src/ui_stats_dialog.c',
-  'src/ui_skills_dialog.c',
+  'src/ui_skills_tree.c',
+  'src/ui_skills_layout.c',
   'src/ui_database_dialog.c'
 ]
 

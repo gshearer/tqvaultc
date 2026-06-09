@@ -23,7 +23,8 @@ testdata/
 # snapshot script
 snap.sh
 
-# TQVaultAE C# reference — not part of this project
+# External reference codebases — kept locally for study, not part of this project
+reference/
 TQVaultAE/
 tqrespec/
 
@@ -37,6 +38,8 @@ plans/
 # Ad-hoc debug captures dropped in the repo root for AI review
 /windows.png
 /linux.png
+/skills*.png
+skilltree_screenshots/
 *.log
 
 # Editor and IDE

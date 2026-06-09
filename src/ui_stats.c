@@ -25,20 +25,115 @@ equip_stat_sum(TQCharacter *chr, const char *attr)
   return(total);
 }
 
-// Compute an attribute's equipment-inclusive total, mirroring the game formula:
+// Sum a per-level attribute bonus across all of the character's skills.
+// Masteries (and some passive skills) store attributes such as
+// "characterIntelligence" as a cumulative array indexed by the skill/mastery
+// bar level; e.g. a level-40 Nature mastery grants characterIntelligence[39].
+// We read the value at (skill_level - 1), bounds-checked, and sum across every
+// skill -- mirroring TQVaultAE's GetStatBonusesFromRecord.  These bonuses are
+// not stored in the character's base attributes, so they must be added on top.
+// @param chr   the character
+// @param attr  DBR attribute name (e.g. "characterIntelligence")
+// @return total contribution from masteries/skills
+static float
+skill_stat_sum(TQCharacter *chr, const char *attr)
+{
+  const char *iattr = arz_intern(attr);
+  float total = 0.0f;
+
+  for(int i = 0; i < chr->num_skills; i++)
+  {
+    TQCharSkill *sk = &chr->skills[i];
+
+    if(!sk->skill_name || sk->skill_level < 1)
+      continue;
+
+    TQArzRecordData *data = asset_get_dbr(sk->skill_name);
+
+    if(!data)
+      continue;
+
+    TQVariable *v = arz_record_get_var(data, iattr);
+
+    if(!v || v->count == 0)
+      continue;
+
+    uint32_t idx = sk->skill_level - 1;
+
+    // The array only defines values up to the skill's max level; skip if the
+    // stored level somehow exceeds it (matches TQVaultAE's bounds check).
+    if(idx >= v->count)
+      continue;
+
+    if(v->type == TQ_VAR_FLOAT && v->value.f32)
+      total += v->value.f32[idx];
+    else if(v->type == TQ_VAR_INT && v->value.i32)
+      total += (float)v->value.i32[idx];
+  }
+
+  return(total);
+}
+
+// Compute an attribute's full effective total, mirroring the game formula:
 //   total = (base + flatBonus) * (100 + percentModifier) / 100
+// The flat and percent bonuses combine mastery/skill contributions (per the
+// mastery bar level) with equipment contributions, so the result matches the
+// attribute the game shows and checks against item requirements.
 // @param chr        the character
-// @param base       the character's base attribute value
+// @param base       the character's stored (allocated) attribute value
 // @param flat_attr  DBR key for the flat bonus (e.g. "characterStrength")
 // @param mod_attr   DBR key for the percent modifier (e.g. "characterStrengthModifier")
 // @return the buffed total
 static float
 buffed_attr(TQCharacter *chr, float base, const char *flat_attr, const char *mod_attr)
 {
-  float flat = equip_stat_sum(chr, flat_attr);
-  float pct  = equip_stat_sum(chr, mod_attr);
+  float flat = skill_stat_sum(chr, flat_attr) + equip_stat_sum(chr, flat_attr);
+  float pct  = skill_stat_sum(chr, mod_attr) + equip_stat_sum(chr, mod_attr);
 
   return((base + flat) * (1.0f + pct / 100.0f));
+}
+
+// Sum any per-character stat across masteries/skills and equipped gear by DBR
+// variable name.  Used both for attribute bonuses (characterStrength, ...) and
+// for requirement-reduction percentages (characterGlobalReqReduction, ...).
+// @param chr   the character (NULL -> 0)
+// @param attr  DBR variable name
+// @return combined skill + equipment total
+float
+character_stat_total(TQCharacter *chr, const char *attr)
+{
+  if(!chr)
+    return(0.0f);
+
+  return(skill_stat_sum(chr, attr) + equip_stat_sum(chr, attr));
+}
+
+// Compute the character's equipment-inclusive strength/dexterity/intelligence,
+// mirroring the in-game attribute formula.  These are the values the game
+// compares against item requirements when deciding what can be equipped.
+// @param chr       the character (NULL leaves outputs at 0)
+// @param out_str   receives buffed strength (may be NULL)
+// @param out_dex   receives buffed dexterity (may be NULL)
+// @param out_int   receives buffed intelligence (may be NULL)
+void
+character_buffed_attributes(TQCharacter *chr, float *out_str,
+                            float *out_dex, float *out_int)
+{
+  float s = 0.0f, d = 0.0f, i = 0.0f;
+
+  if(chr)
+  {
+    s = buffed_attr(chr, chr->strength, "characterStrength", "characterStrengthModifier");
+    d = buffed_attr(chr, chr->dexterity, "characterDexterity", "characterDexterityModifier");
+    i = buffed_attr(chr, chr->intelligence, "characterIntelligence", "characterIntelligenceModifier");
+  }
+
+  if(out_str)
+    *out_str = s;
+  if(out_dex)
+    *out_dex = d;
+  if(out_int)
+    *out_int = i;
 }
 
 // Set a stat label to the rounded total, colouring it green when equipment

@@ -511,6 +511,20 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
       highlight_compare = true;
   }
 
+  // Hover equippability highlight: when a character is loaded and the user is
+  // not carrying an item, shade the item under the cursor green (the character
+  // meets its requirements) or red (it does not).  Computed once per draw.
+  bool hover_equip = (!widgets->held_item &&
+                      widgets->cursor_widget == this_widget &&
+                      widgets->current_character != NULL);
+  int hover_cx = -1, hover_cy = -1;
+
+  if(hover_equip)
+  {
+    hover_cx = (int)(widgets->cursor_x / cell_width);
+    hover_cy = (int)(widgets->cursor_y / cell_height);
+  }
+
   for(int i = 0; i < sack->num_items; i++)
   {
     TQVaultItem *item = &sack->items[i];
@@ -544,6 +558,22 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
        item->point_y == widgets->compare_item.point_y)
     {
       cairo_set_source_rgba(cr, 0.0, 0.6, 0.0, 0.35);
+      cairo_rectangle(cr, x, y, rw, rh);
+      cairo_fill(cr);
+    }
+
+    // Equippability highlight for the hovered item (green = can equip,
+    // red = requirements not met by the loaded character).
+    if(hover_equip &&
+       hover_cx >= item->point_x && hover_cx < item->point_x + w &&
+       hover_cy >= item->point_y && hover_cy < item->point_y + h)
+    {
+      bool equippable = item_is_equippable(widgets->current_character, item);
+
+      cairo_set_source_rgba(cr,
+          equippable ? 0.0 : 0.8,
+          equippable ? 0.8 : 0.0,
+          0.0, 0.35);
       cairo_rectangle(cr, x, y, rw, rh);
       cairo_fill(cr);
     }

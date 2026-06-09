@@ -483,6 +483,140 @@ relic_allowed_gear(const char *relic_base_name, TQTranslation *tr)
   return(mask ? mask : 0xFFFFFFFF);
 }
 
+// Sum the character's requirement-reduction percentage for one attribute
+// ("Strength"/"Dexterity"/"Intelligence") applicable to an item of the given
+// gear categories.  Reductions stack: the global reduction plus each matching
+// gear-category reduction (e.g. a staff sums Global + Weapon + Staff).
+// chr: the character; attr: capitalised attribute word; cats/ncats: category
+// prefixes ("Weapon", "Staff", ...) that apply to the item.
+static float
+req_reduction_for(TQCharacter *chr, const char *attr,
+                  const char *const *cats, int ncats)
+{
+  float r = character_stat_total(chr, "characterGlobalReqReduction");
+
+  for(int i = 0; i < ncats; i++)
+  {
+    char var[96];
+
+    snprintf(var, sizeof(var), "character%s%sReqReduction", cats[i], attr);
+    r += character_stat_total(chr, var);
+  }
+
+  return(r);
+}
+
+// Apply a percentage reduction to a requirement value, clamped to [0,100]%.
+// The (int) cast truncates toward zero (floor for non-negative requirements),
+// matching the game lowering the displayed requirement.
+static int
+apply_reduction(int req, float pct)
+{
+  if(req <= 0)
+    return(0);
+
+  if(pct < 0.0f)
+    pct = 0.0f;
+  if(pct > 100.0f)
+    pct = 100.0f;
+
+  return((int)((float)req * (1.0f - pct / 100.0f)));
+}
+
+// Compute the requirement-reduction percentages the character's gear/skills
+// grant for a specific item, resolving the item's gear category from its DBR
+// Class.  Weapons get the general "Weapon" reduction plus their specific
+// sub-category (Melee/Hunting/Staff); armour, jewellery and shields each map to
+// a single category; the global reduction applies to str/dex/int on everything.
+// chr: the character; base_name: item DBR path; out: filled (zeroed if chr is
+// NULL or base_name is missing).
+void
+item_req_reduction(TQCharacter *chr, const char *base_name, ItemReqReduction *out)
+{
+  if(!out)
+    return;
+
+  out->level = out->strength = out->dexterity = out->intelligence = 0;
+
+  if(!chr || !base_name)
+    return;
+
+  const char *cats[2];
+  int ncats = 0;
+  const char *cls = dbr_get_string(base_name, "Class");
+
+  if(cls)
+  {
+    if(strncasecmp(cls, "ArmorProtective", 15) == 0)
+      cats[ncats++] = "Armor";
+    else if(strncasecmp(cls, "ArmorJewelry", 12) == 0)
+      cats[ncats++] = "Jewelry";
+    else if(strcasecmp(cls, "WeaponArmor_Shield") == 0)
+      cats[ncats++] = "Shield";
+    else if(strncasecmp(cls, "WeaponMelee", 11) == 0)
+    {
+      cats[ncats++] = "Weapon";
+      cats[ncats++] = "Melee";
+    }
+    else if(strncasecmp(cls, "WeaponHunting", 13) == 0)
+    {
+      cats[ncats++] = "Weapon";
+      cats[ncats++] = "Hunting";
+    }
+    else if(strncasecmp(cls, "WeaponMagical", 13) == 0)
+    {
+      cats[ncats++] = "Weapon";
+      cats[ncats++] = "Staff";
+    }
+  }
+
+  out->level        = (int)(character_stat_total(chr, "characterLevelReqReduction") + 0.5f);
+  out->strength     = (int)(req_reduction_for(chr, "Strength", cats, ncats) + 0.5f);
+  out->dexterity    = (int)(req_reduction_for(chr, "Dexterity", cats, ncats) + 0.5f);
+  out->intelligence = (int)(req_reduction_for(chr, "Intelligence", cats, ncats) + 0.5f);
+}
+
+// Determine whether the currently loaded character meets an item's
+// requirements (player level, strength, dexterity, intelligence) and could
+// therefore equip it.  Requirements are aggregated across the item's base,
+// affix and relic records, then lowered by any requirement-reduction the
+// character's gear/skills grant (global + the item's gear-category reductions).
+// Attributes are the character's equipment-inclusive totals, matching the
+// in-game check.  Items with no requirements (potions, dyes, etc.) are always
+// equippable.
+// chr: the loaded character (NULL -> always equippable)
+// it: the item to test
+// returns: true if equippable (or no character is loaded), false otherwise
+bool
+item_is_equippable(TQCharacter *chr, const TQVaultItem *it)
+{
+  if(!chr || !it || !it->base_name)
+    return(true);
+
+  int req[4];   // [level, dexterity, intelligence, strength]
+
+  item_requirements(it->base_name, it->prefix_name, it->suffix_name,
+                    it->relic_name, it->relic_name2, req);
+
+  ItemReqReduction red;
+
+  item_req_reduction(chr, it->base_name, &red);
+
+  int lvl_req = apply_reduction(req[0], (float)red.level);
+  int dex_req = apply_reduction(req[1], (float)red.dexterity);
+  int int_req = apply_reduction(req[2], (float)red.intelligence);
+  int str_req = apply_reduction(req[3], (float)red.strength);
+
+  float str = 0.0f, dex = 0.0f, intel = 0.0f;
+
+  character_buffed_attributes(chr, &str, &dex, &intel);
+
+  return(lvl_req <= (int)chr->level
+      && dex_req <= (int)(dex   + 0.5f)
+      && int_req <= (int)(intel + 0.5f)
+      && str_req <= (int)(str   + 0.5f));
+}
+
 // Map an item's DBR "Class" field to a single GEAR_* flag.
 // base_name: DBR path of the item
 // returns: GEAR_* flag for the item's class, or 0 if unknown

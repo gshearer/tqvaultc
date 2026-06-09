@@ -108,8 +108,76 @@ dump_dbr(const char *record_path)
   strip_markup_inplace(buf);
   printf("%s", buf);
 
+  // Aggregate requirements (level/str/dex/int) computed the same way the
+  // equippability highlight does, for quick verification.
+  int req[4];
+
+  item_requirements(record_path, NULL, NULL, NULL, NULL, req);
+  printf("\nRequirements: level=%d str=%d dex=%d int=%d\n",
+         req[0], req[3], req[1], req[2]);
+
   if(tr)
     translation_free(tr);
+}
+
+// Loads a character and reports whether it can equip the given item, showing
+// the computed requirements, attributes, requirement reductions, and verdict.
+// Used to verify the equippability highlight without launching the GUI.
+// chr_path:  path to a Player.chr file.
+// item_path: backslash-delimited DBR path of the item to test.
+static void
+equip_check(const char *chr_path, const char *item_path)
+{
+  TQCharacter *chr = character_load(chr_path);
+
+  if(!chr)
+  {
+    printf("equip-check: failed to load character: %s\n", chr_path);
+    return;
+  }
+
+  int req[4];
+
+  item_requirements(item_path, NULL, NULL, NULL, NULL, req);
+
+  float str = 0.0f, dex = 0.0f, intel = 0.0f;
+
+  character_buffed_attributes(chr, &str, &dex, &intel);
+
+  TQVaultItem it = {0};
+
+  it.base_name = (char *)item_path;
+  bool ok = item_is_equippable(chr, &it);
+
+  printf("\n--- Equip check: %s ---\n", item_path);
+  printf("Character: %s (level %u)\n",
+         chr->character_name ? chr->character_name : "(unknown)", chr->level);
+  printf("Raw requirements:   level=%d str=%d dex=%d int=%d\n",
+         req[0], req[3], req[1], req[2]);
+  printf("Effective attribs:  str=%d dex=%d int=%d\n",
+         (int)(str + 0.5f), (int)(dex + 0.5f), (int)(intel + 0.5f));
+  printf("Req reduction:      global=%.0f%% level=%.0f%%\n",
+         character_stat_total(chr, "characterGlobalReqReduction"),
+         character_stat_total(chr, "characterLevelReqReduction"));
+  printf("Verdict: %s\n", ok ? "EQUIPPABLE (green)" : "NOT equippable (red)");
+
+  // Render the item card's requirement lines exactly as the tooltip does, to
+  // verify the "(<reduced> reduction)" annotation.
+  ItemReqReduction red;
+
+  item_req_reduction(chr, item_path, &red);
+
+  char card[16384];
+
+  vault_item_format_stats_ex(&it, NULL, &red, card, sizeof(card));
+  strip_markup_inplace(card);
+
+  printf("Card requirement lines:\n");
+  for(char *line = strtok(card, "\n"); line; line = strtok(NULL, "\n"))
+    if(strstr(line, "Required"))
+      printf("  %s\n", line);
+
+  character_free(chr);
 }
 
 // Runs debug tests: prints config paths, tests asset lookup, and dumps
@@ -215,6 +283,10 @@ main(int argc, char **argv)
   bool tooltip_only = false;
   const char *tooltip_path = NULL;
 
+  bool equip_check_only = false;
+  const char *equip_chr_path = NULL;
+  const char *equip_item_path = NULL;
+
   for(int i = 1; i < argc; i++)
   {
     if(strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
@@ -230,6 +302,12 @@ main(int argc, char **argv)
     {
       tooltip_only = true;
       tooltip_path = argv[++i];
+    }
+    else if(strcmp(argv[i], "--equip-check") == 0 && i + 2 < argc)
+    {
+      equip_check_only = true;
+      equip_chr_path = argv[++i];
+      equip_item_path = argv[++i];
     }
     else
     {
@@ -256,6 +334,27 @@ main(int argc, char **argv)
     item_stats_init();
     affix_table_init(NULL);
     dump_dbr(tooltip_path);
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(0);
+  }
+
+  if(equip_check_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --equip-check: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+    equip_check(equip_chr_path, equip_item_path);
     item_stats_free();
     affix_table_free();
     arz_intern_free();

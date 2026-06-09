@@ -169,10 +169,10 @@ TQVaultAE uses the same direct-reference approach:
 5. Shows all affixes across all DLCs with a DLC suffix tag
 
 Key files:
-- `TQVaultAE/src/TQVaultAE.Data/Database.cs` — `BuildItemAffixTableMap()` (lines 457-599)
-- `TQVaultAE/src/TQVaultAE.Data/ItemProvider.cs` — `GetItemAffixes()` (lines 266-315)
-- `TQVaultAE/src/TQVaultAE.Data/LootTableCollectionProvider.cs` — `MakeTable()`, `LoadTable()`
-- `TQVaultAE/src/TQVaultAE.GUI/Components/SackPanel.cs` — `AddPrefixSuffixMenuItems()` (line 1871+)
+- `reference/TQVaultAE/src/TQVaultAE.Data/Database.cs` — `BuildItemAffixTableMap()` (lines 457-599)
+- `reference/TQVaultAE/src/TQVaultAE.Data/ItemProvider.cs` — `GetItemAffixes()` (lines 266-315)
+- `reference/TQVaultAE/src/TQVaultAE.Data/LootTableCollectionProvider.cs` — `MakeTable()`, `LoadTable()`
+- `reference/TQVaultAE/src/TQVaultAE.GUI/Components/SackPanel.cs` — `AddPrefixSuffixMenuItems()` (line 1871+)
 
 ### TQVaultAE Bug: Socrates' on Gorgon Archer Armband
 `Records/Item/EquipmentArmband/MI_L_GorgonArcher.dbr` uses `ArmsMelee_L01` prefix table.
