@@ -134,6 +134,12 @@ typedef struct {
   int cur_level;
   int parent_idx;           // index into pane nodes[], -1 root
   bool is_base;
+  // Equipment-granted +skill bonuses applicable to this skill (raw, uncapped).
+  // Only apply when at least one point is allocated; the effective total is
+  // clamped to ultimate_level (a skill can exceed max_level via gear).
+  int gear_all;             // augmentAllLevel (+N to all skills)
+  int gear_mastery;         // augmentMastery* for this skill's mastery
+  int gear_skill;           // augmentSkill* targeting this exact skill
   char up_tex[256];
   char down_tex[256];
   // authored in-game icon position (native skill-panel pixels), when present
@@ -174,6 +180,24 @@ typedef struct {
   GtkWidget *canvas;
 } MasteryPane;
 
+// Equipment-derived +skill bonuses for the loaded character.  Computed once
+// when the dialog opens (the equipped gear is fixed while it is open) and then
+// consulted per skill node.  Bonuses come in three flavours -- all-skills,
+// mastery-wide and skill-specific -- which stack on a given skill.
+#define MAX_GEAR_SKILL_AUG 96
+
+typedef struct {
+  char path[256];   // normalized skill DBR path the augment targets
+  int  bonus;       // summed +levels to that specific skill
+} GearSkillAug;
+
+typedef struct {
+  int all_bonus;                          // +N to all skills (augmentAllLevel)
+  int mastery_bonus[NUM_MASTERIES];       // +N to all skills in a mastery
+  GearSkillAug skill[MAX_GEAR_SKILL_AUG]; // +N to specific skills
+  int num_skill;
+} GearBonuses;
+
 typedef struct {
   AppWidgets *widgets;
   GtkWidget *dialog;
@@ -185,6 +209,8 @@ typedef struct {
 
   uint32_t *work_levels;
   int num_chr_skills;
+
+  GearBonuses gear;
 
   bool building;
   MasteryPane panes[2];
@@ -359,8 +385,7 @@ resolve_skill_name(AppWidgets *widgets, const char *skill_path,
 }
 
 static bool
-get_tier_from_ref(const char *ref_field, TQArzRecordData *dbr,
-                  int *skill_tier, int *max_level)
+get_tier_from_ref(const char *ref_field, TQArzRecordData *dbr, int *skill_tier)
 {
   char *ref_path = arz_record_get_string(dbr, ref_field, NULL);
 
@@ -379,23 +404,68 @@ get_tier_from_ref(const char *ref_field, TQArzRecordData *dbr,
   if(bt > 0)
   {
     *skill_tier = bt;
-    int bm = arz_record_get_int(ref_dbr, "skillMaxLevel", 0, NULL);
-
-    if(bm > 0)
-      *max_level = bm;
-
     return(true);
   }
 
   return(false);
 }
 
-// Read skillTier + skillMaxLevel (following buff/pet refs when absent).
+// Find skillMaxLevel + skillUltimateLevel for a skill, following the pet/buff
+// ref chain when the record itself doesn't carry them.  The level data can sit
+// two records deep (e.g. a pet modifier -> its pet skill -> that skill's buff),
+// so this recurses.  Returns true once a record carrying skillMaxLevel is hit.
+static bool
+resolve_skill_levels(const char *path, int depth, int *max_level, int *ultimate_level)
+{
+  if(!path || !path[0] || depth > 4)
+    return(false);
+
+  TQArzRecordData *d = asset_get_dbr(path);
+
+  if(!d)
+    return(false);
+
+  TQVariable *mv = arz_record_get_var(d, arz_intern("skillMaxLevel"));
+
+  if(mv && mv->count > 0)
+  {
+    *max_level = arz_record_get_int(d, "skillMaxLevel", 1, NULL);
+    *ultimate_level = arz_record_get_int(d, "skillUltimateLevel", *max_level, NULL);
+    return(true);
+  }
+
+  static const char *refs[] = { "petSkillName", "buffSkillName", NULL };
+
+  for(int r = 0; refs[r]; r++)
+  {
+    char *rp = arz_record_get_string(d, refs[r], NULL);
+
+    if(rp)
+    {
+      bool got = resolve_skill_levels(rp, depth + 1, max_level, ultimate_level);
+
+      free(rp);
+
+      if(got)
+        return(true);
+    }
+  }
+
+  return(false);
+}
+
+// Read skillTier + skillMaxLevel + skillUltimateLevel.  Tier resolution follows
+// a single buff/pet ref when absent (unchanged -- it drives gating/layout);
+// max/ultimate follow the ref chain to whatever depth holds them.
+// ultimate_level is the cap a skill reaches with equipment bonuses (usually
+// max_level + 4); it defaults to max_level when not set.
 static void
-get_skill_dbr_info(const char *skill_path, int *skill_tier, int *max_level)
+get_skill_dbr_info(const char *skill_path, int *skill_tier, int *max_level,
+                   int *ultimate_level)
 {
   *skill_tier = 0;
   *max_level = 1;
+  *ultimate_level = 1;
 
   TQArzRecordData *dbr = asset_get_dbr(skill_path);
 
@@ -403,12 +473,13 @@ get_skill_dbr_info(const char *skill_path, int *skill_tier, int *max_level)
     return;
 
   *skill_tier = arz_record_get_int(dbr, "skillTier", 0, NULL);
-  *max_level = arz_record_get_int(dbr, "skillMaxLevel", 1, NULL);
+
+  resolve_skill_levels(skill_path, 0, max_level, ultimate_level);
 
   if(*skill_tier == 0)
   {
-    if(!get_tier_from_ref("buffSkillName", dbr, skill_tier, max_level))
-      get_tier_from_ref("petSkillName", dbr, skill_tier, max_level);
+    if(!get_tier_from_ref("buffSkillName", dbr, skill_tier))
+      get_tier_from_ref("petSkillName", dbr, skill_tier);
   }
 }
 
@@ -602,6 +673,187 @@ load_skill_tree(const char *tree_dbr_path, TreeEntry *entries, int max_entries)
   }
 
   return(count);
+}
+
+// ── Equipment +skill bonus accounting ─────────────────────────────────────
+
+// Read an augment level (single- or multi-valued) at index 0, rounded to int.
+static int
+aug_int_value(const TQVariable *v)
+{
+  if(!v || v->count == 0)
+    return(0);
+
+  if(v->type == TQ_VAR_FLOAT && v->value.f32)
+    return((int)(v->value.f32[0] + (v->value.f32[0] < 0 ? -0.5f : 0.5f)));
+
+  if(v->type == TQ_VAR_INT && v->value.i32)
+    return(v->value.i32[0]);
+
+  return(0);
+}
+
+// Record a +N bonus to a specific skill (by normalized DBR path).
+static void
+gear_add_skill(GearBonuses *g, const char *raw_path, int bonus)
+{
+  if(!raw_path || !raw_path[0] || bonus == 0)
+    return;
+
+  char norm[256];
+
+  normalize_path(raw_path, norm, sizeof(norm));
+
+  for(int i = 0; i < g->num_skill; i++)
+  {
+    if(strcmp(g->skill[i].path, norm) == 0)
+    {
+      g->skill[i].bonus += bonus;
+      return;
+    }
+  }
+
+  if(g->num_skill < MAX_GEAR_SKILL_AUG)
+  {
+    snprintf(g->skill[g->num_skill].path, sizeof(g->skill[0].path), "%s", norm);
+    g->skill[g->num_skill].bonus = bonus;
+    g->num_skill++;
+  }
+}
+
+// Accumulate augmentAllLevel / augmentMastery* / augmentSkill* from one DBR
+// component (base, prefix, suffix, relic, completion bonus) into the table.
+// Mirrors the field layout item_stats.c reads for tooltips.
+static void
+gear_scan_record(const char *path, GearBonuses *g)
+{
+  if(!path || !path[0])
+    return;
+
+  TQArzRecordData *d = asset_get_dbr(path);
+
+  if(!d)
+    return;
+
+  for(uint32_t i = 0; i < d->num_vars; i++)
+  {
+    const char *name = d->vars[i].name;
+
+    if(!name)
+      continue;
+
+    if(strcasecmp(name, "augmentAllLevel") == 0)
+    {
+      g->all_bonus += aug_int_value(&d->vars[i]);
+      continue;
+    }
+
+    if(strncasecmp(name, "augmentMasteryLevel", 19) == 0)
+    {
+      int lvl = aug_int_value(&d->vars[i]);
+
+      if(lvl == 0)
+        continue;
+
+      char nm[64];
+
+      snprintf(nm, sizeof(nm), "augmentMasteryName%s", name + 19);
+      TQVariable *mv = arz_record_get_var(d, arz_intern(nm));
+      const char *mpath =
+        (mv && mv->type == TQ_VAR_STRING && mv->count > 0) ? mv->value.str[0] : NULL;
+
+      if(!mpath || !mpath[0])
+        continue;
+
+      char mnorm[256];
+
+      normalize_path(mpath, mnorm, sizeof(mnorm));
+      int mdef = find_mastery_for_skill(mnorm);
+
+      if(mdef >= 0 && mdef < NUM_MASTERIES)
+        g->mastery_bonus[mdef] += lvl;
+
+      continue;
+    }
+
+    if(strncasecmp(name, "augmentSkillLevel", 17) == 0)
+    {
+      int lvl = aug_int_value(&d->vars[i]);
+
+      if(lvl == 0)
+        continue;
+
+      char nm[64];
+
+      snprintf(nm, sizeof(nm), "augmentSkillName%s", name + 17);
+      TQVariable *sv = arz_record_get_var(d, arz_intern(nm));
+      const char *spath =
+        (sv && sv->type == TQ_VAR_STRING && sv->count > 0) ? sv->value.str[0] : NULL;
+
+      gear_add_skill(g, spath, lvl);
+    }
+  }
+}
+
+// Scan every component of one equipped item.
+static void
+gear_scan_item(TQItem *it, GearBonuses *g)
+{
+  if(!it)
+    return;
+
+  gear_scan_record(it->base_name, g);
+  gear_scan_record(it->prefix_name, g);
+  gear_scan_record(it->suffix_name, g);
+  gear_scan_record(it->relic_name, g);
+  gear_scan_record(it->relic_bonus, g);
+  gear_scan_record(it->relic_name2, g);
+  gear_scan_record(it->relic_bonus2, g);
+}
+
+// Build the character's full +skill bonus table from all equipped items.
+static void
+compute_gear_bonuses(TQCharacter *chr, GearBonuses *g)
+{
+  memset(g, 0, sizeof(*g));
+
+  if(!chr)
+    return;
+
+  for(int i = 0; i < 12; i++)
+    gear_scan_item(chr->equipment[i], g);
+}
+
+// Skill-specific bonus for a normalized skill path (0 if none).
+static int
+gear_skill_bonus(const GearBonuses *g, const char *norm_path)
+{
+  for(int i = 0; i < g->num_skill; i++)
+    if(strcmp(g->skill[i].path, norm_path) == 0)
+      return(g->skill[i].bonus);
+
+  return(0);
+}
+
+// Effective level of a skill at `alloc` allocated points: equipment bonuses
+// apply only once at least one point is spent, and the total is clamped to the
+// skill's ultimate cap.
+static int
+effective_level(int alloc, int raw_bonus, int ultimate)
+{
+  if(alloc < 1)
+    return(alloc);
+
+  int e = alloc + (raw_bonus > 0 ? raw_bonus : 0);
+
+  // Clamp to the ultimate cap, but never below what is actually allocated
+  // (guards against an unreadable/under-reported cap yielding a negative bonus).
+  if(e > ultimate)
+    e = ultimate;
+  if(e < alloc)
+    e = alloc;
+
+  return(e);
 }
 
 // ── Accounting / gating / cascade ────────────────────────────────────────
@@ -1096,9 +1348,16 @@ build_mastery_model(SkillsState *st, int pane_idx)
       n->pos_y = ipos.pos_y;
     }
 
-    get_skill_dbr_info(tree[t].path, &n->skill_tier, &n->max_level);
-    n->ultimate_level = arz_record_get_int(dbr, "skillUltimateLevel", n->max_level, NULL);
+    get_skill_dbr_info(tree[t].path, &n->skill_tier, &n->max_level, &n->ultimate_level);
     n->mastery_req = arz_record_get_int(dbr, "skillMasteryLevelRequired", 0, NULL);
+
+    // Equipment +skill bonuses applicable to this skill: all-skills + this
+    // mastery + this exact skill.  Equipment is fixed, so this is stable for
+    // the dialog's lifetime; the effective (capped) total is computed at draw
+    // time from the current allocation.
+    n->gear_all = st->gear.all_bonus;
+    n->gear_mastery = st->gear.mastery_bonus[mp->mastery_def_idx];
+    n->gear_skill = gear_skill_bonus(&st->gear, n->skill_path);
 
     resolve_skill_name(st->widgets, tree[t].path, n->display_name, sizeof(n->display_name));
 
@@ -1183,8 +1442,15 @@ str_replace_all(const char *s, const char *from, const char *to)
 }
 
 // Build in-game-style Pango markup for a skill (or the mastery) at `level`.
+// The gear_* arguments carry the character's equipment +skill bonuses for this
+// skill (0 for the mastery node); when present, the level lines show the
+// boosted total, the stat previews reflect the effective level, and a breakdown
+// of the bonus sources is appended.  mastery_name labels the mastery-wide
+// bonus (may be NULL).
 static char *
-skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level, int max_level)
+skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level,
+                     int max_level, int ultimate_level, int gear_all,
+                     int gear_mastery, int gear_skill, const char *mastery_name)
 {
   char raw[16384];
   BufWriter bw;
@@ -1230,11 +1496,21 @@ skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level, int max_l
   buf_write(&bw, "\n");
 
   const char *WHITE = "#E0E0E0";
+  int raw_bonus = gear_all + gear_mastery + gear_skill;
 
   if(level > 0)
   {
-    buf_write(&bw, "<span color='#FFD200'>Current Level: %d</span>\n", level);
-    add_stats_from_record(eff_path, w->translations, &bw, WHITE, level - 1);
+    int eff = effective_level(level, raw_bonus, ultimate_level);
+    int shown = eff - level;
+
+    if(shown > 0)
+      buf_write(&bw, "<span color='#FFD200'>Current Level: %d "
+                     "<span color='#5FE85F'>(+%d = %d)</span></span>\n",
+                level, shown, eff);
+    else
+      buf_write(&bw, "<span color='#FFD200'>Current Level: %d</span>\n", level);
+
+    add_stats_from_record(eff_path, w->translations, &bw, WHITE, eff - 1);
   }
 
   if(level < max_level)
@@ -1242,8 +1518,38 @@ skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level, int max_l
     if(level > 0)
       buf_write(&bw, "\n");
 
-    buf_write(&bw, "<span color='#FFD200'>Next Level: %d</span>\n", level + 1);
-    add_stats_from_record(eff_path, w->translations, &bw, WHITE, level);
+    int nxt = level + 1;
+    int eff = effective_level(nxt, raw_bonus, ultimate_level);
+    int shown = eff - nxt;
+
+    if(shown > 0)
+      buf_write(&bw, "<span color='#FFD200'>Next Level: %d "
+                     "<span color='#5FE85F'>(+%d = %d)</span></span>\n",
+                nxt, shown, eff);
+    else
+      buf_write(&bw, "<span color='#FFD200'>Next Level: %d</span>\n", nxt);
+
+    add_stats_from_record(eff_path, w->translations, &bw, WHITE, eff - 1);
+  }
+
+  // Equipment +skill bonus breakdown (which gear sources feed this skill, and a
+  // reminder that a point must be spent for them to take effect).
+  if(raw_bonus > 0)
+  {
+    buf_write(&bw, "\n<span color='#5FE85F'>Equipment Bonus:</span>\n");
+
+    if(gear_all > 0)
+      buf_write(&bw, "<span color='%s'>  +%d to All Skills</span>\n", WHITE, gear_all);
+
+    if(gear_mastery > 0)
+      buf_write(&bw, "<span color='%s'>  +%d to %s Mastery Skills</span>\n",
+                WHITE, gear_mastery, mastery_name ? mastery_name : "this");
+
+    if(gear_skill > 0)
+      buf_write(&bw, "<span color='%s'>  +%d to this Skill</span>\n", WHITE, gear_skill);
+
+    if(level < 1)
+      buf_write(&bw, "<span color='#AAAAAA'>  (spend at least 1 point to apply)</span>\n");
   }
 
   buf_write(&bw, "\n<span color='#40FF40'>Left click to add unused skill points. "
@@ -1282,9 +1588,11 @@ blit_icon(cairo_t *cr, GdkPixbuf *pb, double cx, double cy, double size, double 
   cairo_restore(cr);
 }
 
-// Draw "cur / max" centered, with a dark outline for legibility.
+// Draw a counter string centered in the given colour, with a dark outline for
+// legibility.  Used for the mastery "cur / max" line and each skill's level.
 static void
-draw_counter(cairo_t *cr, const char *txt, double cx, double top_y)
+draw_counter(cairo_t *cr, const char *txt, double cx, double top_y,
+             double r, double g, double b)
 {
   cairo_save(cr);
   cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
@@ -1308,7 +1616,7 @@ draw_counter(cairo_t *cr, const char *txt, double cx, double top_y)
       cairo_show_text(cr, txt);
     }
 
-  cairo_set_source_rgb(cr, 0.92, 0.92, 0.92);
+  cairo_set_source_rgb(cr, r, g, b);
   cairo_move_to(cr, tx, ty);
   cairo_show_text(cr, txt);
   cairo_restore(cr);
@@ -1504,7 +1812,8 @@ skill_canvas_draw_cb(GtkDrawingArea *da, cairo_t *cr, int width, int height, gpo
     char buf[32];
 
     snprintf(buf, sizeof(buf), "%d / %d", mp->mastery_level, MAX_MASTERY_LEVEL);
-    draw_counter(cr, buf, mp->mastery_x, mp->mastery_y + SK_ICON / 2.0);
+    draw_counter(cr, buf, mp->mastery_x, mp->mastery_y + SK_ICON / 2.0,
+                 0.92, 0.92, 0.92);
   }
 
   // Skill nodes.
@@ -1523,10 +1832,22 @@ skill_canvas_draw_cb(GtkDrawingArea *da, cairo_t *cr, int width, int height, gpo
     if(pb)
       g_object_unref(pb);
 
-    char buf[32];
+    // In-game style: show the skill's effective level as a single number
+    // (allocated points plus applicable equipment bonuses, applied only with a
+    // point spent and clamped to the ultimate cap).  Colour it green only when
+    // equipment pushed it above the skill's natural cap (skillMaxLevel);
+    // otherwise leave it plain.
+    int raw_bonus = n->gear_all + n->gear_mastery + n->gear_skill;
+    int eff = effective_level(n->cur_level, raw_bonus, n->ultimate_level);
+    double counter_y = n->y + SK_ICON / 2.0;
+    char buf[16];
 
-    snprintf(buf, sizeof(buf), "%d / %d", n->cur_level, n->max_level);
-    draw_counter(cr, buf, n->x, n->y + SK_ICON / 2.0);
+    snprintf(buf, sizeof(buf), "%d", eff);
+
+    if(eff > n->max_level)
+      draw_counter(cr, buf, n->x, counter_y, 0.42, 0.95, 0.42);
+    else
+      draw_counter(cr, buf, n->x, counter_y, 0.92, 0.92, 0.92);
   }
 }
 
@@ -1637,14 +1958,19 @@ on_canvas_tooltip(GtkWidget *canvas, int x, int y, gboolean keyboard,
     if(mp->mastery_def_idx < 0)
       return(FALSE);
 
+    // The mastery bar itself is not raised by +skill gear bonuses.
     markup = skill_tooltip_markup(st->widgets, mastery_defs[mp->mastery_def_idx].dbr_path,
-                                  mp->mastery_level, MAX_MASTERY_LEVEL);
+                                  mp->mastery_level, MAX_MASTERY_LEVEL, MAX_MASTERY_LEVEL,
+                                  0, 0, 0, NULL);
   }
   else
   {
     SkillNode *n = &mp->nodes[idx];
+    const char *mname = mp->mastery_def_idx >= 0 ? mastery_defs[mp->mastery_def_idx].name : NULL;
 
-    markup = skill_tooltip_markup(st->widgets, n->skill_path, n->cur_level, n->max_level);
+    markup = skill_tooltip_markup(st->widgets, n->skill_path, n->cur_level, n->max_level,
+                                  n->ultimate_level, n->gear_all, n->gear_mastery,
+                                  n->gear_skill, mname);
   }
 
   gtk_tooltip_set_markup(tooltip, markup);
@@ -1972,6 +2298,9 @@ show_skills_dialog(AppWidgets *widgets)
   st->total_skill_points = (int)chr->skill_points + spent;
   st->orig_skill_points = (int)chr->skill_points;
 
+  // Equipment +skill bonuses are fixed while the dialog is open; compute once.
+  compute_gear_bonuses(chr, &st->gear);
+
   for(int p = 0; p < 2; p++)
   {
     st->panes[p].mastery_def_idx = -1;
@@ -2095,4 +2424,72 @@ show_skills_dialog(AppWidgets *widgets)
 
   refresh_chrome(st);
   gtk_window_present(GTK_WINDOW(dialog));
+}
+
+// ── Headless verification ─────────────────────────────────────────────────
+
+void
+skills_debug_print_gear_bonuses(TQCharacter *chr)
+{
+  if(!chr)
+  {
+    printf("skill-bonuses: no character\n");
+    return;
+  }
+
+  GearBonuses g;
+
+  compute_gear_bonuses(chr, &g);
+
+  printf("\n--- Equipment +skill bonuses: %s ---\n",
+         chr->character_name ? chr->character_name : "(unknown)");
+  printf("All skills: +%d\n", g.all_bonus);
+
+  for(int m = 0; m < NUM_MASTERIES; m++)
+    if(g.mastery_bonus[m] > 0)
+      printf("Mastery %-9s: +%d\n", mastery_defs[m].name, g.mastery_bonus[m]);
+
+  if(g.num_skill > 0)
+  {
+    printf("Skill-specific:\n");
+
+    for(int i = 0; i < g.num_skill; i++)
+      printf("  +%d  %s\n", g.skill[i].bonus, g.skill[i].path);
+  }
+
+  // Effective levels for every allocated skill that any bonus touches.
+  printf("Effective levels (allocated skills receiving a bonus):\n");
+
+  for(int i = 0; i < chr->num_skills; i++)
+  {
+    const char *path = chr->skills[i].skill_name;
+    int level = (int)chr->skills[i].skill_level;
+
+    if(!path || !path[0] || level < 1 || is_mastery_record(path))
+      continue;
+
+    // Quest-reward stat buffs are pseudo-skills that never appear in the tree
+    // and don't receive +skill bonuses in game; skip them in this report.
+    if(strcasestr(path, "\\quests\\rewards\\"))
+      continue;
+
+    int mdef = find_mastery_for_skill(path);
+    int mb = (mdef >= 0 && mdef < NUM_MASTERIES) ? g.mastery_bonus[mdef] : 0;
+
+    char norm[256];
+
+    normalize_path(path, norm, sizeof(norm));
+    int sb = gear_skill_bonus(&g, norm);
+    int raw = g.all_bonus + mb + sb;
+
+    if(raw <= 0)
+      continue;
+
+    int tier, maxl, ult;
+
+    get_skill_dbr_info(path, &tier, &maxl, &ult);
+    int eff = effective_level(level, raw, ult);
+
+    printf("  %-56s %2d -> %2d  (+%d, cap %d)\n", norm, level, eff, eff - level, ult);
+  }
 }

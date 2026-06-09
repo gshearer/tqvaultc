@@ -287,6 +287,9 @@ main(int argc, char **argv)
   const char *equip_chr_path = NULL;
   const char *equip_item_path = NULL;
 
+  bool skill_bonus_only = false;
+  const char *skill_bonus_chr_path = NULL;
+
   for(int i = 1; i < argc; i++)
   {
     if(strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
@@ -308,6 +311,11 @@ main(int argc, char **argv)
       equip_check_only = true;
       equip_chr_path = argv[++i];
       equip_item_path = argv[++i];
+    }
+    else if(strcmp(argv[i], "--skill-bonuses") == 0 && i + 1 < argc)
+    {
+      skill_bonus_only = true;
+      skill_bonus_chr_path = argv[++i];
     }
     else
     {
@@ -355,6 +363,39 @@ main(int argc, char **argv)
     item_stats_init();
     affix_table_init(NULL);
     equip_check(equip_chr_path, equip_item_path);
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(0);
+  }
+
+  if(skill_bonus_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --skill-bonuses: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+
+    TQCharacter *chr = character_load(skill_bonus_chr_path);
+
+    if(chr)
+    {
+      skills_debug_print_gear_bonuses(chr);
+      character_free(chr);
+    }
+    else
+    {
+      fprintf(stderr, "tqvaultc --skill-bonuses: failed to load %s\n", skill_bonus_chr_path);
+    }
+
     item_stats_free();
     affix_table_free();
     arz_intern_free();

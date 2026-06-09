@@ -892,6 +892,13 @@ show_stats_dialog(AppWidgets *widgets);
 void
 show_skills_dialog(AppWidgets *widgets);
 
+// Print the character's equipment-derived +skill bonuses (all-skills, per
+// mastery, per skill) and the resulting effective levels of allocated skills.
+// Headless verification path for the skill manager's bonus accounting; does
+// not touch GTK.  chr: a loaded character.
+void
+skills_debug_print_gear_bonuses(TQCharacter *chr);
+
 // ── Entry points in ui_database_dialog.c ──────────────────────────────────
 
 // Show the database browser dialog.
