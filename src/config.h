@@ -6,6 +6,7 @@
 typedef struct {
   char *save_folder;
   char *game_folder;
+  char *vault_folder; // user-chosen vault data dir; NULL => {save_folder}/TQVaultData
   char *last_character_path;
   char *last_vault_name;
   int last_vault_bag;
@@ -32,6 +33,22 @@ void config_set_save_folder(const char *path);
 // config_set_game_folder - update the game folder path in config
 // path: new game folder path
 void config_set_game_folder(const char *path);
+
+// config_set_vault_folder - update the vault data folder path in config.
+// Pass NULL or "" to clear it (fall back to {save_folder}/TQVaultData).
+void config_set_vault_folder(const char *path);
+
+// config_vault_dir_new - return a newly-allocated path to the directory that
+// holds the .vault.json files: the configured vault_folder when set, else
+// {save_folder}/TQVaultData. Returns NULL if neither is available.
+// Caller frees with g_free().
+char *config_vault_dir_new(void);
+
+// config_vault_file_new - return a newly-allocated full path to the vault file
+// for the bare vault name `name` (i.e. <vault dir>/<name>.vault.json), honoring
+// the configured vault folder. Returns NULL if no vault dir is available.
+// Caller frees with g_free().
+char *config_vault_file_new(const char *name);
 
 // config_set_last_character - update the last loaded character name
 // name: character name

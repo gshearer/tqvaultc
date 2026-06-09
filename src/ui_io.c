@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <glib/gstdio.h>
 
 // ── Unsaved character confirmation dialog ─────────────────────────────
 // Returns: 0=Save, 1=Discard, 2=Cancel
@@ -372,6 +373,235 @@ compare_strings(const void *a, const void *b)
   return(strcmp(*(const char **)a, *(const char **)b));
 }
 
+// ── Missing-vault-folder prompt ─────────────────────────────────────
+//
+// When the vault directory can't be found we don't fail silently: we ask the
+// user whether to create a new vault there, point us at an existing vault
+// folder, or cancel. The chosen folder is only remembered (persisted as
+// vault_folder) when it actually holds vault data or the user creates a brand
+// new vault in it -- never for a folder we rejected as empty.
+
+// Carries state from the alert dialog to its async response callback.
+//   widgets - app state
+//   dir     - folder the "Create New Vault" action should create in (owned)
+typedef struct {
+  AppWidgets *widgets;
+  char *dir;
+} VaultPromptCtx;
+
+static void vault_prompt_not_found(AppWidgets *widgets, const char *dir);
+
+// Return TRUE if `dir` contains at least one *.vault.json file.
+static gboolean
+vault_dir_has_data(const char *dir)
+{
+  GDir *d = g_dir_open(dir, 0, NULL);
+
+  if(!d)
+    return(FALSE);
+
+  const char *suffix = ".vault.json";
+  size_t slen = strlen(suffix);
+  const gchar *nm;
+  gboolean found = FALSE;
+
+  while((nm = g_dir_read_name(d)) != NULL)
+  {
+    size_t l = strlen(nm);
+
+    if(l > slen && strcmp(nm + l - slen, suffix) == 0)
+    {
+      found = TRUE;
+      break;
+    }
+  }
+  g_dir_close(d);
+  return(found);
+}
+
+// Folder-picker completion: remember + load the chosen folder if it holds
+// vault data, otherwise re-show the not-found prompt for that folder.
+//   source    - the GtkFileDialog
+//   result    - async result
+//   user_data - AppWidgets*
+static void
+on_vault_choose_folder_ready(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  GtkFileDialog *dlg = GTK_FILE_DIALOG(source);
+  AppWidgets *widgets = (AppWidgets *)user_data;
+  GFile *folder = gtk_file_dialog_select_folder_finish(dlg, result, NULL);
+
+  if(!folder)
+    return;  // picker cancelled -> stop
+
+  char *dir = g_file_get_path(folder);
+
+  g_object_unref(folder);
+  if(!dir)
+    return;
+
+  if(vault_dir_has_data(dir))
+  {
+    config_set_vault_folder(dir);
+    config_save();
+    repopulate_vault_combo(widgets, NULL);
+  }
+  else
+  {
+    vault_prompt_not_found(widgets, dir);  // empty folder -> ask again
+  }
+  g_free(dir);
+}
+
+// Open a folder picker (starting at the user's home dir) so the user can point
+// us at their existing vault folder.
+static void
+vault_choose_folder(AppWidgets *widgets)
+{
+  GtkFileDialog *dlg = gtk_file_dialog_new();
+
+  gtk_file_dialog_set_title(dlg, "Select Your Vault Folder");
+
+  const char *home = g_get_home_dir();
+
+  if(home)
+  {
+    GFile *initial = g_file_new_for_path(home);
+
+    gtk_file_dialog_set_initial_folder(dlg, initial);
+    g_object_unref(initial);
+  }
+  gtk_file_dialog_select_folder(dlg, GTK_WINDOW(widgets->main_window), NULL,
+                                on_vault_choose_folder_ready, widgets);
+}
+
+// Create the vault folder `dir` (if needed), seed it with the user's first
+// vault ("Main Vault"), remember it, and refresh the combo.
+static void
+vault_create_in(AppWidgets *widgets, const char *dir)
+{
+  if(!dir || !dir[0])
+    return;
+
+  if(g_mkdir_with_parents(dir, 0755) != 0)
+  {
+    char *msg = g_strdup_printf(
+      "Could not create the vault folder:\n\n%s\n\n"
+      "Check that you have permission to write there.", dir);
+    GtkAlertDialog *e = gtk_alert_dialog_new("%s", msg);
+
+    gtk_alert_dialog_set_modal(e, TRUE);
+    gtk_alert_dialog_show(e, GTK_WINDOW(widgets->main_window));
+    g_object_unref(e);
+    g_free(msg);
+    return;
+  }
+
+  // Remember this as the vault folder, then seed it with a starter vault.
+  config_set_vault_folder(dir);
+
+  char *vpath = config_vault_file_new("Main Vault");
+
+  if(vpath && !g_file_test(vpath, G_FILE_TEST_EXISTS))
+  {
+    TQVault *vault = calloc(1, sizeof(TQVault));
+
+    if(vault)
+    {
+      vault->vault_name = strdup(vpath);
+      vault->num_sacks = 12;
+      vault->sacks = calloc(12, sizeof(TQVaultSack));
+
+      if(vault_save_json(vault, vpath) != 0)
+        fprintf(stderr, "Failed to create initial vault: %s\n", vpath);
+      vault_free(vault);
+    }
+  }
+  g_free(vpath);
+
+  config_save();
+  repopulate_vault_combo(widgets, "Main Vault");
+}
+
+// Alert-dialog response: 2=Create New Vault, 1=Choose a Different Folder,
+// 0/-1=Cancel or dismissed.
+//   source    - the GtkAlertDialog
+//   result    - async result
+//   user_data - VaultPromptCtx* (freed here)
+static void
+on_vault_notfound_response(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  GtkAlertDialog *dlg = GTK_ALERT_DIALOG(source);
+  VaultPromptCtx *ctx = (VaultPromptCtx *)user_data;
+  int idx = gtk_alert_dialog_choose_finish(dlg, result, NULL);
+
+  switch(idx)
+  {
+    case 2:  // Create New Vault
+      vault_create_in(ctx->widgets, ctx->dir);
+      break;
+    case 1:  // Choose a Different Folder…
+      vault_choose_folder(ctx->widgets);
+      break;
+    default: // Cancel / dismissed
+      break;
+  }
+  g_free(ctx->dir);
+  g_free(ctx);
+}
+
+// Show the "vault folder not found" prompt for the directory `dir`.
+//   widgets - app state
+//   dir     - directory we looked in (used in the message and as the create
+//             target); may be NULL if we couldn't determine one
+static void
+vault_prompt_not_found(AppWidgets *widgets, const char *dir)
+{
+  char *msg;
+
+  if(dir && dir[0])
+    msg = g_strdup_printf(
+      "TQVault could not find any vault files in:\n\n%s\n\n"
+      "Would you like to create a new vault there, choose a different "
+      "folder, or cancel?", dir);
+  else
+    msg = g_strdup(
+      "TQVault could not find your vault folder.\n\n"
+      "Would you like to create one, choose a different folder, or cancel?");
+
+  GtkAlertDialog *dlg = gtk_alert_dialog_new("%s", msg);
+  const char *buttons[] = { "Cancel", "Choose a Different Folder…",
+                            "Create New Vault", NULL };
+
+  gtk_alert_dialog_set_buttons(dlg, buttons);
+  gtk_alert_dialog_set_cancel_button(dlg, 0);
+  gtk_alert_dialog_set_default_button(dlg, 2);
+  gtk_alert_dialog_set_modal(dlg, TRUE);
+
+  VaultPromptCtx *ctx = g_malloc0(sizeof(VaultPromptCtx));
+
+  ctx->widgets = widgets;
+  ctx->dir = g_strdup(dir);
+
+  gtk_alert_dialog_choose(dlg, GTK_WINDOW(widgets->main_window), NULL,
+                          on_vault_notfound_response, ctx);
+  g_object_unref(dlg);
+  g_free(msg);
+}
+
+// ensure_vault_folder - if the effective vault directory is missing, prompt the
+// user to create one or point us at their existing vault data. No-op when the
+// directory already exists.
+void
+ensure_vault_folder(AppWidgets *widgets)
+{
+  char *dir = config_vault_dir_new();
+
+  if(!dir || !g_file_test(dir, G_FILE_TEST_IS_DIR))
+    vault_prompt_not_found(widgets, dir);
+  g_free(dir);
+}
+
 // ── Vault combo repopulation helper ─────────────────────────────────
 
 // Rebuild the vault dropdown, scanning the TQVaultData directory for .vault.json files.
@@ -389,8 +619,11 @@ repopulate_vault_combo(AppWidgets *widgets, const char *select_name)
 
   gtk_string_list_splice(sl, 0, old_n, NULL);
 
-  char *vault_path = g_build_filename(global_config.save_folder, "TQVaultData", NULL);
-  GDir *d = g_dir_open(vault_path, 0, NULL);
+  // Scan the effective vault directory (a user-chosen vault_folder, or the
+  // default {save_folder}/TQVaultData). If it can't be opened we leave the
+  // list empty here; ensure_vault_folder() handles prompting the user.
+  char *vault_path = config_vault_dir_new();
+  GDir *d = vault_path ? g_dir_open(vault_path, 0, NULL) : NULL;
 
   g_free(vault_path);
   if(!d)
@@ -706,8 +939,10 @@ on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data)
     return;
 
   char path[1024];
+  char *vp = config_vault_file_new(name);
 
-  snprintf(path, sizeof(path), "%s/TQVaultData/%s.vault.json", global_config.save_folder, name);
+  snprintf(path, sizeof(path), "%s", vp ? vp : "");
+  g_free(vp);
 
   // Reset bag to 0 only when switching to a different vault
   bool same_vault = global_config.last_vault_name &&
@@ -722,9 +957,28 @@ on_vault_changed(GObject *obj, GParamSpec *pspec, gpointer user_data)
   if(widgets->current_vault)
     vault_free(widgets->current_vault);
 
-  widgets->current_vault = vault_load_json(path);
+  char *verr = NULL;
+
+  widgets->current_vault = vault_load_json_ex(path, &verr);
   if(widgets->current_vault)
+  {
     prefetch_for_vault(widgets->current_vault);
+  }
+  else if(verr)
+  {
+    // Surface the reason so the user can report what's wrong instead of just
+    // seeing blank squares with no explanation.
+    char *m = g_strdup_printf(
+      "This vault could not be loaded, so its items can't be shown:\n\n%s\n\n"
+      "File:\n%s", verr, path);
+    GtkAlertDialog *dlg = gtk_alert_dialog_new("%s", m);
+
+    gtk_alert_dialog_set_modal(dlg, TRUE);
+    gtk_alert_dialog_show(dlg, GTK_WINDOW(widgets->main_window));
+    g_object_unref(dlg);
+    g_free(m);
+  }
+  free(verr);
 
   // Restore last viewed bag, or default to bag 0
   int restore_bag = global_config.last_vault_bag;

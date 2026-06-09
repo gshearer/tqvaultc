@@ -994,12 +994,26 @@ compute_cell_size(AppWidgets *widgets)
 
   double cell_w = (double)(w - LAYOUT_H_OVERHEAD) /
                   (VAULT_COLS + CHAR_INV_COLS + CHAR_BAG_COLS);
-  double cell_h = (double)(h - VAULT_V_OVERHEAD) / VAULT_ROWS;
+  double cell_h_vault = (double)(h - VAULT_V_OVERHEAD) / VAULT_ROWS;
 
-  double cell = cell_w < cell_h ? cell_w : cell_h;
+  // The character column stacks the inventory above the (taller) equipment
+  // panel, so it needs more vertical cells than the vault. Bound the cell by
+  // this column's budget too, or the inventory's bottom row clips on shorter
+  // windows. This is a pure function of w/h (no measured child sizes), so it
+  // can't oscillate against the equipment auto-resize -- resizing stays smooth.
+  double cell_h_char = (double)(h - CHAR_V_OVERHEAD) / CHAR_V_CELLS;
 
-  if(cell < 1.0)
-    cell = 1.0;
+  double cell = cell_w;
+
+  if(cell_h_vault < cell)
+    cell = cell_h_vault;
+  if(cell_h_char < cell)
+    cell = cell_h_char;
+
+  // Floor at MIN_CELL: below this we stop shrinking and let the main scrolled
+  // window provide scrollbars instead (handles tiny windows / handhelds).
+  if(cell < MIN_CELL)
+    cell = MIN_CELL;
 
   return(cell);
 }

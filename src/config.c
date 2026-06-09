@@ -8,7 +8,7 @@
 
 #define CONFIG_FILENAME "tqvc-config.json"
 
-TQConfig global_config = {NULL, NULL, NULL, NULL, 0, NULL};
+TQConfig global_config = {NULL, NULL, NULL, NULL, NULL, 0, NULL};
 bool tqvc_debug = false;
 static bool g_first_run = false;
 
@@ -64,6 +64,18 @@ load_from_file(const char *path)
 
   if(json_object_object_get_ex(parsed_json, "game_folder", &game_folder_obj))
     global_config.game_folder = strdup(json_object_get_string(game_folder_obj));
+
+  // vault_folder: only honor a non-empty value (config_save writes "" when
+  // unset, which must read back as NULL so we fall back to the default dir).
+  struct json_object *vault_folder_obj;
+
+  if(json_object_object_get_ex(parsed_json, "vault_folder", &vault_folder_obj))
+  {
+    const char *vf = json_object_get_string(vault_folder_obj);
+
+    if(vf && vf[0])
+      global_config.vault_folder = strdup(vf);
+  }
 
   if(json_object_object_get_ex(parsed_json, "last_character_path", &last_char_obj))
     global_config.last_character_path = strdup(json_object_get_string(last_char_obj));
@@ -233,6 +245,47 @@ config_set_game_folder(const char *path)
   global_config.game_folder = path ? strdup(path) : NULL;
 }
 
+// config_set_vault_folder - update the vault data folder path in config
+// path: new vault folder path, or NULL/"" to clear (use the default dir)
+void
+config_set_vault_folder(const char *path)
+{
+  if(global_config.vault_folder)
+    free(global_config.vault_folder);
+
+  global_config.vault_folder = (path && path[0]) ? strdup(path) : NULL;
+}
+
+// config_vault_dir_new - directory that holds the .vault.json files
+char *
+config_vault_dir_new(void)
+{
+  if(global_config.vault_folder && global_config.vault_folder[0])
+    return g_strdup(global_config.vault_folder);
+
+  if(global_config.save_folder && global_config.save_folder[0])
+    return g_build_filename(global_config.save_folder, "TQVaultData", NULL);
+
+  return NULL;
+}
+
+// config_vault_file_new - full path to <vault dir>/<name>.vault.json
+char *
+config_vault_file_new(const char *name)
+{
+  char *dir = config_vault_dir_new();
+
+  if(!dir)
+    return NULL;
+
+  char *base = g_strconcat(name, ".vault.json", NULL);
+  char *full = g_build_filename(dir, base, NULL);
+
+  g_free(dir);
+  g_free(base);
+  return full;
+}
+
 // config_set_last_character - update the last loaded character path in config
 // name: character path, or NULL to clear
 void
@@ -297,6 +350,8 @@ config_save(void)
       json_object_new_string(global_config.save_folder ? global_config.save_folder : ""));
   json_object_object_add(root, "game_folder",
       json_object_new_string(global_config.game_folder ? global_config.game_folder : ""));
+  json_object_object_add(root, "vault_folder",
+      json_object_new_string(global_config.vault_folder ? global_config.vault_folder : ""));
   json_object_object_add(root, "last_character_path",
       json_object_new_string(global_config.last_character_path ? global_config.last_character_path : ""));
   json_object_object_add(root, "last_vault_name",
@@ -347,6 +402,7 @@ config_free(void)
 {
   free(global_config.save_folder);
   free(global_config.game_folder);
+  free(global_config.vault_folder);
   free(global_config.last_character_path);
   free(global_config.last_vault_name);
   free(global_config.config_path);

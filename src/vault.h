@@ -42,6 +42,14 @@ typedef struct {
 // returns: parsed vault, or NULL on failure
 TQVault *vault_load_json(const char *filepath);
 
+// vault_load_json_ex - load a vault, reporting a human-readable reason on
+// failure so callers can surface it to the user.
+// filepath: path to the vault JSON file
+// err_out:  if non-NULL, receives a strdup'd failure reason (caller frees with
+//           free()); set to NULL on success
+// returns:  parsed vault, or NULL on failure
+TQVault *vault_load_json_ex(const char *filepath, char **err_out);
+
 // vault_save_json - save a vault to a JSON file
 // vault: vault to save
 // filepath: path to write the JSON file

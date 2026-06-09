@@ -132,6 +132,23 @@ extern const EquipSlot COL_RIGHT[3];
 // Vault grid dimensions
 #define VAULT_COLS 18
 #define VAULT_ROWS 20
+// Smallest cell (px) we render at. The shared cell scales with the window down
+// to this floor; below it the content keeps this size and the main scrolled
+// window shows scrollbars instead of shrinking further. Item icons are ~32px
+// native, so 24 stays recognizable while staying compact on small windows.
+#define MIN_CELL 24
+// Character column vertical budget. The column stacks the inventory
+// (CHAR_INV_ROWS) above the equipment panel (~12 cell-rows), so it needs more
+// vertical cells than the vault. compute_cell_size() bounds the shared cell by
+// this too, so the inventory's bottom row never clips on shorter windows.
+// CHAR_V_OVERHEAD is the fixed (non-cell) vertical pixels in that column: combo
+// + bag buttons + stats block + equip labels + spacing. It's a pure constant
+// (no measured widget sizes) so the cell is a stable function of window size and
+// resizing stays smooth. TUNE CHAR_V_OVERHEAD if the inventory clips (raise it)
+// or the empty strip under the vault grows (lower it).
+#define EQUIP_V_CELLS 12
+#define CHAR_V_CELLS (CHAR_INV_ROWS + EQUIP_V_CELLS)
+#define CHAR_V_OVERHEAD 230
 
 // Bag button state indices (used by ui.c and ui_io.c)
 enum { BAG_DOWN = 0, BAG_UP = 1, BAG_OVER = 2 };
@@ -340,6 +357,12 @@ update_save_button_sensitivity(AppWidgets *widgets);
 // select_name: vault name to select after repopulation, or NULL.
 void
 repopulate_vault_combo(AppWidgets *widgets, const char *select_name);
+
+// If the vault folder can't be found, prompt the user to create one or point
+// the app at their existing vault data. No-op if the folder already exists.
+// widgets: the application widget state.
+void
+ensure_vault_folder(AppWidgets *widgets);
 
 // Repopulate the character dropdown combo box.
 // widgets: the application widget state.

@@ -7,16 +7,49 @@
 #include <stdlib.h>
 #include <string.h>
 
+// set_err - helper to set an optional out-param error string (strdup'd).
+// err_out: destination (may be NULL); msg: human-readable reason
+static void
+set_err(char **err_out, const char *msg)
+{
+  if(err_out)
+    *err_out = strdup(msg);
+}
+
 // vault_load_json - load a vault from a JSON file
 // filepath: path to the vault JSON file
 // returns: parsed vault, or NULL on failure
 TQVault *
 vault_load_json(const char *filepath)
 {
-  FILE *fp = fopen(filepath, "r");
+  return(vault_load_json_ex(filepath, NULL));
+}
+
+// vault_load_json_ex - load a vault, reporting a human-readable reason on
+// failure so callers can surface it to the user.
+// filepath: path to the vault JSON file
+// err_out:  if non-NULL, receives a strdup'd reason on failure (caller frees
+//           with free()); set to NULL on success
+// returns:  parsed vault, or NULL on failure
+TQVault *
+vault_load_json_ex(const char *filepath, char **err_out)
+{
+  if(err_out)
+    *err_out = NULL;
+
+  // Binary mode is required: on Windows, text mode collapses CRLF to LF on
+  // read, so fread() returns fewer bytes than the on-disk size ftell()
+  // reported and the size check below would wrongly reject a valid file --
+  // leaving the vault blank. (config.c documents the same fix.)
+  FILE *fp = fopen(filepath, "rb");
 
   if(!fp)
+  {
+    set_err(err_out, "Could not open the vault file. It may be missing, "
+                     "locked by another program, or you may not have "
+                     "permission to read it.");
     return(NULL);
+  }
 
   fseek(fp, 0, SEEK_END);
   long size = ftell(fp);
@@ -27,6 +60,7 @@ vault_load_json(const char *filepath)
   if(!buffer)
   {
     fclose(fp);
+    set_err(err_out, "Out of memory while reading the vault file.");
     return(NULL);
   }
 
@@ -34,6 +68,8 @@ vault_load_json(const char *filepath)
   {
     fclose(fp);
     free(buffer);
+    set_err(err_out, "The vault file could not be read completely. It may be "
+                     "corrupt or still being written by another program.");
     return(NULL);
   }
 
@@ -50,13 +86,18 @@ vault_load_json(const char *filepath)
   free(buffer);
 
   if(!parsed_json)
+  {
+    set_err(err_out, "The vault file is not valid JSON. It may be corrupt or "
+                     "may not be a TQVault data file.");
     return(NULL);
+  }
 
   TQVault *vault = calloc(1, sizeof(TQVault));
 
   if(!vault)
   {
     json_object_put(parsed_json);
+    set_err(err_out, "Out of memory while loading the vault.");
     return(NULL);
   }
 
@@ -285,7 +326,11 @@ vault_save_json(TQVault *vault, const char *filepath)
   const char *json_str = json_object_to_json_string_ext(root,
     JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_SPACED);
 
-  FILE *fp = fopen(filepath, "w");
+  // Binary mode: keep the on-disk bytes exactly as written (LF newlines) so the
+  // size check in vault_load_json_ex() reads back the same byte count. Text
+  // mode on Windows would expand "\n" to "\r\n", producing files our own
+  // loader then rejects.
+  FILE *fp = fopen(filepath, "wb");
 
   if(!fp)
   {

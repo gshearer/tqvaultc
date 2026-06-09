@@ -326,9 +326,10 @@ on_new_vault_ok(GtkButton *btn, gpointer user_data)
   }
 
   char filepath[1024];
+  char *vp = config_vault_file_new(text);
 
-  snprintf(filepath, sizeof(filepath), "%s/TQVaultData/%s.vault.json",
-           global_config.save_folder, text);
+  snprintf(filepath, sizeof(filepath), "%s", vp ? vp : "");
+  g_free(vp);
 
   if(g_file_test(filepath, G_FILE_TEST_EXISTS))
   {
@@ -650,9 +651,10 @@ on_dup_vault_ok(GtkButton *btn, gpointer user_data)
   }
 
   char filepath[1024];
+  char *vp = config_vault_file_new(text);
 
-  snprintf(filepath, sizeof(filepath), "%s/TQVaultData/%s.vault.json",
-           global_config.save_folder, text);
+  snprintf(filepath, sizeof(filepath), "%s", vp ? vp : "");
+  g_free(vp);
 
   if(g_file_test(filepath, G_FILE_TEST_EXISTS))
   {
@@ -672,9 +674,10 @@ on_dup_vault_ok(GtkButton *btn, gpointer user_data)
   save_vault_if_dirty(nw->widgets);
 
   char source[1024];
+  char *sp = config_vault_file_new(cur);
 
-  snprintf(source, sizeof(source), "%s/TQVaultData/%s.vault.json",
-           global_config.save_folder, cur);
+  snprintf(source, sizeof(source), "%s", sp ? sp : "");
+  g_free(sp);
   g_free(cur);
 
   // Read source file and write copy
@@ -841,11 +844,13 @@ on_rename_vault_ok(GtkButton *btn, gpointer user_data)
   }
 
   char newpath[1024], oldpath[1024];
+  char *np = config_vault_file_new(text);
+  char *op = config_vault_file_new(cur);
 
-  snprintf(newpath, sizeof(newpath), "%s/TQVaultData/%s.vault.json",
-           global_config.save_folder, text);
-  snprintf(oldpath, sizeof(oldpath), "%s/TQVaultData/%s.vault.json",
-           global_config.save_folder, cur);
+  snprintf(newpath, sizeof(newpath), "%s", np ? np : "");
+  snprintf(oldpath, sizeof(oldpath), "%s", op ? op : "");
+  g_free(np);
+  g_free(op);
   g_free(cur);
 
   if(g_file_test(newpath, G_FILE_TEST_EXISTS))
@@ -966,9 +971,10 @@ on_delete_vault_yes(GtkButton *btn, gpointer user_data)
   save_vault_if_dirty(dvw->widgets);
 
   char filepath[1024];
+  char *vp = config_vault_file_new(dvw->vault_name);
 
-  snprintf(filepath, sizeof(filepath), "%s/TQVaultData/%s.vault.json",
-           global_config.save_folder, dvw->vault_name);
+  snprintf(filepath, sizeof(filepath), "%s", vp ? vp : "");
+  g_free(vp);
 
   if(g_unlink(filepath) != 0)
     fprintf(stderr, "Failed to delete vault: %s\n", filepath);

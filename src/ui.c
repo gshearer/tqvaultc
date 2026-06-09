@@ -1303,7 +1303,26 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   widgets->main_hbox = main_hbox;
   gtk_widget_set_hexpand(main_hbox, TRUE);
   gtk_widget_set_vexpand(main_hbox, TRUE);
-  gtk_overlay_set_child(GTK_OVERLAY(overlay), main_hbox);
+
+  // Wrap the whole content in a scrolled window: it fills the window normally
+  // (the cell scales to fit), but once the cell would drop below MIN_CELL the
+  // grids hold their minimum size and scrollbars appear instead of shrinking
+  // into unusable squares -- so tiny windows and handhelds stay usable.
+  GtkWidget *content_scroll = gtk_scrolled_window_new();
+
+  // Vertical only: the cell's width term always fits the window (the header bar
+  // keeps the window wider than the grids ever need), so a horizontal bar would
+  // never engage -- NEVER avoids a dead scrollbar and width fighting.
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(content_scroll),
+                                 GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  // Non-overlay so the outer bar takes its own gutter at the window edge instead
+  // of floating over (and stealing events from) the stash notebook's own
+  // scrollbar, which sits just inside it.
+  gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(content_scroll), FALSE);
+  gtk_widget_set_hexpand(content_scroll, TRUE);
+  gtk_widget_set_vexpand(content_scroll, TRUE);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(content_scroll), main_hbox);
+  gtk_overlay_set_child(GTK_OVERLAY(overlay), content_scroll);
 
   // Transparent overlay drawing area: renders held item between panes
   widgets->held_overlay = gtk_drawing_area_new();
@@ -1410,6 +1429,12 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   widgets->vault_drawing_area = gtk_drawing_area_new();
   gtk_widget_set_hexpand(widgets->vault_drawing_area, TRUE);
   gtk_widget_set_vexpand(widgets->vault_drawing_area, TRUE);
+  // Minimum size = grid at MIN_CELL. vexpand grows it past this when there's
+  // room; when there isn't, the main scrolled window scrolls instead.
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->vault_drawing_area),
+                                     VAULT_COLS * MIN_CELL);
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->vault_drawing_area),
+                                      VAULT_ROWS * MIN_CELL);
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widgets->vault_drawing_area), vault_draw_cb, widgets, NULL);
   g_signal_connect(widgets->vault_drawing_area, "resize", G_CALLBACK(on_vault_resize), widgets);
 
@@ -1530,7 +1555,9 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_widget_set_hexpand(widgets->inv_drawing_area, TRUE);
   gtk_widget_set_vexpand(widgets->inv_drawing_area, TRUE);
   gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->inv_drawing_area),
-                                     CHAR_INV_COLS * 34);
+                                     CHAR_INV_COLS * MIN_CELL);
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->inv_drawing_area),
+                                      CHAR_INV_ROWS * MIN_CELL);
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widgets->inv_drawing_area),
                                  inv_draw_cb, widgets, NULL);
 
@@ -1552,7 +1579,9 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_widget_set_hexpand(widgets->bag_drawing_area, TRUE);
   gtk_widget_set_vexpand(widgets->bag_drawing_area, TRUE);
   gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->bag_drawing_area),
-                                     CHAR_BAG_COLS * 26);
+                                     CHAR_BAG_COLS * MIN_CELL);
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->bag_drawing_area),
+                                      CHAR_BAG_ROWS * MIN_CELL);
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widgets->bag_drawing_area),
                                  bag_draw_cb, widgets, NULL);
 
@@ -1675,10 +1704,13 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   widgets->equip_drawing_area = gtk_drawing_area_new();
   gtk_widget_set_hexpand(widgets->equip_drawing_area, FALSE);
   gtk_widget_set_vexpand(widgets->equip_drawing_area, FALSE);
+  // Initial minimum (MIN_CELL-based); on_vault_resize() rescales this to the
+  // live cell size so the equipment never over-reserves and starves the
+  // inventory, and shrinks with everything else on small windows.
   gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->equip_drawing_area),
-                                     6 * 50 + 2 * (int)EQUIP_COL_GAP);
+                                     6 * MIN_CELL + 2 * (int)EQUIP_COL_GAP);
   gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->equip_drawing_area),
-                                      12 * 50 +
+                                      12 * MIN_CELL +
                                       3 * (int)EQUIP_LABEL_H +
                                       2 * (int)EQUIP_SLOT_GAP);
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widgets->equip_drawing_area),
@@ -1801,4 +1833,9 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   g_signal_connect(window, "close-request", G_CALLBACK(on_close_request), widgets);
 
   gtk_window_present(GTK_WINDOW(window));
+
+  // If the vault folder is missing, ask the user whether to create one or
+  // point us at their existing vault data instead of silently showing nothing.
+  if(global_config.save_folder)
+    ensure_vault_folder(widgets);
 }
