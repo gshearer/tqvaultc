@@ -25,6 +25,10 @@ void asset_manager_init(const char *game_path);
 // returns: cached ARZ file, or NULL if not an ARZ file
 TQArzFile *asset_get_arz(uint16_t file_id);
 
+// asset_get_database_arz - get the cached handle for Database/database.arz
+// returns: cached database ARZ file, or NULL if not present in the index
+TQArzFile *asset_get_database_arz(void);
+
 // asset_get_arc - get a cached TQArcFile for a given file_id
 // file_id: index into the file table
 // returns: cached ARC file, or NULL if not an ARC file

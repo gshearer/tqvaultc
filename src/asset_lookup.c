@@ -620,6 +620,25 @@ asset_get_arz(uint16_t file_id)
   return(g_arz_cache[file_id]);
 }
 
+// asset_get_database_arz - return the cached handle for the main game database
+// (Database/database.arz).  Every .arz is pre-loaded at init, so callers that
+// only need to enumerate database records should reuse this rather than load a
+// second copy.  Returns NULL if the database isn't in the index.
+TQArzFile *
+asset_get_database_arz(void)
+{
+  for(int i = 0; i < g_num_files; i++)
+  {
+    const char *p = g_game_files[i];
+    const char *sep = strrchr(p, '\\');
+    const char *base = sep ? sep + 1 : p;
+
+    if(strcasecmp(base, "database.arz") == 0)
+      return(asset_get_arz((uint16_t)i));
+  }
+  return(NULL);
+}
+
 // asset_get_arc - get a cached TQArcFile for a given file_id
 // file_id: index into the file table
 // returns: cached ARC file handle, or NULL on failure

@@ -219,7 +219,8 @@ db_browse_item_init(DbBrowseItem *self)
 typedef struct {
   AppWidgets *widgets;
   GtkWidget *dialog;
-  TQArzFile *arz;  // owned; used only to enumerate record paths
+  TQArzFile *arz;  // used only to enumerate record paths
+  bool owns_arz;   // true only if we arz_load'd our own copy (fallback path)
 
   GListStore *cat_stores[CAT_COUNT];  // GListStore<DbBrowseItem> per category
   int cat_counts[CAT_COUNT];
@@ -258,7 +259,9 @@ db_browser_state_free(gpointer data)
   if(st->quests)
     db_quest_index_free(st->quests);
 
-  if(st->arz)
+  // Only free the database handle if we loaded our own copy; normally we reuse
+  // the shared handle owned by the asset cache.
+  if(st->arz && st->owns_arz)
     arz_free(st->arz);
 
   g_free(st);
@@ -2764,6 +2767,157 @@ build_sidebar(DbBrowserState *st)
 
 // -- Show the database browser ----------------------------------------------
 
+// The browser's data load (database parse + six category indexes) takes a
+// noticeable moment on slower machines.  Rather than freeze the UI, we pop up
+// a small modal progress dialog and drive the load one phase at a time from the
+// main loop's idle handler, repainting the bar between phases.  Everything
+// stays on the main thread, so there are no threading hazards around the
+// GListStores, the GObject items, or the global intern/asset caches.
+
+// Phase 0: get the database handle.  The app pre-loads every .arz at startup,
+// so we reuse the shared cached handle rather than parse a second in-memory
+// copy of the string + record tables (which would also re-pound the global
+// intern table).  Falls back to loading our own copy only if the cache somehow
+// doesn't have it.  Wrapped (rather than inlined in the phase table) to match
+// the void(DbBrowserState*) shape the index builders already have.
+static void
+db_load_arz(DbBrowserState *st)
+{
+  st->arz = asset_get_database_arz();
+  st->owns_arz = false;
+
+  if(!st->arz)
+  {
+    char arz_path[1024];
+
+    snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
+             global_config.game_folder);
+    st->arz = arz_load(arz_path);
+    st->owns_arz = true;
+  }
+}
+
+// The ordered load phases: a label shown while each runs, and the worker that
+// does it.  The build_* functions match the signature directly.
+static const struct
+{
+  const char *label;
+  void      (*fn)(DbBrowserState *st);
+}
+DB_LOAD_PHASES[] =
+{
+  { "Loading game database...",  db_load_arz },
+  { "Indexing equipment...",     build_category_index },
+  { "Indexing item sets...",     build_set_index },
+  { "Indexing affixes...",       build_affix_index },
+  { "Indexing skills...",        build_skill_index },
+  { "Indexing creatures...",     build_creature_index_grid },
+  { "Indexing quest rewards...", build_quest_index_grid },
+};
+
+#define DB_LOAD_NPHASES ((int)G_N_ELEMENTS(DB_LOAD_PHASES))
+
+// Transient loader state, alive only for the duration of the load.
+typedef struct
+{
+  DbBrowserState *st;
+  GtkWidget      *win;       // progress dialog
+  GtkWidget      *bar;       // GtkProgressBar
+  GtkWidget      *status;    // status label
+  int             phase;     // next phase to run
+  gboolean        announced; // current phase's label has been shown
+} DbLoader;
+
+static void db_browser_build_ui(DbBrowserState *st);
+
+// Run one slice of the load per idle invocation.  Each phase is handled in two
+// passes: first we show its label and yield (so the dialog repaints the bar and
+// label), then we do the blocking work.  This keeps the user informed about
+// which step is in progress even while that step holds the main loop.
+static gboolean
+db_browser_load_step(gpointer data)
+{
+  DbLoader *ld = data;
+  DbBrowserState *st = ld->st;
+
+  // All phases done: drop the modal progress dialog, then build and present
+  // the real browser window.
+  if(ld->phase >= DB_LOAD_NPHASES)
+  {
+    gtk_window_destroy(GTK_WINDOW(ld->win));
+    db_browser_build_ui(st);
+    g_free(ld);
+    return(G_SOURCE_REMOVE);
+  }
+
+  // First pass for this phase: announce it, then yield so the bar repaints
+  // before the (blocking) work below runs.
+  if(!ld->announced)
+  {
+    gtk_label_set_text(GTK_LABEL(ld->status), DB_LOAD_PHASES[ld->phase].label);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ld->bar),
+                                   (double)ld->phase / DB_LOAD_NPHASES);
+    ld->announced = TRUE;
+    return(G_SOURCE_CONTINUE);
+  }
+
+  // Second pass: do the work for this phase.
+  DB_LOAD_PHASES[ld->phase].fn(st);
+
+  // Phase 0 loads the database; if that failed there is nothing to show.
+  if(!st->arz)
+  {
+    gtk_window_destroy(GTK_WINDOW(ld->win));
+    db_browser_state_free(st);
+    g_free(ld);
+    return(G_SOURCE_REMOVE);
+  }
+
+  ld->phase++;
+  ld->announced = FALSE;
+  gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(ld->bar),
+                                 (double)ld->phase / DB_LOAD_NPHASES);
+  return(G_SOURCE_CONTINUE);
+}
+
+// Build and present the small modal "loading" dialog.
+static void
+db_browser_show_progress(DbLoader *ld, AppWidgets *widgets)
+{
+  ld->win = gtk_window_new();
+  gtk_window_set_title(GTK_WINDOW(ld->win), "Database Browser");
+  gtk_window_set_default_size(GTK_WINDOW(ld->win), 380, -1);
+  gtk_window_set_resizable(GTK_WINDOW(ld->win), FALSE);
+  gtk_window_set_transient_for(GTK_WINDOW(ld->win),
+                                GTK_WINDOW(widgets->main_window));
+  gtk_window_set_modal(GTK_WINDOW(ld->win), TRUE);
+  gtk_window_set_deletable(GTK_WINDOW(ld->win), FALSE);
+
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+
+  gtk_widget_set_margin_start(box, 18);
+  gtk_widget_set_margin_end(box, 18);
+  gtk_widget_set_margin_top(box, 16);
+  gtk_widget_set_margin_bottom(box, 16);
+
+  GtkWidget *title = gtk_label_new(NULL);
+
+  gtk_label_set_markup(GTK_LABEL(title), "<b>Loading Database...</b>");
+  gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+  gtk_box_append(GTK_BOX(box), title);
+
+  ld->status = gtk_label_new("Preparing...");
+  gtk_label_set_xalign(GTK_LABEL(ld->status), 0.0f);
+  gtk_widget_add_css_class(ld->status, "dim-label");
+  gtk_box_append(GTK_BOX(box), ld->status);
+
+  ld->bar = gtk_progress_bar_new();
+  gtk_box_append(GTK_BOX(box), ld->bar);
+
+  gtk_window_set_child(GTK_WINDOW(ld->win), box);
+  gtk_window_present(GTK_WINDOW(ld->win));
+}
+
 void
 show_db_browser_dialog(AppWidgets *widgets)
 {
@@ -2776,27 +2930,24 @@ show_db_browser_dialog(AppWidgets *widgets)
   st->dlg_cursor_x = -10000.0;
   st->dlg_cursor_y = -10000.0;
 
-  char arz_path[1024];
-
-  snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
-           global_config.game_folder);
-  st->arz = arz_load(arz_path);
-
-  if(!st->arz)
-  {
-    g_free(st);
-    return;
-  }
-
+  // Cheap to create; populated by the indexing phases below.
   for(int i = 0; i < CAT_COUNT; i++)
     st->cat_stores[i] = g_list_store_new(DB_TYPE_BROWSE_ITEM);
 
-  build_category_index(st);
-  build_set_index(st);
-  build_affix_index(st);
-  build_skill_index(st);
-  build_creature_index_grid(st);  // Phase 6: boss/hero loot ("dropped by")
-  build_quest_index_grid(st);     // Phase 6: quest item rewards
+  // Show the progress dialog immediately, then load in phases from the idle
+  // loop so the UI never appears frozen while the database is indexed.
+  DbLoader *ld = g_new0(DbLoader, 1);
+
+  ld->st = st;
+  db_browser_show_progress(ld, widgets);
+  g_idle_add(db_browser_load_step, ld);
+}
+
+// Build the full browser window once all data is indexed.
+static void
+db_browser_build_ui(DbBrowserState *st)
+{
+  AppWidgets *widgets = st->widgets;
 
   // -- Window + held-item overlay --
   st->dialog = gtk_window_new();
