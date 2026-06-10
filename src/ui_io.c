@@ -708,13 +708,27 @@ on_save_char_clicked(GtkButton *btn, gpointer user_data)
   save_character_if_dirty(widgets);
 }
 
-// Callback: Database button clicked.
-//   btn       - the button (unused)
-//   user_data - AppWidgets*
+// Action: open the curated tq-db-style Database Browser.
+//   action, parameter - unused
+//   user_data         - AppWidgets*
 void
-on_database_btn_clicked(GtkButton *btn, gpointer user_data)
+on_db_browser_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
 {
-  (void)btn;
+  (void)action;
+  (void)parameter;
+  AppWidgets *widgets = (AppWidgets *)user_data;
+
+  show_db_browser_dialog(widgets);
+}
+
+// Action: open the raw Database Explorer (path tree + variable inspector).
+//   action, parameter - unused
+//   user_data         - AppWidgets*
+void
+on_db_explorer_action(GSimpleAction *action, GVariant *parameter, gpointer user_data)
+{
+  (void)action;
+  (void)parameter;
   AppWidgets *widgets = (AppWidgets *)user_data;
 
   show_database_dialog(widgets);

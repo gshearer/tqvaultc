@@ -822,8 +822,11 @@ set_bag_btn_image(GtkWidget *btn, GdkPixbuf *pixbuf);
 // Callback: Save Character button clicked.
 void on_save_char_clicked(GtkButton *btn, gpointer user_data);
 
-// Callback: Database button clicked.
-void on_database_btn_clicked(GtkButton *btn, gpointer user_data);
+// Action: open the curated tq-db-style Database Browser.
+void on_db_browser_action(GSimpleAction *action, GVariant *parameter, gpointer user_data);
+
+// Action: open the raw Database Explorer (path tree + variable inspector).
+void on_db_explorer_action(GSimpleAction *action, GVariant *parameter, gpointer user_data);
 
 // Callback: Checklist button clicked.
 void on_checklist_btn_clicked(GtkButton *btn, gpointer user_data);
@@ -924,10 +927,15 @@ skills_debug_print_gear_bonuses(TQCharacter *chr);
 
 // ── Entry points in ui_database_dialog.c ──────────────────────────────────
 
-// Show the database browser dialog.
+// Show the raw database explorer dialog (path tree + variable inspector).
 // widgets: the application widget state.
 void
 show_database_dialog(AppWidgets *widgets);
+
+// Show the curated tq-db-style database browser dialog.
+// widgets: the application widget state.
+void
+show_db_browser_dialog(AppWidgets *widgets);
 
 // ── Entry points in ui_checklist_dialog.c ─────────────────────────────────
 

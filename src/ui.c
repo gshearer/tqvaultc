@@ -1211,9 +1211,28 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   g_signal_connect(about_btn, "clicked", G_CALLBACK(on_about_btn_clicked), widgets);
   gtk_header_bar_pack_start(GTK_HEADER_BAR(header), about_btn);
 
-  GtkWidget *database_btn = gtk_button_new_with_label("Database");
+  // ── Database dropdown (curated Browser + raw Explorer) ──
+  GSimpleAction *db_browser_action = g_simple_action_new("db-browser", NULL);
 
-  g_signal_connect(database_btn, "clicked", G_CALLBACK(on_database_btn_clicked), widgets);
+  g_signal_connect(db_browser_action, "activate", G_CALLBACK(on_db_browser_action), widgets);
+  g_action_map_add_action(G_ACTION_MAP(window), G_ACTION(db_browser_action));
+
+  GSimpleAction *db_explorer_action = g_simple_action_new("db-explorer", NULL);
+
+  g_signal_connect(db_explorer_action, "activate", G_CALLBACK(on_db_explorer_action), widgets);
+  g_action_map_add_action(G_ACTION_MAP(window), G_ACTION(db_explorer_action));
+
+  GMenu *database_menu = g_menu_new();
+
+  g_menu_append(database_menu, "Database Browser", "win.db-browser");
+  g_menu_append(database_menu, "Database Explorer (raw)", "win.db-explorer");
+
+  GtkWidget *database_btn = gtk_menu_button_new();
+
+  gtk_menu_button_set_label(GTK_MENU_BUTTON(database_btn), "Database");
+  gtk_menu_button_set_menu_model(GTK_MENU_BUTTON(database_btn),
+                                  G_MENU_MODEL(database_menu));
+  g_object_unref(database_menu);
   gtk_header_bar_pack_start(GTK_HEADER_BAR(header), database_btn);
 
   // ── Manage Vaults dropdown ──

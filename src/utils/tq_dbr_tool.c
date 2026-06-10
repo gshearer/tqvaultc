@@ -61,6 +61,10 @@ usage(const char *prog)
     "  archex  <arc> <file_pattern>         Extract and hex-dump a file from an arc archive\n"
     "  bonus   <arz> <item_path>            Follow bonus table chain for relic/charm/artifact\n"
     "  coverage <arz> [path_substr]         Sorted list of all vars with non-zero values\n"
+    "  categories <arz>                     Count items per Database Browser category\n"
+    "  sets <arz>                           List item sets, members and bonus tiers\n"
+    "  affixes <arz>                        List prefixes/suffixes, their gear and stats\n"
+    "  skills <arz>                         List masteries and their skills (max level, tier)\n"
     "\n"
     "Examples:\n"
     "  %s dump testdata/database.arz records/xpack4/item/relics/x4_relic05.dbr\n"
@@ -70,8 +74,13 @@ usage(const char *prog)
     "  %s arctxt /path/to/Text_EN.arc x4tagU_Relic\n"
     "  %s arcls /path/to/Text_EN.arc\n"
     "  %s archex testdata/gamefiles/Resources/Items.arc items/equipmenthead\n"
-    "  %s bonus testdata/database.arz records/xpack4/item/relics/x4_relic05.dbr\n",
-    prog, prog, prog, prog, prog, prog, prog, prog, prog);
+    "  %s bonus testdata/database.arz records/xpack4/item/relics/x4_relic05.dbr\n"
+    "  %s categories testdata/gamefiles/Database/database.arz\n"
+    "  %s sets testdata/gamefiles/Database/database.arz\n"
+    "  %s affixes testdata/gamefiles/Database/database.arz\n"
+    "  %s skills testdata/gamefiles/Database/database.arz\n",
+    prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog, prog,
+    prog);
 }
 
 // Prints a single TQVariable's name and all its values to stdout.
@@ -881,26 +890,62 @@ cmd_bonus(const char *arz_path, const char *item_path)
     return(1);
   }
 
-  // Parse randomizerName[N] / randomizerWeight[N] pairs
-  for(int n = 1; n <= 50; n++)
+  // Collect randomizerName[N] / randomizerWeight[N] pairs.  Indices are
+  // SPARSE (e.g. randomizerName10, 13, 16, ...), so scan every variable and
+  // bucket by the trailing number instead of assuming a contiguous 1..N range.
+#define MAX_BONUS_IDX 256
+  const char *bp_path[MAX_BONUS_IDX] = { 0 };
+  float bp_weight[MAX_BONUS_IDX] = { 0 };
+  float total_weight = 0;
+
+  for(uint32_t v = 0; v < table->num_vars; v++)
   {
-    char name_key[64], weight_key[64];
+    TQVariable *var = &table->vars[v];
 
-    snprintf(name_key, sizeof(name_key), "randomizerName%d", n);
-    snprintf(weight_key, sizeof(weight_key), "randomizerWeight%d", n);
+    if(!var->name)
+      continue;
 
-    char *bonus_path = arz_record_get_string(table, name_key, NULL);
-
-    if(!bonus_path || !bonus_path[0])
+    if(strncasecmp(var->name, "randomizerName", 14) == 0 &&
+       var->type == TQ_VAR_STRING && var->count > 0 && var->value.str &&
+       var->value.str[0] && var->value.str[0][0])
     {
-      free(bonus_path);
-      break;
+      int idx = atoi(var->name + 14);
+
+      if(idx >= 0 && idx < MAX_BONUS_IDX)
+        bp_path[idx] = var->value.str[0];
     }
+    else if(strncasecmp(var->name, "randomizerWeight", 16) == 0)
+    {
+      int idx = atoi(var->name + 16);
+      float w = 0;
 
-    // Get weight
-    int weight = arz_record_get_int(table, weight_key, 0, NULL);
+      if(var->type == TQ_VAR_INT && var->count > 0 && var->value.i32)
+        w = (float)var->value.i32[0];
+      else if(var->type == TQ_VAR_FLOAT && var->count > 0 && var->value.f32)
+        w = var->value.f32[0];
 
-    printf("Bonus %d (weight %d): %s\n", n, weight, bonus_path);
+      if(idx >= 0 && idx < MAX_BONUS_IDX)
+        bp_weight[idx] = w;
+    }
+  }
+
+  for(int i = 0; i < MAX_BONUS_IDX; i++)
+    if(bp_path[i] && bp_weight[i] > 0)
+      total_weight += bp_weight[i];
+
+  int n_bonuses = 0;
+
+  for(int i = 0; i < MAX_BONUS_IDX; i++)
+  {
+    const char *bonus_path = bp_path[i];
+
+    if(!bonus_path || bp_weight[i] <= 0)
+      continue;
+
+    float pct = total_weight > 0 ? bp_weight[i] / total_weight * 100.0f : 0;
+
+    n_bonuses++;
+    printf("Bonus %d (weight %.0f, %.2f%%): %s\n", i, bp_weight[i], pct, bonus_path);
 
     // Load the bonus record and show its name fields + non-zero stats
     TQArzRecordData *bonus = arz_read_record(arz, bonus_path);
@@ -965,12 +1010,1256 @@ cmd_bonus(const char *arz_path, const char *item_path)
     }
 
     printf("\n");
-    free(bonus_path);
   }
+
+  printf("%d completion bonuses, total weight %.0f.\n\n", n_bonuses, total_weight);
 
   arz_record_data_free(table);
   free(table_path);
   arz_record_data_free(item_data);
+  arz_free(arz);
+  return(0);
+}
+
+// --- categories: report the Database Browser's category buckets -----------
+//
+// Mirrors db_categorize() in src/ui_db_browser.c so the in-app browser's
+// categorization can be validated headlessly (the GUI is never run here).
+// Kept self-contained: this tool links only arz.c/arc.c (no GTK/item_stats),
+// so the Class->category mapping is duplicated rather than shared.
+
+// Leaf categories in display order; CAT_GROUP/CAT_LEAF index together.
+static const char *CAT_GROUP[] = {
+  "Weapons", "Weapons", "Weapons", "Weapons", "Weapons", "Weapons", "Weapons",
+  "Armor", "Armor", "Armor", "Armor", "Armor",
+  "Jewelry", "Jewelry",
+  "Relics", "Charms", "Artifacts", "Scrolls",
+};
+static const char *CAT_LEAF[] = {
+  "Sword", "Axe", "Mace", "Spear", "Bow", "Staff", "Throwing",
+  "Head", "Torso", "Arm", "Leg", "Shield",
+  "Ring", "Amulet",
+  "Relics", "Charms", "Artifacts", "Scrolls",
+};
+#define NCAT 18
+
+// Equipment Class -> leaf-category index (matches item_gear_type's class_map).
+static const struct { const char *cls; int cat; } GEAR_CAT[] = {
+  { "WeaponMelee_Sword", 0 },   { "WeaponMelee_Axe", 1 },
+  { "WeaponMelee_Mace", 2 },    { "WeaponHunting_Spear", 3 },
+  { "WeaponHunting_Bow", 4 },   { "WeaponMagical_Staff", 5 },
+  { "WeaponHunting_RangedOneHand", 6 },
+  { "ArmorProtective_Head", 7 },     { "ArmorProtective_UpperBody", 8 },
+  { "ArmorProtective_Forearm", 9 },  { "ArmorProtective_LowerBody", 10 },
+  { "WeaponArmor_Shield", 11 },
+  { "ArmorJewelry_Ring", 12 },       { "ArmorJewelry_Amulet", 13 },
+};
+
+// Decide a record's browse category from its Class/itemClassification, or -1.
+// lower_path: the record path, already lowercased (backslash separators).
+static int
+categorize(const char *cls, const char *classif, const char *lower_path)
+{
+  if(!cls)
+    return(-1);
+
+  if(strstr(lower_path, "\\old\\") || strstr(lower_path, "\\default\\"))
+    return(-1);
+
+  for(size_t i = 0; i < sizeof(GEAR_CAT) / sizeof(GEAR_CAT[0]); i++)
+    if(strcasecmp(cls, GEAR_CAT[i].cls) == 0)
+    {
+      // Gear is only included when it carries a real rarity.
+      if(!classif)
+        return(-1);
+      if(strcasecmp(classif, "Magical")   == 0 ||
+         strcasecmp(classif, "Rare")      == 0 ||
+         strcasecmp(classif, "Epic")      == 0 ||
+         strcasecmp(classif, "Legendary") == 0)
+        return(GEAR_CAT[i].cat);
+      return(-1);
+    }
+
+  if(strcasecmp(cls, "ItemRelic") == 0)
+    return(14);
+  if(strcasecmp(cls, "ItemCharm") == 0)
+    return(15);
+  if(strcasecmp(cls, "ItemArtifact") == 0)
+    return(16);
+  if(strcasecmp(cls, "OneShot_Scroll") == 0)
+    return(17);
+
+  return(-1);
+}
+
+static int
+cmd_categories(const char *arz_path)
+{
+  TQArzFile *arz = arz_load(arz_path);
+
+  if(!arz)
+  {
+    fprintf(stderr, "Failed to load ARZ: %s\n", arz_path);
+    return(1);
+  }
+
+  int counts[NCAT] = { 0 };
+  uint32_t scanned = 0;
+  long total = 0;
+
+  for(uint32_t i = 0; i < arz->num_records; i++)
+  {
+    if(!arz->records[i].path)
+      continue;
+
+    TQArzRecordData *data = arz_read_record(arz, arz->records[i].path);
+
+    if(!data)
+      continue;
+
+    scanned++;
+
+    char *cls = arz_record_get_string(data, "Class", NULL);
+    char *classif = arz_record_get_string(data, "itemClassification", NULL);
+    char *lower_path = g_ascii_strdown(arz->records[i].path, -1);
+
+    int cat = categorize(cls, classif, lower_path);
+
+    if(cat >= 0)
+    {
+      counts[cat]++;
+      total++;
+    }
+
+    g_free(lower_path);
+    free(cls);
+    free(classif);
+    arz_record_data_free(data);
+  }
+
+  printf("Database Browser categories — %s\n\n", arz_path);
+
+  const char *cur_group = NULL;
+
+  for(int c = 0; c < NCAT; c++)
+  {
+    if(!cur_group || strcmp(cur_group, CAT_GROUP[c]) != 0)
+    {
+      cur_group = CAT_GROUP[c];
+      printf("%s\n", cur_group);
+    }
+    printf("  %-12s %6d\n", CAT_LEAF[c], counts[c]);
+  }
+
+  printf("\nTOTAL items: %ld   (scanned %u records)\n", total, scanned);
+
+  arz_free(arz);
+  return(0);
+}
+
+// --- sets: report the Database Browser's item-set buckets -----------------
+//
+// Mirrors the Sets view of src/ui_db_browser.c so the set enumeration,
+// member validation and bonus tiering can be validated headlessly.  Kept
+// self-contained: this tool links only arz.c/arc.c (no GTK/item_stats), so the
+// set-path glob and tiering are duplicated rather than shared.
+//
+// Set discovery follows tqdb's resources.py SETS globs:
+//   records\item\sets\*.dbr                (base game)
+//   records\xpack*\item*\set*\*.dbr        (the four expansions)
+// which naturally excludes dev/sandbox set trees.
+
+// Compare a path segment (start of a '\'-delimited component) to a literal.
+static bool
+seg_eq(const char *seg, const char *lit)
+{
+  size_t len = strlen(lit);
+
+  return(strncmp(seg, lit, len) == 0 && (seg[len] == '\\' || seg[len] == '\0'));
+}
+
+// True if a path segment starts with the given prefix (glob `prefix*`).
+static bool
+seg_prefix(const char *seg, const char *pfx)
+{
+  return(strncmp(seg, pfx, strlen(pfx)) == 0);
+}
+
+// Decide whether a lowercased, backslash-separated record path is an item set,
+// matching the two SETS globs above (exact directory depth enforced).
+static bool
+is_set_path(const char *lp)
+{
+  size_t n = strlen(lp);
+
+  if(n < 5 || strcmp(lp + n - 4, ".dbr") != 0)
+    return(false);
+
+  // Walk the first four segments: records \ s1 \ s2 \ s3...
+  const char *p0 = lp;
+  const char *p1 = strchr(p0, '\\');
+
+  if(!seg_eq(p0, "records") || !p1)
+    return(false);
+  p1++;
+
+  const char *p2 = strchr(p1, '\\');
+
+  if(!p2)
+    return(false);
+  p2++;
+
+  const char *p3 = strchr(p2, '\\');
+
+  if(!p3)
+    return(false);
+  p3++;
+
+  const char *p3end = strchr(p3, '\\');
+
+  if(!p3end)
+    // Exactly four segments -> glob1: records\item\sets\<file>.dbr
+    return(seg_eq(p1, "item") && seg_eq(p2, "sets"));
+
+  // Five+ segments: the file must sit directly under the set* directory.
+  const char *p4 = p3end + 1;
+
+  if(strchr(p4, '\\'))
+    return(false);  // six or more segments -> not a SETS glob
+
+  // glob2: records\xpack*\item*\set*\<file>.dbr
+  return(seg_prefix(p1, "xpack") && seg_prefix(p2, "item") && seg_prefix(p3, "set"));
+}
+
+// True if a set member path resolves to a real, named item (matches tqdb's
+// ItemEquipmentParser rule: a member must carry an itemNameTag).  Bare
+// directory entries and "#" placeholders fail.
+static bool
+set_member_is_valid(TQArzFile *arz, const char *mpath)
+{
+  if(!mpath || !mpath[0] || strcmp(mpath, "#") == 0)
+    return(false);
+
+  size_t n = strlen(mpath);
+
+  if(n < 4 || strcasecmp(mpath + n - 4, ".dbr") != 0)
+    return(false);
+
+  TQArzRecordData *md = arz_read_record(arz, mpath);
+
+  if(!md)
+    return(false);
+
+  char *tag = arz_record_get_string(md, "itemNameTag", NULL);
+  bool ok = tag && tag[0];
+
+  free(tag);
+  arz_record_data_free(md);
+  return(ok);
+}
+
+// True for the int routing flags that aren't real stats (offensive*Global,
+// *XOR), so they don't count as a bonus when scanning tiers.
+static bool
+is_routing_flag(const char *name)
+{
+  size_t n = strlen(name);
+
+  return((n >= 6 && strcasecmp(name + n - 6, "Global") == 0) ||
+         (n >= 3 && strcasecmp(name + n - 3, "XOR") == 0));
+}
+
+static int
+cmd_sets(const char *arz_path)
+{
+  TQArzFile *arz = arz_load(arz_path);
+
+  if(!arz)
+  {
+    fprintf(stderr, "Failed to load ARZ: %s\n", arz_path);
+    return(1);
+  }
+
+  printf("Database Browser sets — %s\n\n", arz_path);
+
+  long candidates = 0, valid_sets = 0;
+
+  for(uint32_t i = 0; i < arz->num_records; i++)
+  {
+    if(!arz->records[i].path)
+      continue;
+
+    char *lp = g_ascii_strdown(arz->records[i].path, -1);
+    bool match = is_set_path(lp);
+
+    g_free(lp);
+
+    if(!match)
+      continue;
+
+    candidates++;
+
+    TQArzRecordData *data = arz_read_record(arz, arz->records[i].path);
+
+    if(!data)
+      continue;
+
+    char *set_name = arz_record_get_string(data, "setName", NULL);
+
+    if(!set_name || !set_name[0])
+    {
+      free(set_name);
+      arz_record_data_free(data);
+      continue;  // no setName tag -> not a real, named set
+    }
+
+    // Collect valid members.
+    TQVariable *members = arz_record_get_var(data, arz_intern("setMembers"));
+    int member_count = 0;
+    const char *member_paths[64];
+
+    if(members && members->type == TQ_VAR_STRING)
+      for(uint32_t m = 0; m < members->count; m++)
+      {
+        const char *mp = members->value.str[m];
+
+        if(set_member_is_valid(arz, mp) && member_count < 64)
+          member_paths[member_count++] = mp;
+      }
+
+    if(member_count == 0)
+    {
+      free(set_name);
+      arz_record_data_free(data);
+      continue;  // template / placeholder set with no real members
+    }
+
+    // Tier depth = longest numeric stat array (excludes routing flags). The
+    // array is indexed by (set items - 1), so index P-1 holds the bonus for
+    // wearing P pieces.  When the set carries only scalar (single-value)
+    // bonuses they apply to the full set, so the piece count comes from the
+    // member count instead (mirrors ItemSetParser placing scalars on the
+    // top tier).
+    int tier_depth = 0;
+
+    for(uint32_t v = 0; v < data->num_vars; v++)
+    {
+      TQVariable *var = &data->vars[v];
+
+      if((var->type == TQ_VAR_INT || var->type == TQ_VAR_FLOAT) &&
+         !is_routing_flag(var->name) && (int)var->count > tier_depth)
+        tier_depth = (int)var->count;
+    }
+
+    int full_pieces = (tier_depth > 1) ? tier_depth : member_count;
+
+    // For each piece count (>= 2, since one piece never grants a set bonus),
+    // clamp short arrays to their last element (matching the in-game indexing)
+    // and record which set-item counts grant any bonus.
+    int active_pieces[64];
+    int active_count = 0;
+
+    for(int p = 2; p <= full_pieces && p <= 64; p++)
+    {
+      bool has_bonus = false;
+
+      for(uint32_t v = 0; v < data->num_vars && !has_bonus; v++)
+      {
+        TQVariable *var = &data->vars[v];
+
+        if(var->type != TQ_VAR_INT && var->type != TQ_VAR_FLOAT)
+          continue;
+        if(is_routing_flag(var->name) || var->count == 0)
+          continue;
+
+        int idx = (p - 1 < (int)var->count) ? p - 1 : (int)var->count - 1;
+
+        if(var->type == TQ_VAR_FLOAT && var->value.f32 &&
+           fabsf(var->value.f32[idx]) > 0.0001f)
+          has_bonus = true;
+        else if(var->type == TQ_VAR_INT && var->value.i32 &&
+                var->value.i32[idx] != 0)
+          has_bonus = true;
+      }
+
+      if(has_bonus)
+        active_pieces[active_count++] = p;
+    }
+
+    valid_sets++;
+
+    printf("%s   \"%s\"\n", arz->records[i].path, set_name);
+
+    for(int m = 0; m < member_count; m++)
+      printf("    member  %s\n", member_paths[m]);
+
+    printf("    bonus tiers: %d", active_count);
+
+    if(active_count > 0)
+    {
+      printf("   (set items:");
+      for(int a = 0; a < active_count; a++)
+        printf(" %d", active_pieces[a]);
+      printf(")");
+    }
+
+    printf("\n\n");
+
+    free(set_name);
+    arz_record_data_free(data);
+  }
+
+  printf("TOTAL sets: %ld   (from %ld glob-matched candidates, scanned %u records)\n",
+         valid_sets, candidates, arz->num_records);
+
+  arz_free(arz);
+  return(0);
+}
+
+// --- affixes: report the Database Browser's Prefix/Suffix buckets ----------
+//
+// Mirrors build_affix_index() in src/ui_db_browser.c (a headless port of
+// tqdb's parse_affixes, main.py): walk every affix randomizer table, map each
+// `randomizerName*` affix to the equipment type(s) whose tables reference it,
+// classify prefix vs suffix by the affix record's own path, and list them.
+// Kept self-contained: this tool links only arz.c/arc.c (no GTK/item_stats/
+// translation), so the glob, gear-label mapping and stat count are duplicated
+// here, and names use FileDescription rather than the translation tag.
+
+// Map an affix-table filename prefix to a gear label, or NULL if unknown.
+// Mirrors db_affix_gear_label() / tqdb get_affix_table_type().
+static const char *
+affix_gear_label(const char *file_prefix)
+{
+  static const struct { const char *pfx; const char *label; } MAP[] = {
+    { "armmage", "Arm Armor (Caster)" },   { "armsmage", "Arm Armor (Caster)" },
+    { "armmelee", "Arm Armor (Fighter)" }, { "armsmelee", "Arm Armor (Fighter)" },
+    { "headmage", "Head Armor (Caster)" }, { "headmelee", "Head Armor (Fighter)" },
+    { "legmage", "Leg Armor (Caster)" },   { "legsmage", "Leg Armor (Caster)" },
+    { "legmelee", "Leg Armor (Fighter)" }, { "legsmelee", "Leg Armor (Fighter)" },
+    { "torsomage", "Torso Armor (Caster)" }, { "torsomelee", "Torso Armor (Fighter)" },
+    { "amulet", "Amulet" }, { "ring", "Ring" }, { "shield", "Shield" },
+    { "axe", "Axe" }, { "bow", "Bow" }, { "club", "Mace" }, { "spear", "Spear" },
+    { "staff", "Staff" }, { "sword", "Sword" }, { "roh", "Throwing Weapon" },
+  };
+
+  for(size_t i = 0; i < sizeof(MAP) / sizeof(MAP[0]); i++)
+    if(strncmp(file_prefix, MAP[i].pfx, strlen(MAP[i].pfx)) == 0)
+      return(MAP[i].label);
+
+  return(NULL);
+}
+
+// If lp (lowercased, backslash-separated) is an affix randomizer table, return
+// a g_strdup'd equipment-type label (caller frees) and else NULL.  Mirrors
+// db_affix_table_label() in ui_db_browser.c.
+static char *
+affix_table_label(const char *lp)
+{
+  if(strncmp(lp, "records\\", 8) != 0)
+    return(NULL);
+
+  const char *marker = strstr(lp, "\\lootmagicalaffixes\\");
+
+  if(!marker)
+    return(NULL);
+
+  const char *seg_a = marker + strlen("\\lootmagicalaffixes\\");
+  const char *s1 = strchr(seg_a, '\\');
+
+  if(!s1)
+    return(NULL);
+
+  size_t alen = (size_t)(s1 - seg_a);
+
+  if(!(alen == 6 && (strncmp(seg_a, "prefix", 6) == 0 ||
+                     strncmp(seg_a, "suffix", 6) == 0)))
+    return(NULL);
+
+  const char *seg_b = s1 + 1;
+  const char *s2 = strchr(seg_b, '\\');
+
+  if(!s2 || strncmp(seg_b, "tables", 6) != 0)
+    return(NULL);
+
+  const char *file = s2 + 1;
+
+  if(strchr(file, '\\'))
+    return(NULL);
+
+  char token[64];
+  size_t t = 0;
+
+  for(const char *p = file; *p && *p != '_' && *p != '.' && t < sizeof(token) - 1; p++)
+    token[t++] = *p;
+  token[t] = '\0';
+
+  const char *label = affix_gear_label(token);
+
+  if(label)
+    return(g_strdup(label));
+
+  char *cap = g_strdup(token);
+
+  if(cap[0])
+    cap[0] = g_ascii_toupper(cap[0]);
+  return(cap);
+}
+
+// One affix DBR's resolved attributes (read once, cached by normalized path).
+typedef struct {
+  char *tag;      // lootRandomizerName (may be NULL)
+  char *name;     // FileDescription (may be NULL)
+  char *classif;  // itemClassification (may be NULL)
+  int stat_count; // non-zero numeric stats (properties proxy)
+  int kind;       // 0 == prefix, 1 == suffix, -1 == neither
+} PInfo;
+
+static void
+pinfo_free(gpointer d)
+{
+  PInfo *p = d;
+
+  if(!p)
+    return;
+  free(p->tag);
+  free(p->name);
+  free(p->classif);
+  free(p);
+}
+
+// One logical (merged-by-tag) affix.  Mirrors build_affix_index in
+// ui_db_browser.c: same-tag records collapse into one entry, accumulating the
+// gear types of every referencing table and counting the distinct variants.
+typedef struct {
+  char *name;          // FileDescription or tag (representative = first variant)
+  char *classif;       // representative itemClassification
+  int stat_count;      // representative non-zero stat count
+  int kind;            // 0 == prefix, 1 == suffix
+  int variants;        // number of distinct DBR records under this tag
+  GHashTable *types;   // set<char*> of gear labels
+} MAffix;
+
+static void
+maffix_free(gpointer d)
+{
+  MAffix *m = d;
+
+  if(!m)
+    return;
+  free(m->name);
+  free(m->classif);
+  if(m->types)
+    g_hash_table_destroy(m->types);
+  free(m);
+}
+
+// Count a record's non-zero numeric stats, excluding metadata and the int
+// routing flags (offensive*Global / *XOR) — a rough "has properties" proxy.
+static int
+affix_stat_count(TQArzRecordData *dbr)
+{
+  int n = 0;
+
+  for(uint32_t v = 0; v < dbr->num_vars; v++)
+  {
+    TQVariable *var = &dbr->vars[v];
+
+    if(!var->name)
+      continue;
+
+    size_t len = strlen(var->name);
+
+    if((len >= 6 && strcasecmp(var->name + len - 6, "Global") == 0) ||
+       (len >= 3 && strcasecmp(var->name + len - 3, "XOR") == 0))
+      continue;
+    if(strcasecmp(var->name, "levelRequirement") == 0 ||
+       strcasecmp(var->name, "lootRandomizerCost") == 0 ||
+       strcasecmp(var->name, "lootRandomizerJitter") == 0 ||
+       strcasecmp(var->name, "marketAdjustmentPercent") == 0)
+      continue;
+
+    if(var->type == TQ_VAR_FLOAT && var->value.f32)
+    {
+      for(uint32_t j = 0; j < var->count; j++)
+        if(fabsf(var->value.f32[j]) > 0.0001f)
+        {
+          n++;
+          break;
+        }
+    }
+    else if(var->type == TQ_VAR_INT && var->value.i32)
+    {
+      for(uint32_t j = 0; j < var->count; j++)
+        if(var->value.i32[j] != 0)
+        {
+          n++;
+          break;
+        }
+    }
+  }
+
+  return(n);
+}
+
+static int
+affix_name_cmp(const void *a, const void *b)
+{
+  const MAffix *x = *(MAffix * const *)a;
+  const MAffix *y = *(MAffix * const *)b;
+
+  return(g_ascii_strcasecmp(x->name ? x->name : "", y->name ? y->name : ""));
+}
+
+// qsort helper: order char* by strcmp (for sorting gear-label arrays).
+static int
+str_ptr_cmp(const void *a, const void *b)
+{
+  return(strcmp(*(const char * const *)a, *(const char * const *)b));
+}
+
+static int
+cmd_affixes(const char *arz_path)
+{
+  TQArzFile *arz = arz_load(arz_path);
+
+  if(!arz)
+  {
+    fprintf(stderr, "Failed to load ARZ: %s\n", arz_path);
+    return(1);
+  }
+
+  // Resolve each referenced affix DBR once (cached by normalized path).
+  GHashTable *pinfo = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                            g_free, pinfo_free);
+  // "P|<tag>" / "S|<tag>" (tag-less keyed by "<kind>|@<path>") -> MAffix*
+  GHashTable *merged = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                             g_free, maffix_free);
+  long tables = 0, refs = 0;
+
+  for(uint32_t i = 0; i < arz->num_records; i++)
+  {
+    if(!arz->records[i].path)
+      continue;
+
+    char *lp = g_ascii_strdown(arz->records[i].path, -1);
+
+    for(char *p = lp; *p; p++)
+      if(*p == '/')
+        *p = '\\';
+
+    char *label = affix_table_label(lp);
+
+    g_free(lp);
+
+    if(!label)
+      continue;
+
+    tables++;
+
+    TQArzRecordData *table = arz_read_record(arz, arz->records[i].path);
+
+    if(!table)
+    {
+      g_free(label);
+      continue;
+    }
+
+    for(uint32_t v = 0; v < table->num_vars; v++)
+    {
+      TQVariable *var = &table->vars[v];
+
+      if(!var->name ||
+         strncasecmp(var->name, "randomizerName", 14) != 0 ||
+         var->type != TQ_VAR_STRING || var->count == 0 ||
+         !var->value.str || !var->value.str[0] || !var->value.str[0][0])
+        continue;
+
+      const char *affix_path = var->value.str[0];
+      size_t plen = strlen(affix_path);
+
+      // Skip malformed randomizer entries (numeric placeholders); mirrors the
+      // .dbr/existence filter in ui_db_browser.c and tqdb's affix_dbr.exists().
+      if(plen < 4 || strcasecmp(affix_path + plen - 4, ".dbr") != 0)
+        continue;
+
+      // Resolve this affix DBR's attributes once.
+      char *npath = normalize_path(affix_path);
+      PInfo *pi = g_hash_table_lookup(pinfo, npath);
+
+      if(!pi)
+      {
+        pi = g_malloc0(sizeof(*pi));
+        pi->kind = strstr(npath, "\\suffix\\") ? 1
+                 : (strstr(npath, "\\prefix\\") ? 0 : -1);
+
+        TQArzRecordData *dbr = arz_read_record(arz, affix_path);
+
+        if(dbr)
+        {
+          pi->tag = arz_record_get_string(dbr, "lootRandomizerName", NULL);
+          pi->name = arz_record_get_string(dbr, "FileDescription", NULL);
+          pi->classif = arz_record_get_string(dbr, "itemClassification", NULL);
+          pi->stat_count = affix_stat_count(dbr);
+          arz_record_data_free(dbr);
+        }
+
+        g_hash_table_insert(pinfo, npath, pi);  // takes ownership of npath
+      }
+      else
+        g_free(npath);
+
+      if(pi->kind < 0)
+        continue;  // not a standard prefix/suffix record
+
+      refs++;
+
+      // Merge key: translation tag, else the path (so tag-less stay distinct).
+      char *key;
+
+      if(pi->tag && pi->tag[0])
+        key = g_strdup_printf("%c|%s", pi->kind ? 'S' : 'P', pi->tag);
+      else
+      {
+        char *np2 = normalize_path(affix_path);
+
+        key = g_strdup_printf("%c|@%s", pi->kind ? 'S' : 'P', np2);
+        g_free(np2);
+      }
+
+      MAffix *m = g_hash_table_lookup(merged, key);
+
+      if(!m)
+      {
+        m = g_malloc0(sizeof(*m));
+        m->kind = pi->kind;
+        m->stat_count = pi->stat_count;
+        m->name = (pi->name && pi->name[0]) ? strdup(pi->name)
+                : (pi->tag ? strdup(pi->tag) : strdup(affix_path));
+        m->classif = pi->classif ? strdup(pi->classif) : NULL;
+        m->types = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+        m->variants = 1;
+        g_hash_table_insert(merged, key, m);  // takes ownership of key
+      }
+      else
+        g_free(key);
+
+      if(!g_hash_table_contains(m->types, label))
+        g_hash_table_add(m->types, g_strdup(label));
+    }
+
+    arz_record_data_free(table);
+    g_free(label);
+  }
+
+  // Bucket merged affixes; tally variants as the distinct affix DBRs per tag.
+  GPtrArray *pre = g_ptr_array_new();
+  GPtrArray *suf = g_ptr_array_new();
+  GHashTableIter it;
+  gpointer k, val;
+
+  // Reset per-tag variant counts, then count one per distinct affix DBR.
+  g_hash_table_iter_init(&it, merged);
+  while(g_hash_table_iter_next(&it, &k, &val))
+    ((MAffix *)val)->variants = 0;
+
+  {
+    GHashTableIter pit;
+    gpointer pk, pv;
+
+    g_hash_table_iter_init(&pit, pinfo);
+    while(g_hash_table_iter_next(&pit, &pk, &pv))
+    {
+      PInfo *pi = pv;
+
+      if(pi->kind < 0)
+        continue;
+
+      char keybuf[320];
+
+      if(pi->tag && pi->tag[0])
+        snprintf(keybuf, sizeof(keybuf), "%c|%s", pi->kind ? 'S' : 'P', pi->tag);
+      else
+        snprintf(keybuf, sizeof(keybuf), "%c|@%s", pi->kind ? 'S' : 'P', (char *)pk);
+
+      MAffix *m = g_hash_table_lookup(merged, keybuf);
+
+      if(m)
+        m->variants++;
+    }
+  }
+
+  g_hash_table_iter_init(&it, merged);
+  while(g_hash_table_iter_next(&it, &k, &val))
+  {
+    MAffix *m = val;
+
+    g_ptr_array_add(m->kind ? suf : pre, m);
+  }
+
+  g_ptr_array_sort(pre, affix_name_cmp);
+  g_ptr_array_sort(suf, affix_name_cmp);
+
+  printf("Database Browser affixes — %s\n", arz_path);
+
+  GPtrArray *buckets[2] = { pre, suf };
+  const char *titles[2] = { "PREFIXES", "SUFFIXES" };
+
+  for(int b = 0; b < 2; b++)
+  {
+    printf("\n=== %s (%u) ===\n", titles[b], buckets[b]->len);
+
+    for(guint j = 0; j < buckets[b]->len; j++)
+    {
+      MAffix *m = g_ptr_array_index(buckets[b], j);
+
+      // Sorted, comma-joined gear labels.
+      guint nt = g_hash_table_size(m->types);
+      const char **arr = g_new(const char *, nt ? nt : 1);
+      GHashTableIter ti;
+      gpointer tk, tv;
+      guint ai = 0;
+
+      g_hash_table_iter_init(&ti, m->types);
+      while(g_hash_table_iter_next(&ti, &tk, &tv))
+        arr[ai++] = tk;
+      qsort(arr, nt, sizeof(char *), str_ptr_cmp);
+
+      printf("  %-26s [%-9s] stats:%-2d rolls:%-2d gear:", m->name,
+             m->classif && m->classif[0] ? m->classif : "?",
+             m->stat_count, m->variants);
+      for(guint t = 0; t < nt; t++)
+        printf("%s%s", t ? ", " : " ", arr[t]);
+      printf("\n");
+
+      g_free(arr);
+    }
+  }
+
+  printf("\nTOTAL: %u prefixes, %u suffixes   "
+         "(%u merged affixes / %ld table refs from %ld affix tables, "
+         "scanned %u records)\n",
+         pre->len, suf->len, g_hash_table_size(merged), refs, tables,
+         arz->num_records);
+
+  g_ptr_array_free(pre, TRUE);
+  g_ptr_array_free(suf, TRUE);
+  g_hash_table_destroy(merged);
+  g_hash_table_destroy(pinfo);
+  arz_free(arz);
+  return(0);
+}
+
+// --- skills: report the Database Browser's per-mastery Skills buckets -------
+//
+// Mirrors build_skill_index() in src/ui_db_browser.c: for each of the 11
+// masteries, walk its skill tree DBR (skillName1..N), skip the mastery record,
+// dedup records resolving to the same display tag, and list each skill with its
+// max level and tier.  Kept self-contained: this tool links only arz.c/arc.c
+// (no GTK/item_stats/translation), so names use the path basename and the
+// skillDisplayName tag rather than the translated name, and the icon/button
+// visibility gate (which needs the UI database) is reported but not applied.
+
+// The 11 base masteries, in sidebar order (mirrors DB_MASTERY[] in the browser).
+static const struct {
+  const char *name;
+  const char *mastery_dbr;
+  const char *tree_dbr;
+} SKILL_MASTERY[] = {
+  { "Defense", "records\\skills\\defensive\\defensivemastery.dbr",
+    "records\\skills\\defensive\\defensiveskilltree.dbr" },
+  { "Earth", "records\\skills\\earth\\earthmastery.dbr",
+    "records\\skills\\earth\\earthskilltree.dbr" },
+  { "Hunting", "records\\skills\\hunting\\huntingmastery.dbr",
+    "records\\skills\\hunting\\huntingskilltree.dbr" },
+  { "Nature", "records\\skills\\nature\\naturemastery.dbr",
+    "records\\skills\\nature\\natureskilltree.dbr" },
+  { "Spirit", "records\\skills\\spirit\\spiritmastery.dbr",
+    "records\\skills\\spirit\\spiritskilltree.dbr" },
+  { "Storm", "records\\skills\\storm\\stormmastery.dbr",
+    "records\\skills\\storm\\stormskilltree.dbr" },
+  { "Warfare", "records\\skills\\warfare\\warfaremastery.dbr",
+    "records\\skills\\warfare\\warfareskilltree.dbr" },
+  { "Dream", "records\\xpack\\skills\\dream\\dreammastery.dbr",
+    "records\\xpack\\skills\\dream\\dreamskilltree.dbr" },
+  { "Rune", "records\\xpack2\\skills\\runemaster\\runemaster_mastery.dbr",
+    "records\\xpack2\\skills\\runemaster\\runemaster_skilltree.dbr" },
+  { "Rogue", "records\\skills\\stealth\\stealthmastery.dbr",
+    "records\\skills\\stealth\\stealthskilltree.dbr" },
+  { "Neidan", "records\\xpack4\\skills\\neidan\\neidanmastery.dbr",
+    "records\\xpack4\\skills\\neidan\\neidanskilltree.dbr" },
+};
+#define NUM_SKILL_MASTERY 11
+
+// Read a skill's skillDisplayName tag, recursing through buff/pet refs when its
+// own record carries none.  Returns malloc'd (caller frees) or NULL.
+static char *
+skill_display_tag(TQArzFile *arz, const char *path, int depth)
+{
+  if(!path || !path[0] || depth > 4)
+    return(NULL);
+
+  TQArzRecordData *d = arz_read_record(arz, path);
+
+  if(!d)
+    return(NULL);
+
+  char *tag = arz_record_get_string(d, "skillDisplayName", NULL);
+
+  if(tag && tag[0])
+  {
+    arz_record_data_free(d);
+    return(tag);
+  }
+
+  free(tag);
+
+  static const char *refs[] = { "buffSkillName", "petSkillName" };
+  char *result = NULL;
+
+  for(int r = 0; r < 2 && !result; r++)
+  {
+    char *ref = arz_record_get_string(d, refs[r], NULL);
+
+    if(ref && ref[0])
+      result = skill_display_tag(arz, ref, depth + 1);
+
+    free(ref);
+  }
+
+  arz_record_data_free(d);
+  return(result);
+}
+
+// Resolve a skill's max allocatable level, following pet/buff refs when the
+// record itself lacks skillMaxLevel.  Mirrors db_skill_max_level().
+static int
+skill_max_level_t(TQArzFile *arz, const char *path, int depth)
+{
+  if(!path || !path[0] || depth > 4)
+    return(0);
+
+  TQArzRecordData *d = arz_read_record(arz, path);
+
+  if(!d)
+    return(0);
+
+  bool found = false;
+  int ml = arz_record_get_int(d, "skillMaxLevel", 0, &found);
+
+  if(found && ml > 0)
+  {
+    arz_record_data_free(d);
+    return(ml);
+  }
+
+  static const char *refs[] = { "petSkillName", "buffSkillName" };
+  int result = 0;
+
+  for(int r = 0; r < 2 && !result; r++)
+  {
+    char *ref = arz_record_get_string(d, refs[r], NULL);
+
+    if(ref && ref[0])
+      result = skill_max_level_t(arz, ref, depth + 1);
+
+    free(ref);
+  }
+
+  arz_record_data_free(d);
+  return(result);
+}
+
+// True if a skill resolves an up-icon bitmap (own record or, recursively, a
+// buff/pet ref).
+static bool
+skill_has_icon_t(TQArzFile *arz, const char *path, int depth)
+{
+  if(!path || !path[0] || depth > 4)
+    return(false);
+
+  TQArzRecordData *d = arz_read_record(arz, path);
+
+  if(!d)
+    return(false);
+
+  char *bmp = arz_record_get_string(d, "skillUpBitmapName", NULL);
+  bool has = bmp && bmp[0];
+
+  free(bmp);
+
+  if(!has)
+  {
+    static const char *refs[] = { "buffSkillName", "petSkillName" };
+
+    for(int r = 0; r < 2 && !has; r++)
+    {
+      char *ref = arz_record_get_string(d, refs[r], NULL);
+
+      if(ref && ref[0])
+        has = skill_has_icon_t(arz, ref, depth + 1);
+
+      free(ref);
+    }
+  }
+
+  arz_record_data_free(d);
+  return(has);
+}
+
+// Lowercase path basename without extension (e.g. ".../Adrenaline.dbr" ->
+// "adrenaline"); written into out.
+static void
+skill_basename(const char *path, char *out, size_t outsz)
+{
+  const char *base = path;
+
+  for(const char *p = path; *p; p++)
+    if(*p == '/' || *p == '\\')
+      base = p + 1;
+
+  const char *dot = strrchr(base, '.');
+  size_t len = dot ? (size_t)(dot - base) : strlen(base);
+
+  if(len >= outsz)
+    len = outsz - 1;
+
+  for(size_t i = 0; i < len; i++)
+    out[i] = (char)tolower((unsigned char)base[i]);
+
+  out[len] = '\0';
+}
+
+// Read one skill-window control pane and add every button's target skillName
+// (normalized) to the set.  Mirrors add_pane()/add_button() in ui_skills_layout.c.
+static void
+sbtn_add_pane(TQArzFile *arz, const char *pane_path, GHashTable *set)
+{
+  TQArzRecordData *pane = arz_read_record(arz, pane_path);
+
+  if(!pane)
+    return;
+
+  TQVariable *buttons = arz_record_get_var(pane, arz_intern("tabSkillButtons"));
+
+  if(buttons && buttons->type == TQ_VAR_STRING)
+    for(uint32_t j = 0; j < buttons->count; j++)
+    {
+      const char *bp = buttons->value.str[j];
+
+      if(!bp || !bp[0])
+        continue;
+
+      TQArzRecordData *btn = arz_read_record(arz, bp);
+
+      if(!btn)
+        continue;
+
+      char *skill = arz_record_get_string(btn, "skillName", NULL);
+
+      if(skill && skill[0])
+      {
+        char *norm = normalize_path(skill);
+
+        if(g_hash_table_contains(set, norm))
+          g_free(norm);
+        else
+          g_hash_table_add(set, norm);  // takes ownership
+      }
+
+      free(skill);
+      arz_record_data_free(btn);
+    }
+
+  arz_record_data_free(pane);
+}
+
+// Build the set of normalized skill paths that have an in-game skill-window
+// button.  Mirrors load_map() in ui_skills_layout.c: take the newest available
+// skillswindow.dbr, enumerate skillCtrlPane1..16, and union their buttons.
+static GHashTable *
+build_skill_button_set(TQArzFile *arz)
+{
+  static const char *WIN[] = {
+    "records\\xpack4\\ui\\skills\\skillswindow.dbr",
+    "records\\xpack3\\ui\\skills\\skillswindow.dbr",
+    "records\\xpack\\ui\\skills\\skillswindow.dbr",
+    "records\\ui\\skills\\skillswindow.dbr",
+    NULL,
+  };
+  GHashTable *set = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+  TQArzRecordData *win = NULL;
+
+  for(int i = 0; WIN[i]; i++)
+    if((win = arz_read_record(arz, WIN[i])) != NULL)
+      break;
+
+  if(!win)
+    return(set);
+
+  for(int i = 1; i <= 16; i++)
+  {
+    char field[32];
+
+    snprintf(field, sizeof(field), "skillCtrlPane%d", i);
+
+    char *pane = arz_record_get_string(win, field, NULL);
+
+    if(pane && pane[0])
+    {
+      char *norm = normalize_path(pane);
+
+      sbtn_add_pane(arz, norm, set);
+      g_free(norm);
+    }
+
+    free(pane);
+  }
+
+  arz_record_data_free(win);
+  return(set);
+}
+
+// True if a skill path has an in-game skill-window button (set membership).
+static bool
+skill_has_button(GHashTable *set, const char *path)
+{
+  char *norm = normalize_path(path);
+  bool has = g_hash_table_contains(set, norm);
+
+  g_free(norm);
+  return(has);
+}
+
+static int
+cmd_skills(const char *arz_path)
+{
+  TQArzFile *arz = arz_load(arz_path);
+
+  if(!arz)
+  {
+    fprintf(stderr, "Failed to load ARZ: %s\n", arz_path);
+    return(1);
+  }
+
+  printf("Database Browser skills — %s\n\n", arz_path);
+
+  // The in-game skill-window button set gates visibility, exactly like the
+  // visual skill manager (and build_skill_index in the browser).
+  GHashTable *buttons = build_skill_button_set(arz);
+  long grand_skills = 0, grand_noicon = 0;
+
+  for(int m = 0; m < NUM_SKILL_MASTERY; m++)
+  {
+    int ml = skill_max_level_t(arz, SKILL_MASTERY[m].mastery_dbr, 0);
+    bool use_db = skill_has_button(buttons, SKILL_MASTERY[m].mastery_dbr);
+
+    printf("== %s Mastery ==   (mastery max level %d, %s)\n",
+           SKILL_MASTERY[m].name, ml,
+           use_db ? "button-gated" : "icon-gated fallback");
+
+    TQArzRecordData *tree = arz_read_record(arz, SKILL_MASTERY[m].tree_dbr);
+
+    if(!tree)
+    {
+      printf("  (no skill tree)\n\n");
+      continue;
+    }
+
+    // In icon-gated fallback, dedup by display tag (the translated-name
+    // equivalent the browser uses); button-gated mode needs no dedup.
+    char seen[64][128];
+    int num_seen = 0;
+    int count = 0;
+
+    for(int n = 1; n <= 32; n++)
+    {
+      char field[32];
+
+      snprintf(field, sizeof(field), "skillName%d", n);
+
+      char *sp = arz_record_get_string(tree, field, NULL);
+
+      if(!sp || !sp[0])
+      {
+        free(sp);
+        continue;
+      }
+
+      if(strcasestr(sp, "mastery"))
+      {
+        free(sp);
+        continue;  // the mastery record itself
+      }
+
+      char *tag = skill_display_tag(arz, sp, 0);
+      bool icon = skill_has_icon_t(arz, sp, 0);
+
+      if(use_db)
+      {
+        if(!skill_has_button(buttons, sp))
+        {
+          free(tag);
+          free(sp);
+          continue;  // not shown in-game (auto-applied helper / pet modifier)
+        }
+      }
+      else
+      {
+        if(!icon)
+        {
+          free(tag);
+          free(sp);
+          continue;
+        }
+
+        const char *dedup = (tag && tag[0]) ? tag : sp;
+        bool dup = false;
+
+        for(int s = 0; s < num_seen; s++)
+          if(strcasecmp(seen[s], dedup) == 0)
+          {
+            dup = true;
+            break;
+          }
+
+        if(dup)
+        {
+          free(tag);
+          free(sp);
+          continue;
+        }
+
+        if(num_seen < 64)
+          snprintf(seen[num_seen++], sizeof(seen[0]), "%s", dedup);
+      }
+
+      int sml = skill_max_level_t(arz, sp, 0);
+      char base[128];
+
+      skill_basename(sp, base, sizeof(base));
+
+      printf("  %-28s maxLvl=%-2d  tag=%-20s%s\n", base, sml,
+             tag && tag[0] ? tag : "(none)", icon ? "" : "   [no-icon]");
+
+      count++;
+      grand_skills++;
+      if(!icon)
+        grand_noicon++;
+
+      free(tag);
+      free(sp);
+    }
+
+    printf("  -> %d skills\n\n", count);
+    arz_record_data_free(tree);
+  }
+
+  printf("TOTAL: %ld skills across %d masteries "
+         "(%ld shown without a resolvable icon)\n",
+         grand_skills, NUM_SKILL_MASTERY, grand_noicon);
+
+  g_hash_table_destroy(buttons);
   arz_free(arz);
   return(0);
 }
@@ -1093,6 +2382,50 @@ main(int argc, char **argv)
     }
 
     return(cmd_coverage(argv[2], argc >= 4 ? argv[3] : ""));
+  }
+
+  if(strcmp(cmd, "categories") == 0)
+  {
+    if(argc < 3)
+    {
+      fprintf(stderr, "Usage: %s categories <arz>\n", argv[0]);
+      return(1);
+    }
+
+    return(cmd_categories(argv[2]));
+  }
+
+  if(strcmp(cmd, "sets") == 0)
+  {
+    if(argc < 3)
+    {
+      fprintf(stderr, "Usage: %s sets <arz>\n", argv[0]);
+      return(1);
+    }
+
+    return(cmd_sets(argv[2]));
+  }
+
+  if(strcmp(cmd, "skills") == 0)
+  {
+    if(argc < 3)
+    {
+      fprintf(stderr, "Usage: %s skills <arz>\n", argv[0]);
+      return(1);
+    }
+
+    return(cmd_skills(argv[2]));
+  }
+
+  if(strcmp(cmd, "affixes") == 0)
+  {
+    if(argc < 3)
+    {
+      fprintf(stderr, "Usage: %s affixes <arz>\n", argv[0]);
+      return(1);
+    }
+
+    return(cmd_affixes(argv[2]));
   }
 
   fprintf(stderr, "Unknown command: %s\n", cmd);
