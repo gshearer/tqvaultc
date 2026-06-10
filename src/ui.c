@@ -1569,9 +1569,13 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
     }
   }
 
-  // Row 1, col 0: main inventory 12x5
+  // Row 1, col 0: main inventory 12x5.  hexpand FALSE so the grid allocates it
+  // exactly its pinned content_width (12*cell, set in on_vault_resize) rather
+  // than splitting surplus 50/50 with the bag column -- that uneven split is
+  // what clipped the inventory's 12th column. The spacer column (below)
+  // absorbs the leftover width instead.
   widgets->inv_drawing_area = gtk_drawing_area_new();
-  gtk_widget_set_hexpand(widgets->inv_drawing_area, TRUE);
+  gtk_widget_set_hexpand(widgets->inv_drawing_area, FALSE);
   gtk_widget_set_vexpand(widgets->inv_drawing_area, TRUE);
   gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->inv_drawing_area),
                                      CHAR_INV_COLS * MIN_CELL);
@@ -1593,9 +1597,10 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_widget_add_controller(widgets->inv_drawing_area, inv_motion);
   gtk_grid_attach(GTK_GRID(inv_bag_grid), widgets->inv_drawing_area, 0, 1, 1, 1);
 
-  // Row 1, col 1: extra bag 8x5
+  // Row 1, col 1: extra bag 8x5.  hexpand FALSE for the same reason as the
+  // inventory above -- pinned to 8*cell in on_vault_resize.
   widgets->bag_drawing_area = gtk_drawing_area_new();
-  gtk_widget_set_hexpand(widgets->bag_drawing_area, TRUE);
+  gtk_widget_set_hexpand(widgets->bag_drawing_area, FALSE);
   gtk_widget_set_vexpand(widgets->bag_drawing_area, TRUE);
   gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->bag_drawing_area),
                                      CHAR_BAG_COLS * MIN_CELL);
@@ -1616,6 +1621,15 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   g_signal_connect(bag_motion, "leave", G_CALLBACK(on_motion_leave), widgets);
   gtk_widget_add_controller(widgets->bag_drawing_area, bag_motion);
   gtk_grid_attach(GTK_GRID(inv_bag_grid), widgets->bag_drawing_area, 1, 1, 1, 1);
+
+  // Col 2: invisible expanding spacer. The inventory and bag are pinned to
+  // exact cell-multiple widths (hexpand FALSE), so this column soaks up the
+  // grid's leftover horizontal space at the right edge -- keeping the inv/bag
+  // columns at exactly 12*cell / 8*cell instead of stretching them.
+  GtkWidget *inv_bag_spacer = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+
+  gtk_widget_set_hexpand(inv_bag_spacer, TRUE);
+  gtk_grid_attach(GTK_GRID(inv_bag_grid), inv_bag_spacer, 2, 0, 1, 2);
 
   // Bottom section: equip+stats on left, tables stacked on right.
   GtkWidget *bottom_hbox = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);

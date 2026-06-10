@@ -825,14 +825,71 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
   }
 }
 
-// When the vault area resizes (e.g. window tiled by compositor), update the
-// equip drawing area's content size so GTK allocates enough space for the
-// current cell size, then queue a redraw.  Without this the equip area keeps
-// its initial (too-small) size and items overflow or use a stale scale.
-// area: the vault drawing area (unused)
-// width: new width (unused)
-// height: new height (unused)
+// Idle that pins each fixed-column grid (equipment, inventory, extra bag, vault)
+// to an exact multiple of the current shared cell.
+//
+// Why an idle and not directly in on_vault_resize: that runs inside GTK's
+// size-allocate phase, and a content-size change requested there is deferred --
+// GTK won't re-run layout for it until something else requests a frame. At
+// startup the window goes initial-size -> maximized; the maximized pins sat
+// deferred until the user's first tooltip hover (which parents the popover,
+// queuing a resize) flushed them, making the whole right side jump once. Doing
+// the pinning from idle context applies it immediately, with no user-visible
+// settle, and re-arms on every resize.
+//
+// The inventory and bag must be pinned explicitly because they share one
+// GtkGrid: if both expanded (hexpand), the grid splits the surplus *equally*
+// between the two columns instead of in their 12:8 column ratio, so the
+// inventory column ends up narrower than 12*cell and its 12th column clips (the
+// v0.6.5 "11x5" regression). Pinning content_width = cols*cell with hexpand
+// FALSE makes each column exactly cols*cell; the spacer column in inv_bag_grid
+// absorbs the leftover width. The vault is pinned too so the character column's
+// raised minimum can't steal width from it. cell is a pure function of the
+// main_hbox size (no measured child sizes), so this can't oscillate -- once the
+// pins match the current cell, set_content_width is a no-op and it converges.
 // user_data: AppWidgets pointer
+static gboolean
+apply_grid_pins(gpointer user_data)
+{
+  AppWidgets *widgets = (AppWidgets *)user_data;
+
+  widgets->pin_update_pending = false;
+
+  double cell = compute_cell_size(widgets);
+
+  if(cell <= 0.0)
+    return(G_SOURCE_REMOVE);  // not allocated yet; the next resize re-arms us
+
+  int ew = (int)(6.0 * cell + 2.0 * EQUIP_COL_GAP + 0.5);
+  int eh = (int)(12.0 * cell + 3.0 * EQUIP_LABEL_H + 2.0 * EQUIP_SLOT_GAP + 0.5);
+
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->equip_drawing_area), ew);
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->equip_drawing_area), eh);
+
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->inv_drawing_area),
+                                     (int)(CHAR_INV_COLS * cell + 0.5));
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->inv_drawing_area),
+                                      (int)(CHAR_INV_ROWS * cell + 0.5));
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->bag_drawing_area),
+                                     (int)(CHAR_BAG_COLS * cell + 0.5));
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->bag_drawing_area),
+                                      (int)(CHAR_BAG_ROWS * cell + 0.5));
+  gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->vault_drawing_area),
+                                     (int)(VAULT_COLS * cell + 0.5));
+  gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->vault_drawing_area),
+                                      (int)(VAULT_ROWS * cell + 0.5));
+
+  gtk_widget_queue_draw(widgets->equip_drawing_area);
+  gtk_widget_queue_draw(widgets->inv_drawing_area);
+  gtk_widget_queue_draw(widgets->bag_drawing_area);
+  return(G_SOURCE_REMOVE);
+}
+
+// The vault drawing area's "resize" is our cell-change sensor (it keeps
+// hexpand TRUE and grows with the window). When it fires, schedule the grid
+// re-pin on idle -- see apply_grid_pins() for why it must not happen inline.
+// One idle is queued at a time (pin_update_pending guards against stacking).
+// area/width/height: unused. user_data: AppWidgets pointer.
 void
 on_vault_resize(GtkDrawingArea *area, int width, int height, gpointer user_data)
 {
@@ -841,17 +898,11 @@ on_vault_resize(GtkDrawingArea *area, int width, int height, gpointer user_data)
   (void)height;
   AppWidgets *widgets = (AppWidgets *)user_data;
 
-  double cell = compute_cell_size(widgets);
-
-  if(cell > 0.0)
+  if(!widgets->pin_update_pending)
   {
-    int ew = (int)(6.0 * cell + 2.0 * EQUIP_COL_GAP + 0.5);
-    int eh = (int)(12.0 * cell + 3.0 * EQUIP_LABEL_H + 2.0 * EQUIP_SLOT_GAP + 0.5);
-
-    gtk_drawing_area_set_content_width(GTK_DRAWING_AREA(widgets->equip_drawing_area), ew);
-    gtk_drawing_area_set_content_height(GTK_DRAWING_AREA(widgets->equip_drawing_area), eh);
+    widgets->pin_update_pending = true;
+    g_idle_add(apply_grid_pins, widgets);
   }
-  gtk_widget_queue_draw(widgets->equip_drawing_area);
 }
 
 // Draw callback for the main vault sack grid.

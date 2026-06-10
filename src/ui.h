@@ -249,6 +249,7 @@ typedef struct {
     double win_cursor_x, win_cursor_y;  // cursor pos in overlay coordinates
     bool vault_dirty;
     bool char_dirty;
+    bool pin_update_pending;    // a grid-pin idle is queued (see on_vault_resize)
 
     // Right-click context menu
     GMenu *context_menu_model;       // GMenu rebuilt before each show
