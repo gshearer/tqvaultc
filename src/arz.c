@@ -398,12 +398,39 @@ arz_read_record(TQArzFile *arz, const char *record_path)
   {
     if(normalized_path[i] == '/')
       normalized_path[i] = '\\';
+    else
+      normalized_path[i] = (char)g_ascii_tolower((guchar)normalized_path[i]);
   }
 
-  for(uint32_t i = 0; i < arz->num_records; i++)
+  // Lazily build a lowercased-path -> (index + 1) map so repeated point lookups
+  // (e.g. the loot-table resolver chasing thousands of references) are O(1)
+  // instead of an O(num_records) linear scan each time.
+  if(!arz->path_index)
   {
-    if(arz->records[i].path && strcasecmp(arz->records[i].path, normalized_path) == 0)
-      return(arz_read_record_at(arz, arz->records[i].offset, arz->records[i].compressed_size));
+    arz->path_index = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+
+    for(uint32_t i = 0; i < arz->num_records; i++)
+    {
+      if(!arz->records[i].path)
+        continue;
+
+      char *key = g_ascii_strdown(arz->records[i].path, -1);
+
+      // First writer wins on duplicate paths (matches the old linear scan).
+      if(!g_hash_table_contains(arz->path_index, key))
+        g_hash_table_insert(arz->path_index, key, GUINT_TO_POINTER(i + 1));
+      else
+        g_free(key);
+    }
+  }
+
+  gpointer hit = g_hash_table_lookup(arz->path_index, normalized_path);
+
+  if(hit)
+  {
+    uint32_t idx = GPOINTER_TO_UINT(hit) - 1;
+    return(arz_read_record_at(arz, arz->records[idx].offset,
+                              arz->records[idx].compressed_size));
   }
 
   return(NULL);
@@ -544,6 +571,9 @@ arz_free(TQArzFile *arz)
 
     free(arz->string_table);
   }
+
+  if(arz->path_index)
+    g_hash_table_destroy(arz->path_index);
 
   free(arz->records);
   free(arz);

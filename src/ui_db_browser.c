@@ -24,6 +24,8 @@
 #include "ui_skills_layout.h"
 #include "texture.h"
 #include "vault.h"
+#include "db_creatures.h"
+#include "db_quests.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -46,6 +48,8 @@ typedef enum {
   CAT_SKILL_DEFENSE, CAT_SKILL_EARTH, CAT_SKILL_HUNTING, CAT_SKILL_NATURE,
   CAT_SKILL_SPIRIT, CAT_SKILL_STORM, CAT_SKILL_WARFARE, CAT_SKILL_DREAM,
   CAT_SKILL_RUNE, CAT_SKILL_ROGUE, CAT_SKILL_NEIDAN,
+  CAT_CREATURE,
+  CAT_QUEST,
   CAT_COUNT
 } DbCat;
 
@@ -67,6 +71,8 @@ static const struct {
   { "Skills", "Nature" },   { "Skills", "Spirit" },  { "Skills", "Storm" },
   { "Skills", "Warfare" },  { "Skills", "Dream" },   { "Skills", "Rune" },
   { "Skills", "Rogue" },    { "Skills", "Neidan" },
+  { "Monsters", "Bosses & Heroes" },
+  { "Quests", "Quests" },
 };
 
 // Map a GEAR_* flag to its leaf category, or -1 if the flag isn't a single
@@ -172,6 +178,9 @@ struct _DbBrowseItem {
   bool is_set;       // true == an item set (detail shows members + bonus tiers)
   bool is_affix;     // true == a prefix/suffix affix (detail shows props + gear)
   bool is_skill;     // true == a mastery/skill (icon is a .tex; detail = levels)
+  bool is_creature;  // true == a boss/hero (detail shows its drop list)
+  bool is_quest;     // true == a quest (detail shows its item rewards)
+  int  src_idx;      // creature/quest index into the matching index array
   char *equip_types; // affix: comma-joined equipment-type labels it can roll on
   char **variants;   // affix: NULL-terminated DBR paths sharing this affix's tag
                      // (one logical affix may have several stat rolls)
@@ -215,6 +224,9 @@ typedef struct {
   GListStore *cat_stores[CAT_COUNT];  // GListStore<DbBrowseItem> per category
   int cat_counts[CAT_COUNT];
 
+  DbCreatureIndex *creatures;  // boss/hero loot index ("dropped by")
+  DbQuestIndex    *quests;     // quest item-reward index ("reward from")
+
   GtkWidget *grid_view;
   GtkFilterListModel *filter_model;   // sits over the active category store
   GtkCustomFilter *custom_filter;     // name substring filter
@@ -240,6 +252,11 @@ db_browser_state_free(gpointer data)
     g_clear_object(&st->cat_stores[i]);
 
   g_clear_object(&st->custom_filter);
+
+  if(st->creatures)
+    db_creature_index_free(st->creatures);
+  if(st->quests)
+    db_quest_index_free(st->quests);
 
   if(st->arz)
     arz_free(st->arz);
@@ -1206,6 +1223,127 @@ build_skill_index(DbBrowserState *st)
   }
 }
 
+// -- Creatures + Quests (Phase 6) -------------------------------------------
+
+// Display color for a creature row, by classification.
+static const char *
+db_creature_color(const char *classification)
+{
+  if(classification && g_ascii_strcasecmp(classification, "Boss") == 0)
+    return("#FF7050");
+  if(classification && g_ascii_strcasecmp(classification, "Hero") == 0)
+    return("#FFC850");
+  return("#70C8FF");  // Quest
+}
+
+// Resolve a creature's display name: translated description tag, else its
+// FileDescription, else a path-derived name.  Caller frees.
+static char *
+db_creature_display_name(DbBrowserState *st, DbCreature *c)
+{
+  if(c->name_tag && c->name_tag[0])
+  {
+    const char *name = translation_get(st->widgets->translations, c->name_tag);
+
+    if(name && name[0] && strcmp(name, c->name_tag) != 0)
+      return(g_strdup(name));
+  }
+
+  const char *fd = dbr_get_string(c->path, "FileDescription");
+
+  if(fd && fd[0])
+    return(g_strdup(fd));
+
+  char *pretty = pretty_name_from_path(c->path);
+
+  return(pretty ? pretty : g_strdup(c->path));
+}
+
+// Build the creature index and populate the Monsters grid (one row per
+// boss/hero/quest creature that drops indexable loot).
+static void
+build_creature_index_grid(DbBrowserState *st)
+{
+  st->creatures = db_creature_index_build(st->arz);
+
+  if(!st->creatures)
+    return;
+
+  for(guint i = 0; i < st->creatures->creatures->len; i++)
+  {
+    DbCreature *c = g_ptr_array_index(st->creatures->creatures, i);
+
+    if(!c->has_drops)
+      continue;
+
+    DbBrowseItem *it = g_object_new(DB_TYPE_BROWSE_ITEM, NULL);
+
+    it->is_creature = true;
+    it->src_idx     = (int)i;
+    it->path        = g_strdup(c->path);
+    it->name        = db_creature_display_name(st, c);
+    it->color       = db_creature_color(c->classification);
+    it->name_lc     = g_ascii_strdown(it->name, -1);
+
+    g_list_store_append(st->cat_stores[CAT_CREATURE], it);
+    g_object_unref(it);
+    st->cat_counts[CAT_CREATURE]++;
+  }
+}
+
+// Build the quest index and populate the Quests grid (one row per quest that
+// grants item rewards).
+static void
+build_quest_index_grid(DbBrowserState *st)
+{
+  if(!global_config.game_folder)
+    return;
+
+  // Candidate Quests.arc archives under <game>/Resources.
+  static const char *REL[] = {
+    "Quests.arc", "xpack/Quests.arc", "XPack2/Quests.arc",
+    "XPack3/Quests.arc", "XPack4/Quests.arc",
+  };
+  GPtrArray *arcs = g_ptr_array_new_with_free_func(g_free);
+
+  for(size_t i = 0; i < G_N_ELEMENTS(REL); i++)
+  {
+    char *p = g_build_filename(global_config.game_folder, "Resources", REL[i], NULL);
+
+    if(g_file_test(p, G_FILE_TEST_IS_REGULAR))
+      g_ptr_array_add(arcs, p);
+    else
+      g_free(p);
+  }
+
+  st->quests = db_quest_index_build(st->arz,
+      (const char *const *)arcs->pdata, (int)arcs->len);
+  g_ptr_array_free(arcs, TRUE);
+
+  if(!st->quests)
+    return;
+
+  for(guint i = 0; i < st->quests->quests->len; i++)
+  {
+    DbQuest *q = g_ptr_array_index(st->quests->quests, i);
+
+    const char *name = translation_get(st->widgets->translations, q->title_tag);
+
+    DbBrowseItem *it = g_object_new(DB_TYPE_BROWSE_ITEM, NULL);
+
+    it->is_quest = true;
+    it->src_idx  = (int)i;
+    it->path     = g_strdup(q->title_tag);  // identity; not a droppable item
+    it->name     = g_strdup((name && name[0]) ? name : q->title_tag);
+    it->color    = "#DAA520";  // quest gold
+    it->name_lc  = g_ascii_strdown(it->name, -1);
+
+    g_list_store_append(st->cat_stores[CAT_QUEST], it);
+    g_object_unref(it);
+    st->cat_counts[CAT_QUEST]++;
+  }
+}
+
 // -- Held-item overlay (mirrors ui_database_dialog.c) -----------------------
 
 static void
@@ -1281,8 +1419,9 @@ db_browse_pickup(DbBrowserState *st, DbBrowseItem *bi)
 {
   AppWidgets *widgets = st->widgets;
 
-  if(!bi || !bi->path || bi->is_set || bi->is_affix || bi->is_skill)
-    return;  // a set / affix / skill isn't a droppable item
+  if(!bi || !bi->path || bi->is_set || bi->is_affix || bi->is_skill ||
+     bi->is_creature || bi->is_quest)
+    return;  // a set / affix / skill / creature / quest isn't a droppable item
 
   if(widgets->held_item)
     cancel_held_item(widgets);
@@ -2111,10 +2250,207 @@ update_detail_affix(DbBrowserState *st, DbBrowseItem *bi)
   db_detail_set_icon(st, NULL, 0);
 }
 
+// -- Creature / quest detail + cross-reference (Phase 6) --------------------
+
+// Format a per-difficulty chance triple compactly into out (e.g.
+// "N 12.30%  E 4.50%"), showing only the non-zero tiers.
+static void
+db_fmt_chances(const double ch[3], char *out, size_t outsz)
+{
+  static const char *D[3] = { "N", "E", "L" };
+  BufWriter w;
+
+  buf_init(&w, out, outsz);
+  for(int i = 0; i < 3; i++)
+    if(ch[i] > 0.0)
+      buf_write(&w, "%s%s %.2f%%", (w.pos > 0 ? "  " : ""), D[i], ch[i]);
+
+  if(out[0] == '\0')
+    snprintf(out, outsz, "—");
+}
+
+// Append a list of item rows (name in rarity color + chances) to w, capped at
+// `limit` entries with a "+N more" note.  `paths`/`chances` are parallel.
+static void
+db_append_item_rows(DbBrowserState *st, BufWriter *w, GPtrArray *paths,
+                    int limit)
+{
+  guint n = paths->len;
+  guint shown = (n > (guint)limit) ? (guint)limit : n;
+
+  for(guint i = 0; i < shown; i++)
+  {
+    DbItemChance *ic = g_ptr_array_index(paths, i);
+    char *name = db_item_display_name(st, ic->item_lc);
+    const char *color = get_item_color(ic->item_lc, NULL, NULL);
+    char *e = escape_markup(name ? name : ic->item_lc);
+    char chbuf[96];
+
+    db_fmt_chances(ic->chance, chbuf, sizeof(chbuf));
+    buf_write(w, "<span color='%s'>    %s</span> "
+                 "<span color='#808080'>%s</span>\n",
+              color ? color : "white", e ? e : "", chbuf);
+    if(e)
+      free(e);
+    free(name);
+  }
+
+  if(n > shown)
+    buf_write(w, "<span color='#808080'>    … +%u more</span>\n", n - shown);
+}
+
+// Detail pane for a creature: name, classification/race/levels, and the items
+// it can drop (per-difficulty chance).
+static void
+update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
+{
+  DbCreature *c = g_ptr_array_index(st->creatures->creatures, bi->src_idx);
+  char markup[32768];
+  BufWriter w;
+
+  buf_init(&w, markup, sizeof(markup));
+
+  char *e_name = escape_markup(bi->name);
+
+  buf_write(&w, "<span color='%s'><b>%s</b></span>\n",
+            bi->color ? bi->color : "white", e_name ? e_name : "");
+  if(e_name)
+    free(e_name);
+
+  buf_write(&w, "<span color='#9F9F9F'>%s%s%s — Levels %d / %d / %d</span>\n",
+            c->classification ? c->classification : "",
+            c->race ? " · " : "", c->race ? c->race : "",
+            c->level[0], c->level[1], c->level[2]);
+
+  buf_write(&w, "\n<span color='#B0B0B0'>Drops (%u):</span>\n", c->drops->len);
+  db_append_item_rows(st, &w, c->drops, 80);
+
+  gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
+  db_detail_set_icon(st, NULL, 0);
+}
+
+// Detail pane for a quest: name and its item rewards per difficulty.
+static void
+update_detail_quest(DbBrowserState *st, DbBrowseItem *bi)
+{
+  DbQuest *q = g_ptr_array_index(st->quests->quests, bi->src_idx);
+  char markup[32768];
+  BufWriter w;
+
+  buf_init(&w, markup, sizeof(markup));
+
+  char *e_name = escape_markup(bi->name);
+
+  buf_write(&w, "<span color='#DAA520'><b>%s</b></span>\n", e_name ? e_name : "");
+  if(e_name)
+    free(e_name);
+
+  static const char *DIFF[3] = { "Normal", "Epic", "Legendary" };
+
+  for(int d = 0; d < 3; d++)
+  {
+    if(!q->rewards[d] || g_hash_table_size(q->rewards[d]) == 0)
+      continue;
+
+    // Collect this difficulty's rewards into a sortable list.
+    GPtrArray *rows = g_ptr_array_new_with_free_func(g_free);
+    GHashTableIter it;
+    gpointer k, v;
+
+    g_hash_table_iter_init(&it, q->rewards[d]);
+    while(g_hash_table_iter_next(&it, &k, &v))
+    {
+      DbItemChance *ic = g_new0(DbItemChance, 1);
+      ic->item_lc = (char *)k;           // borrowed; not freed by us
+      ic->chance[d] = *(double *)v;
+      g_ptr_array_add(rows, ic);
+    }
+
+    buf_write(&w, "\n<span color='#B0B0B0'>%s rewards:</span>\n", DIFF[d]);
+    db_append_item_rows(st, &w, rows, 40);
+    g_ptr_array_free(rows, TRUE);  // frees the DbItemChance shells, not item_lc
+  }
+
+  gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
+  db_detail_set_icon(st, NULL, 0);
+}
+
+// Append the "Dropped by" cross-reference for an item: the creatures that can
+// drop it, best chance first, capped.
+static void
+db_append_dropped_by(DbBrowserState *st, const char *item_path, BufWriter *w)
+{
+  if(!st->creatures)
+    return;
+
+  GPtrArray *drops = db_creature_drops_for_item(st->creatures, item_path);
+
+  if(!drops || drops->len == 0)
+    return;
+
+  buf_write(w, "\n<span color='#B0B0B0'>Dropped by:</span>\n");
+
+  guint limit = 20;
+  guint shown = (drops->len > limit) ? limit : drops->len;
+
+  for(guint i = 0; i < shown; i++)
+  {
+    DbDrop *d = g_ptr_array_index(drops, i);
+    DbCreature *c = g_ptr_array_index(st->creatures->creatures, d->creature_idx);
+    char *name = db_creature_display_name(st, c);
+    char *e = escape_markup(name);
+    char chbuf[96];
+
+    db_fmt_chances(d->chance, chbuf, sizeof(chbuf));
+    buf_write(w, "<span color='%s'>    %s</span> "
+                 "<span color='#808080'>%s</span>\n",
+              db_creature_color(c->classification), e ? e : "", chbuf);
+    if(e)
+      free(e);
+    g_free(name);
+  }
+
+  if(drops->len > shown)
+    buf_write(w, "<span color='#808080'>    … +%u more</span>\n",
+              drops->len - shown);
+}
+
+// Append the "Reward from" cross-reference for an item: the quests that grant
+// it (with the best per-difficulty percentage).
+static void
+db_append_reward_from(DbBrowserState *st, const char *item_path, BufWriter *w)
+{
+  if(!st->quests)
+    return;
+
+  GPtrArray *rewards = db_quest_rewards_for_item(st->quests, item_path);
+
+  if(!rewards || rewards->len == 0)
+    return;
+
+  buf_write(w, "\n<span color='#B0B0B0'>Quest reward from:</span>\n");
+
+  for(guint i = 0; i < rewards->len && i < 20; i++)
+  {
+    DbQuestReward *rw = g_ptr_array_index(rewards, i);
+    DbQuest *q = g_ptr_array_index(st->quests->quests, rw->quest_idx);
+    const char *name = translation_get(st->widgets->translations, q->title_tag);
+    char *e = escape_markup((name && name[0]) ? name : q->title_tag);
+    char chbuf[96];
+
+    db_fmt_chances(rw->percent, chbuf, sizeof(chbuf));
+    buf_write(w, "<span color='#DAA520'>    %s</span> "
+                 "<span color='#808080'>%s</span>\n", e ? e : "", chbuf);
+    if(e)
+      free(e);
+  }
+}
+
 // Rebuild the right-hand detail pane for the selected item: large icon plus
 // the full formatted tooltip (built from a synthetic vault item, the same
 // path the in-app tooltips use).  Relics/charms/artifacts get extra tq-db-style
-// sections appended (shard progression, completion bonuses, formula reagents).
+// sections appended (shard progression, completion bonuses, formula reagents);
+// every item gets "Dropped by" / "Quest reward from" cross-references.
 static void
 update_detail(DbBrowserState *st, DbBrowseItem *bi)
 {
@@ -2143,6 +2479,18 @@ update_detail(DbBrowserState *st, DbBrowseItem *bi)
     return;
   }
 
+  if(bi->is_creature)
+  {
+    update_detail_creature(st, bi);
+    return;
+  }
+
+  if(bi->is_quest)
+  {
+    update_detail_quest(st, bi);
+    return;
+  }
+
   // Full tooltip via the shared formatter (reads base_name only).
   TQVaultItem vi;
 
@@ -2155,16 +2503,19 @@ update_detail(DbBrowserState *st, DbBrowseItem *bi)
 
   vault_item_format_stats(&vi, st->widgets->translations, markup, sizeof(markup));
 
+  size_t len = strlen(markup);
+  BufWriter w;
+
+  buf_init(&w, markup + len, sizeof(markup) - len);
+
   // Append browser-only detail for relics/charms/artifacts/scrolls.
   if(item_is_relic_or_charm(bi->path) || item_is_artifact(bi->path) ||
      db_is_scroll(bi->path))
-  {
-    size_t len = strlen(markup);
-    BufWriter w;
-
-    buf_init(&w, markup + len, sizeof(markup) - len);
     db_append_consumable_detail(st, bi->path, &w);
-  }
+
+  // Cross-references: which creatures drop it and which quests grant it.
+  db_append_dropped_by(st, bi->path, &w);
+  db_append_reward_from(st, bi->path, &w);
 
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
   db_detail_set_icon(st, bi->path, bi->var1);
@@ -2444,6 +2795,8 @@ show_db_browser_dialog(AppWidgets *widgets)
   build_set_index(st);
   build_affix_index(st);
   build_skill_index(st);
+  build_creature_index_grid(st);  // Phase 6: boss/hero loot ("dropped by")
+  build_quest_index_grid(st);     // Phase 6: quest item rewards
 
   // -- Window + held-item overlay --
   st->dialog = gtk_window_new();

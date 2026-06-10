@@ -24,6 +24,8 @@ typedef struct {
 
   TQArzRecord *records;
   uint32_t num_records;
+
+  GHashTable *path_index;  // lazy: lowercased path -> record index (+1); O(1) lookup
 } TQArzFile;
 
 typedef enum {

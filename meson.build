@@ -55,6 +55,9 @@ app_sources = [
   'src/item_stats.c',
   'src/item_stats_format.c',
   'src/affix_table.c',
+  'src/db_loot.c',
+  'src/db_creatures.c',
+  'src/db_quests.c',
   'src/ui_manage.c',
   'src/ui_context_menu.c',
   'src/ui_bag_menu.c',
@@ -96,7 +99,8 @@ executable('tq-stats',
 
 # 7. Build the DBR/ARC Inspection Tool
 executable('tq-dbr-tool',
-  ['src/utils/tq_dbr_tool.c', 'src/arz.c', 'src/arc.c'] + platform_sources,
+  ['src/utils/tq_dbr_tool.c', 'src/arz.c', 'src/arc.c',
+   'src/db_loot.c', 'src/db_creatures.c', 'src/db_quests.c'] + platform_sources,
   dependencies: [gtk_dep, zlib_dep, m_dep],
   install: true)
 
