@@ -74,6 +74,8 @@ app_sources = [
   'src/ui_checklist_dialog.c',
   'src/ui_stats_dialog.c',
   'src/ui_skills_tree.c',
+  'src/ui_skills_data.c',
+  'src/ui_skills_draw.c',
   'src/ui_skills_layout.c',
   'src/ui_database_dialog.c',
   'src/ui_db_browser.c',
