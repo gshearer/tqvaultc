@@ -76,7 +76,9 @@ app_sources = [
   'src/ui_skills_tree.c',
   'src/ui_skills_layout.c',
   'src/ui_database_dialog.c',
-  'src/ui_db_browser.c'
+  'src/ui_db_browser.c',
+  'src/ui_db_browser_index.c',
+  'src/ui_db_browser_detail.c'
 ]
 
 # 5. Build the GUI Application
