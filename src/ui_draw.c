@@ -563,8 +563,12 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
     }
 
     // Equippability highlight for the hovered item (green = can equip,
-    // red = requirements not met by the loaded character).
+    // red = requirements not met by the loaded character).  Only items that
+    // occupy an equipment slot (armour, jewellery, weapons, shields) qualify;
+    // scrolls, charms, relics, artifacts, potions and dyes are never slotted
+    // into the character and so get no highlight.
     if(hover_equip &&
+       item_gear_type(item->base_name) != 0 &&
        hover_cx >= item->point_x && hover_cx < item->point_x + w &&
        hover_cy >= item->point_y && hover_cy < item->point_y + h)
     {
