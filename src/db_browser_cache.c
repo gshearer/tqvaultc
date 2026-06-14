@@ -278,6 +278,7 @@ wr_categories(FILE *f, const DbBrowserState *st)
         wr_str(f, it->path) &&
         wr_str(f, it->name) &&
         wr_str(f, it->name_lc) &&
+        wr_str(f, it->search_blob) &&
         wr_str(f, it->icon_path) &&
         wr_u8(f, db_color_to_index(it->color)) &&
         wr_u32(f, it->var1) &&
@@ -311,7 +312,7 @@ rd_categories(FILE *f, DbBrowserState *st)
 
     for(uint32_t i = 0; i < n; i++)
     {
-      char *path = NULL, *name = NULL, *name_lc = NULL, *icon = NULL;
+      char *path = NULL, *name = NULL, *name_lc = NULL, *blob = NULL, *icon = NULL;
       char *equip = NULL, **variants = NULL;
       uint8_t color_idx = 0, flags = 0;
       uint32_t var1 = 0;
@@ -321,6 +322,7 @@ rd_categories(FILE *f, DbBrowserState *st)
         rd_str(f, &path) &&
         rd_str(f, &name) &&
         rd_str(f, &name_lc) &&
+        rd_str(f, &blob) &&
         rd_str(f, &icon) &&
         rd_u8(f, &color_idx) &&
         rd_u32(f, &var1) &&
@@ -331,7 +333,7 @@ rd_categories(FILE *f, DbBrowserState *st)
 
       if(!ok)
       {
-        g_free(path); g_free(name); g_free(name_lc); g_free(icon);
+        g_free(path); g_free(name); g_free(name_lc); g_free(blob); g_free(icon);
         g_free(equip); g_strfreev(variants);
         return(false);
       }
@@ -341,6 +343,7 @@ rd_categories(FILE *f, DbBrowserState *st)
       it->path        = path;
       it->name        = name;
       it->name_lc     = name_lc;
+      it->search_blob = blob;
       it->icon_path   = icon;
       it->color       = db_color_from_index(color_idx);
       it->var1        = var1;
@@ -822,30 +825,43 @@ db_counts_match(const DbBrowserState *a, const DbBrowserState *b)
   return(true);
 }
 
-int
-db_browser_cache_selftest(void)
+// True if every item's search_blob survives the round-trip byte-for-byte.
+// Assumes the per-category counts already matched (db_counts_match).
+static bool
+db_blobs_match(const DbBrowserState *a, const DbBrowserState *b)
 {
-  const char *gf = global_config.game_folder;
-
-  if(!gf)
+  for(int c = 0; c < CAT_COUNT; c++)
   {
-    fprintf(stderr, "db-cache-selftest: game_folder not configured\n");
-    return(1);
+    GListModel *ma = G_LIST_MODEL(a->cat_stores[c]);
+    GListModel *mb = G_LIST_MODEL(b->cat_stores[c]);
+    guint n = g_list_model_get_n_items(ma);
+
+    for(guint i = 0; i < n; i++)
+    {
+      DbBrowseItem *ia = g_list_model_get_item(ma, i);
+      DbBrowseItem *ib = g_list_model_get_item(mb, i);
+      const char *sa = ia->search_blob ? ia->search_blob : "";
+      const char *sb = ib->search_blob ? ib->search_blob : "";
+      bool eq = (strcmp(sa, sb) == 0);
+
+      g_object_unref(ia);
+      g_object_unref(ib);
+      if(!eq)
+      {
+        printf("MISMATCH blob cat %s item %u\n", db_cat_label(c), i);
+        return(false);
+      }
+    }
   }
+  return(true);
+}
 
-  // An independent translation table (the index builders need it; mirrors the
-  // --tooltip one-shot).  No window required.
-  TQTranslation *tr = translation_init();
-
-  if(tr)
-  {
-    char p[1024];
-
-    snprintf(p, sizeof(p), "%s/Text/Text_EN.arc", gf);
-    translation_load_from_arc(tr, p);
-  }
-
-  // 1. Build the index live, exactly as the browser's idle loader does.
+// Build a fully-indexed DbBrowserState live (all categories + creatures +
+// quests + search blobs), exactly as the browser's idle loader does.  `tr` must
+// outlive the returned state; free it with db_free_state().
+static DbBrowserState *
+db_selftest_build_state(TQTranslation *tr)
+{
   DbBrowserState *st = g_new0(DbBrowserState, 1);
 
   st->tr = tr;
@@ -858,19 +874,57 @@ db_browser_cache_selftest(void)
   {
     char arz_path[1024];
 
-    snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz", gf);
+    snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
+             global_config.game_folder);
     st->arz = arz_load(arz_path);
     st->owns_arz = true;
   }
   db_alloc_stores(st);
 
-  printf("Building index...\n");
   build_category_index(st);
   build_set_index(st);
   build_affix_index(st);
   build_skill_index(st);
   build_creature_index_grid(st);
   build_quest_index_grid(st);
+  build_search_blobs(st);
+  return(st);
+}
+
+// Load an independent translation table (the index builders need it; mirrors
+// the --tooltip one-shot).  No window required.  Returns NULL if unavailable.
+static TQTranslation *
+db_selftest_translations(void)
+{
+  TQTranslation *tr = translation_init();
+
+  if(tr)
+  {
+    char p[1024];
+
+    snprintf(p, sizeof(p), "%s/Text/Text_EN.arc", global_config.game_folder);
+    translation_load_from_arc(tr, p);
+  }
+  return(tr);
+}
+
+int
+db_browser_cache_selftest(void)
+{
+  const char *gf = global_config.game_folder;
+
+  if(!gf)
+  {
+    fprintf(stderr, "db-cache-selftest: game_folder not configured\n");
+    return(1);
+  }
+
+  TQTranslation *tr = db_selftest_translations();
+
+  // 1. Build the index live, exactly as the browser's idle loader does.
+  printf("Building index...\n");
+  DbBrowserState *st = db_selftest_build_state(tr);
+
   db_print_counts("built", st);
 
   // 2. Save.
@@ -903,8 +957,8 @@ db_browser_cache_selftest(void)
   }
   db_print_counts("loaded", st2);
 
-  // 4. Compare.
-  bool ok = db_counts_match(st, st2);
+  // 4. Compare counts, then assert every search_blob round-trips intact.
+  bool ok = db_counts_match(st, st2) && db_blobs_match(st, st2);
 
   printf("\nROUNDTRIP %s\n", ok ? "OK" : "FAIL");
 
@@ -913,4 +967,102 @@ db_browser_cache_selftest(void)
   if(tr)
     translation_free(tr);
   return(ok ? 0 : 1);
+}
+
+// Split a lowercased needle into whitespace tokens (drops empties).  Returns a
+// NULL-terminated GStrv (g_strfreev'able).  Mirrors db_split_tokens() in the GUI.
+static char **
+db_selftest_tokens(const char *lc)
+{
+  GPtrArray *toks = g_ptr_array_new();
+
+  for(const char *p = lc; *p;)
+  {
+    while(*p == ' ' || *p == '\t')
+      p++;
+    if(!*p)
+      break;
+
+    const char *start = p;
+
+    while(*p && *p != ' ' && *p != '\t')
+      p++;
+    g_ptr_array_add(toks, g_strndup(start, (size_t)(p - start)));
+  }
+  g_ptr_array_add(toks, NULL);
+  return((char **)g_ptr_array_free(toks, FALSE));
+}
+
+int
+db_browser_search_selftest(const char *keywords)
+{
+  const char *gf = global_config.game_folder;
+
+  if(!gf)
+  {
+    fprintf(stderr, "db-search-selftest: game_folder not configured\n");
+    return(1);
+  }
+  if(!keywords || !keywords[0])
+  {
+    fprintf(stderr, "db-search-selftest: usage: --db-search-selftest "
+                    "\"<keywords>\" [config]\n");
+    return(1);
+  }
+
+  TQTranslation *tr = db_selftest_translations();
+
+  // Build the real full index + search blobs, exactly as the browser does.
+  DbBrowserState *st = db_selftest_build_state(tr);
+
+  // Tokenize the query the same way the GUI does (lowercase, multi-token AND).
+  char *lc = g_ascii_strdown(keywords, -1);
+  char **toks = db_selftest_tokens(lc);
+
+  printf("Search: \"%s\"  ->  tokens:", keywords);
+  for(char **t = toks; *t; t++)
+    printf(" [%s]", *t);
+  printf("\n\n");
+
+  int total = 0;
+  int per_cat[CAT_COUNT] = { 0 };
+
+  for(int c = 0; c < CAT_COUNT; c++)
+  {
+    GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
+    guint n = g_list_model_get_n_items(m);
+
+    for(guint i = 0; i < n; i++)
+    {
+      DbBrowseItem *bi = g_list_model_get_item(m, i);
+      const char *hay = bi->search_blob ? bi->search_blob : bi->name_lc;
+      bool match = (hay != NULL);
+
+      for(char **t = toks; *t && match; t++)
+        if(!strstr(hay, *t))
+          match = false;
+
+      if(match)
+      {
+        printf("  %-14s %s\n", db_cat_label(c), bi->name ? bi->name : bi->path);
+        per_cat[c]++;
+        total++;
+      }
+      g_object_unref(bi);
+    }
+  }
+
+  // Per-category tally (only the non-empty buckets), then the grand total.
+  printf("\nby category:");
+  for(int c = 0; c < CAT_COUNT; c++)
+    if(per_cat[c] > 0)
+      printf(" %s=%d", db_cat_label(c), per_cat[c]);
+  printf("\n\n%d match%s for \"%s\"\n", total, total == 1 ? "" : "es", keywords);
+
+  g_strfreev(toks);
+  g_free(lc);
+  db_free_state(st);
+  if(tr)
+    translation_free(tr);
+  return(0);
 }

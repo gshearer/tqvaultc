@@ -331,6 +331,8 @@ main(int argc, char **argv)
   const char *skill_bonus_chr_path = NULL;
 
   bool db_cache_selftest_only = false;
+  bool db_search_selftest_only = false;
+  const char *db_search_keywords = NULL;
   bool thumbs_build_only = false;
 
   for(int i = 1; i < argc; i++)
@@ -363,6 +365,11 @@ main(int argc, char **argv)
     else if(strcmp(argv[i], "--db-cache-selftest") == 0)
     {
       db_cache_selftest_only = true;
+    }
+    else if(strcmp(argv[i], "--db-search-selftest") == 0 && i + 1 < argc)
+    {
+      db_search_selftest_only = true;
+      db_search_keywords = argv[++i];
     }
     else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
     {
@@ -469,6 +476,29 @@ main(int argc, char **argv)
     affix_table_init(NULL);
 
     int rc = db_browser_cache_selftest();
+
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(rc);
+  }
+
+  if(db_search_selftest_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --db-search-selftest: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+
+    int rc = db_browser_search_selftest(db_search_keywords);
 
     item_stats_free();
     affix_table_free();

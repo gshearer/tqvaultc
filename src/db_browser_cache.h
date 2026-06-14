@@ -23,7 +23,7 @@
 // Bump on ANY change to the on-disk layout below OR to the game content it
 // encodes (categorization rules, loot resolution, name resolution): a stale
 // cache from an older binary must not be trusted.
-#define DB_CACHE_VERSION 1
+#define DB_CACHE_VERSION 2
 
 // True iff a cache file exists whose header (magic + version + database.arz
 // size/mtime) matches the current install — i.e. a load would succeed without
@@ -50,5 +50,14 @@ bool db_browser_cache_load(DbBrowserState *st, const char *game_folder);
 // code (0 == OK).  Assumes the asset manager + interns + item_stats + affix
 // tables are already initialized by the caller.
 int db_browser_cache_selftest(void);
+
+// Headless keyword/content-search self-test (tqvaultc --db-search-selftest
+// "<keywords>"): build the real full index live, generate every entry's search
+// blob, apply the multi-token AND match across all categories, and print each
+// hit ("CAT_LABEL  name") plus a per-category tally and grand total.  Exercises
+// the actual blob + match path without the GUI.  Returns a process exit code.
+// Assumes the asset manager + interns + item_stats + affix tables are already
+// initialized by the caller.
+int db_browser_search_selftest(const char *keywords);
 
 #endif

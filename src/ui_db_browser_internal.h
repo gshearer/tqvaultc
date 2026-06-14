@@ -42,6 +42,9 @@ struct _DbBrowseItem {
   char *path;        // full DBR path (also the item base_name)
   char *name;        // resolved display name (UTF-8)
   char *name_lc;     // lowercased name, for substring search
+  char *search_blob; // lowercased plain-text of the whole detail card (name +
+                     // every rendered stat), for keyword/content search; built
+                     // by build_search_blobs(), persisted in the disk cache
   char *icon_path;   // DBR to draw the icon from (NULL == use path); sets use
                      // their first member, which has no bitmap of their own
   const char *color; // Pango foreground color (static string from get_item_color)
@@ -76,10 +79,17 @@ typedef struct {
   DbQuestIndex    *quests;     // quest item-reward index ("reward from")
 
   GtkWidget *grid_view;
-  GtkFilterListModel *filter_model;   // sits over the active category store
-  GtkCustomFilter *custom_filter;     // name substring filter
+  GtkFilterListModel *filter_model;   // sits over the active model (see below)
+  GtkFlattenListModel *flatten;       // all category stores concatenated; the
+                                      // filter_model's source while searching
+                                      // (empty box -> the current category)
+  GtkCustomFilter *custom_filter;     // keyword/content filter (search_tokens)
   GtkSingleSelection *selection;
+  int  current_cat;                   // category shown when not searching (-1 ==
+                                      // none picked yet)
   char search_lc[256];                // lowercased needle
+  char **search_tokens;               // search_lc split on whitespace (GStrv);
+                                      // a content match requires ALL of them
 
   // Sidebar + search, retained so detail-pane cross-reference links can switch
   // category, clear the filter and select the jump target (Phase 7).
@@ -111,11 +121,19 @@ void build_quest_index_grid(DbBrowserState *st);
 char *db_item_display_name(DbBrowserState *st, const char *path);
 const char *db_skill_effective_path(const char *path, int depth);
 int db_skill_max_level(const char *path, int depth);
+// Resolve a skill's display name (recurses the buff/pet ref chain), with a
+// path-derived fallback so it never returns NULL.  Caller frees (g_free).
+char *db_skill_display_name(DbBrowserState *st, const char *path);
 char *db_creature_display_name(DbBrowserState *st, DbCreature *c);
 const char *db_set_member_name(DbBrowserState *st, const char *member_path);
 const char *db_creature_color(const char *classification);
 
 // Detail renderer (ui_db_browser_detail.c).
 void update_detail(DbBrowserState *st, DbBrowseItem *bi);
+
+// Populate every indexed item's search_blob (lowercased plain text of its whole
+// detail card).  Window-less (uses st->tr only); run after all category indexes
+// are built, on both the GUI loader and the startup-build paths.
+void build_search_blobs(DbBrowserState *st);
 
 #endif

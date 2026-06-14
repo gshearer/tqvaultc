@@ -80,19 +80,18 @@ db_set_tier_depth(TQArzRecordData *data)
   return(depth);
 }
 
-// Rebuild the detail pane for an item set: the set name, its members (each in
-// its own rarity color) and the tiered set bonuses.  Bonus tiers reuse
-// add_stats_from_record at shard_index = (set items - 1); empty tiers (the
-// one-piece slot and any all-zero rows) are skipped.
+// Build the set detail markup (text only, no widget/icon access): the set name,
+// its members (each in its own rarity color) and the tiered set bonuses.  Bonus
+// tiers reuse add_stats_from_record at shard_index = (set items - 1); empty
+// tiers (the one-piece slot and any all-zero rows) are skipped.
 static void
-update_detail_set(DbBrowserState *st, DbBrowseItem *bi)
+build_set_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
-  TQTranslation *tr = st->widgets->translations;
+  TQTranslation *tr = st->tr;
   TQArzRecordData *set_data = asset_get_dbr(bi->path);
-  char markup[32768];
   BufWriter w;
 
-  buf_init(&w, markup, sizeof(markup));
+  buf_init(&w, out, outsz);
 
   // Set name.
   char *e_name = escape_markup(bi->name);
@@ -168,7 +167,15 @@ update_detail_set(DbBrowserState *st, DbBrowseItem *bi)
     buf_write(&w, "\n<span color='#9F9F9F'>Required Set Items: %d</span>\n", p);
     buf_write(&w, "%s", tier_buf);
   }
+}
 
+// Rebuild the detail pane for an item set (markup + first-member icon).
+static void
+update_detail_set(DbBrowserState *st, DbBrowseItem *bi)
+{
+  char markup[32768];
+
+  build_set_markup(st, bi, markup, sizeof(markup));
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
   db_detail_set_icon(st, bi->icon_path, 0);
 }
@@ -188,7 +195,7 @@ db_consumable_name(DbBrowserState *st, const char *path)
 
   if(tag && tag[0])
   {
-    const char *name = translation_get(st->widgets->translations, tag);
+    const char *name = translation_get(st->tr, tag);
 
     if(name && name[0] && strcmp(name, tag) != 0)
       return(strdup(name));
@@ -343,14 +350,14 @@ db_append_bonus_table(DbBrowserState *st, const char *item_path, BufWriter *w)
 
     if(desc && desc[0])
     {
-      const char *t = translation_get(st->widgets->translations, desc);
+      const char *t = translation_get(st->tr, desc);
 
       if(t && t[0] && strcmp(t, desc) != 0)
         name = strdup(t);
     }
 
     if(!name)
-      name = item_bonus_stat_summary(uniq_path[i], st->widgets->translations);
+      name = item_bonus_stat_summary(uniq_path[i], st->tr);
     if(!name)
       name = pretty_name_from_path(uniq_path[i]);
 
@@ -421,7 +428,7 @@ db_append_artifact_formula(DbBrowserState *st, const char *item_path, BufWriter 
 static void
 db_append_consumable_detail(DbBrowserState *st, const char *path, BufWriter *w)
 {
-  TQTranslation *tr = st->widgets->translations;
+  TQTranslation *tr = st->tr;
 
   if(item_is_relic_or_charm(path))
   {
@@ -555,7 +562,7 @@ static void
 db_append_skill_levels(DbBrowserState *st, const char *eff_path, int max_level,
                        bool is_mastery, BufWriter *w)
 {
-  TQTranslation *tr = st->widgets->translations;
+  TQTranslation *tr = st->tr;
   const char *WHITE = "#E0E0E0";
 
   if(max_level < 1)
@@ -604,15 +611,14 @@ db_append_skill_levels(DbBrowserState *st, const char *eff_path, int max_level,
   }
 }
 
-// Rebuild the detail pane for a mastery/skill: its name (skill gold),
+// Build the mastery/skill detail markup (text only): its name (skill gold),
 // description, max level + mastery-level requirement, and its leveled
 // properties.  Reuses the same DBR machinery as the visual skill manager
-// (add_stats_from_record over the effective skill record).  Icon is the
-// skill's .tex bitmap (loaded via texture_load, not the item loader).
+// (add_stats_from_record over the effective skill record).
 static void
-update_detail_skill(DbBrowserState *st, DbBrowseItem *bi)
+build_skill_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
-  TQTranslation *tr = st->widgets->translations;
+  TQTranslation *tr = st->tr;
   char markup[32768];
   BufWriter w;
 
@@ -670,8 +676,18 @@ update_detail_skill(DbBrowserState *st, DbBrowseItem *bi)
   // Skills say "Intellect" where item-stat formatting says "Intelligence".
   char *fixed = db_str_replace(markup, "Intelligence", "Intellect");
 
-  gtk_label_set_markup(GTK_LABEL(st->detail_label), fixed);
+  g_strlcpy(out, fixed, outsz);
   g_free(fixed);
+}
+
+// Rebuild the detail pane for a mastery/skill (icon = the skill's .tex bitmap).
+static void
+update_detail_skill(DbBrowserState *st, DbBrowseItem *bi)
+{
+  char markup[32768];
+
+  build_skill_markup(st, bi, markup, sizeof(markup));
+  gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
 
   // Icon: the skill's .tex bitmap.
   GdkPixbuf *pb = bi->icon_path ? texture_load(bi->icon_path) : NULL;
@@ -681,19 +697,18 @@ update_detail_skill(DbBrowserState *st, DbBrowseItem *bi)
     g_object_unref(pb);
 }
 
-// Rebuild the detail pane for a prefix/suffix affix: its name (in rarity
+// Build the prefix/suffix affix detail markup (text only): its name (in rarity
 // color), prefix/suffix kind + classification, level requirement, the granted
 // properties (via add_stats_from_record, which also follows pet/skill bonuses)
 // and the equipment types it can roll on.  Stat-less affixes (the Tinkerer's
-// extra relic slot) fall back to their special text.  Affixes have no icon.
+// extra relic slot) fall back to their special text.
 static void
-update_detail_affix(DbBrowserState *st, DbBrowseItem *bi)
+build_affix_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
-  TQTranslation *tr = st->widgets->translations;
-  char markup[32768];
+  TQTranslation *tr = st->tr;
   BufWriter w;
 
-  buf_init(&w, markup, sizeof(markup));
+  buf_init(&w, out, outsz);
 
   // Name in its rarity color.
   char *e_name = escape_markup(bi->name);
@@ -779,7 +794,15 @@ update_detail_affix(DbBrowserState *st, DbBrowseItem *bi)
     if(e)
       free(e);
   }
+}
 
+// Rebuild the detail pane for a prefix/suffix affix (affixes have no icon).
+static void
+update_detail_affix(DbBrowserState *st, DbBrowseItem *bi)
+{
+  char markup[32768];
+
+  build_affix_markup(st, bi, markup, sizeof(markup));
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
   db_detail_set_icon(st, NULL, 0);
 }
@@ -935,16 +958,214 @@ db_append_item_rows(DbBrowserState *st, BufWriter *w, GPtrArray *paths,
   g_free(rows);
 }
 
-// Detail pane for a creature: name, classification/race/levels, and the items
-// it can drop (per-difficulty chance).
+// Read a scalar numeric attribute (int or float) from a loaded record, 0 if
+// absent.  Interns the name on each call (cheap: a hash lookup in the intern
+// table), so callers can pass plain literals.
+static float
+db_creature_attr(TQArzRecordData *d, const char *name)
+{
+  return(d ? dbr_get_float_fast(d, arz_intern(name), 0) : 0.0f);
+}
+
+// The creature resistance fields we surface, in the game's display order, each
+// with a friendly label.  A field absent from a creature reads 0 and is skipped,
+// so this list can stay comprehensive without harm.  The flat-absorption fields
+// (defensiveAbsorption/Protection) are intentionally omitted — they aren't %
+// resistances.
+static const struct { const char *field; const char *label; }
+DB_CREATURE_RESISTS[] = {
+  { "defensivePhysical",   "Physical" },
+  { "defensivePierce",     "Pierce" },
+  { "defensiveFire",       "Fire" },
+  { "defensiveCold",       "Cold" },
+  { "defensiveLightning",  "Lightning" },
+  { "defensivePoison",     "Poison" },
+  { "defensiveLife",       "Vitality" },
+  { "defensiveBleeding",   "Bleeding" },
+  { "defensiveElemental",  "Elemental" },
+  { "defensiveDisruption", "Skill Disruption" },
+  { "defensiveStun",       "Stun" },
+  { "defensiveFreeze",     "Freeze" },
+  { "defensivePetrify",    "Petrify" },
+  { "defensiveTrap",       "Entrapment" },
+  { "defensiveConvert",    "Conversion" },
+  { "defensiveFear",       "Fear" },
+  { "defensiveConfusion",  "Confusion" },
+  { "defensiveSleep",      "Sleep" },
+  { "defensiveLifeLeach",  "Life Leech" },
+  { "defensiveManaLeach",  "Mana Leech" },
+  { "defensiveTotalSpeed", "Slow" },
+};
+
+// True for utility skill records that aren't "cast" by the creature: passives
+// (the GlobalProperties_* stat blocks, Armor_Passive, immunities) all carry a
+// Skill_Passive class, so one Class check drops them all.
+static bool
+db_cast_skill_skip(const char *path)
+{
+  if(!path || !path[0])
+    return(true);
+
+  const char *cls = dbr_get_string(path, "Class");
+
+  return(cls && strncasecmp(cls, "Skill_Passive", 13) == 0);
+}
+
+// Append the tq-db-style "Properties" block for a creature: Life/Mana (+ regen),
+// Str/Dex/Int, a Resistances line (non-zero % resists) and a Casts line (the
+// active skills it uses, resolved to display names).  Levels + race already
+// print in the header line above, so they aren't repeated here.
 static void
-update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
+db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
+{
+  TQArzRecordData *d = asset_get_dbr(c->path);
+
+  if(!d)
+    return;
+
+  buf_write(w, "\n<span color='#B0B0B0'>Properties:</span>\n");
+
+  // Life / Mana, with regen appended when non-zero.
+  float life = db_creature_attr(d, "characterLife");
+  float mana = db_creature_attr(d, "characterMana");
+  float life_rg = db_creature_attr(d, "characterLifeRegen");
+  float mana_rg = db_creature_attr(d, "characterManaRegen");
+
+  if(life > 0 || mana > 0)
+  {
+    buf_write(w, "<span color='#C8C8C8'>Life %d", (int)(life + 0.5f));
+    if(life_rg > 0)
+      buf_write(w, " (+%d/s)", (int)(life_rg + 0.5f));
+    if(mana > 0)
+    {
+      buf_write(w, " · Mana %d", (int)(mana + 0.5f));
+      if(mana_rg > 0)
+        buf_write(w, " (+%d/s)", (int)(mana_rg + 0.5f));
+    }
+    buf_write(w, "</span>\n");
+  }
+
+  // Strength / Dexterity / Intelligence.
+  int str = (int)(db_creature_attr(d, "characterStrength") + 0.5f);
+  int dex = (int)(db_creature_attr(d, "characterDexterity") + 0.5f);
+  int intl = (int)(db_creature_attr(d, "characterIntelligence") + 0.5f);
+
+  if(str > 0 || dex > 0 || intl > 0)
+    buf_write(w, "<span color='#C8C8C8'>Str %d · Dex %d · Int %d</span>\n",
+              str, dex, intl);
+
+  // Resistances: non-zero % resists in display order.
+  bool any_res = false;
+
+  for(size_t i = 0; i < G_N_ELEMENTS(DB_CREATURE_RESISTS); i++)
+  {
+    float v = db_creature_attr(d, DB_CREATURE_RESISTS[i].field);
+
+    if(v <= 0)
+      continue;
+
+    if(!any_res)
+    {
+      buf_write(w, "<span color='#B0B0B0'>Resistances:</span> "
+                   "<span color='#C8C8C8'>");
+      any_res = true;
+    }
+    else
+      buf_write(w, " · ");
+
+    buf_write(w, "%s %d%%", DB_CREATURE_RESISTS[i].label, (int)(v + 0.5f));
+  }
+  if(any_res)
+    buf_write(w, "</span>\n");
+
+  // Casts: the active skills it uses (skillName1..N + attack/special slots),
+  // deduped by path then by resolved name, skipping passive/utility records.
+  static const char *ATTACK_FIELDS[] = {
+    "attackSkillName", "specialAttackSkillName", "specialAttack2SkillName",
+  };
+  char fld[32];
+  GPtrArray *paths = g_ptr_array_new();   // borrowed const char* into the record
+
+  for(int n = 1; n <= 32; n++)
+  {
+    snprintf(fld, sizeof(fld), "skillName%d", n);
+
+    const char *sp = record_get_string_fast(d, arz_intern(fld));
+
+    if(sp && sp[0])
+      g_ptr_array_add(paths, (gpointer)sp);
+  }
+  for(size_t i = 0; i < G_N_ELEMENTS(ATTACK_FIELDS); i++)
+  {
+    const char *sp = record_get_string_fast(d, arz_intern(ATTACK_FIELDS[i]));
+
+    if(sp && sp[0])
+      g_ptr_array_add(paths, (gpointer)sp);
+  }
+
+  GHashTable *seen_path = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, NULL);
+  GHashTable *seen_name = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                                g_free, NULL);
+  int shown = 0;
+
+  for(guint i = 0; i < paths->len; i++)
+  {
+    const char *sp = g_ptr_array_index(paths, i);
+    char *lc = g_ascii_strdown(sp, -1);
+
+    if(g_hash_table_contains(seen_path, lc))
+    {
+      g_free(lc);
+      continue;
+    }
+    g_hash_table_add(seen_path, lc);  // takes ownership of lc
+
+    if(db_cast_skill_skip(sp))
+      continue;
+
+    char *name = db_skill_display_name(st, sp);
+    char *name_lc = g_ascii_strdown(name, -1);
+
+    if(g_hash_table_contains(seen_name, name_lc))
+    {
+      g_free(name_lc);
+      g_free(name);
+      continue;
+    }
+    g_hash_table_add(seen_name, name_lc);  // takes ownership
+
+    char *e = escape_markup(name);
+
+    if(shown == 0)
+      buf_write(w, "<span color='#B0B0B0'>Casts:</span> "
+                   "<span color='#C8C8C8'>%s", e ? e : "");
+    else
+      buf_write(w, ", %s", e ? e : "");
+    shown++;
+
+    if(e)
+      free(e);
+    g_free(name);
+  }
+  if(shown > 0)
+    buf_write(w, "</span>\n");
+
+  g_ptr_array_free(paths, TRUE);
+  g_hash_table_destroy(seen_path);
+  g_hash_table_destroy(seen_name);
+}
+
+// Build the creature detail markup (text only): name, classification/race/
+// levels, the Properties block, and the items it can drop (per-difficulty
+// chance).  No widget/thumbnail access.
+static void
+build_creature_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
   DbCreature *c = g_ptr_array_index(st->creatures->creatures, bi->src_idx);
-  char markup[32768];
   BufWriter w;
 
-  buf_init(&w, markup, sizeof(markup));
+  buf_init(&w, out, outsz);
 
   char *e_name = escape_markup(bi->name);
 
@@ -957,6 +1178,9 @@ update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
             c->classification ? c->classification : "",
             c->race ? " · " : "", c->race ? c->race : "",
             c->level[0], c->level[1], c->level[2]);
+
+  // tq-db-style Properties block (HP/mana, attributes, resistances, casts).
+  db_append_creature_properties(st, c, &w);
 
   // Curate the drop list: hide mundane common (white) gear and health/energy
   // potions (heroes/bosses drop heaps of both), keeping the worthwhile loot.
@@ -973,8 +1197,20 @@ update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
 
   buf_write(&w, "\n<span color='#B0B0B0'>Drops (%u):</span>\n", shown->len);
   db_append_item_rows(st, &w, shown, 80);
-  g_ptr_array_free(shown, FALSE);   // borrowed DbItemChance* — don't free items
+  // Free the array segment but not the elements: `shown` has no free-func, so
+  // the borrowed DbItemChance* (owned by c->drops) are left intact.  (TRUE, not
+  // FALSE — FALSE returns pdata without freeing it, leaking the segment.)
+  g_ptr_array_free(shown, TRUE);
+}
 
+// Rebuild the detail pane for a creature (markup + rendered model thumbnail).
+static void
+update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
+{
+  DbCreature *c = g_ptr_array_index(st->creatures->creatures, bi->src_idx);
+  char markup[32768];
+
+  build_creature_markup(st, bi, markup, sizeof(markup));
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
 
   // Show the creature's rendered model thumbnail (cached at startup), if any.
@@ -985,15 +1221,15 @@ update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
     g_object_unref(pb);
 }
 
-// Detail pane for a quest: name and its item rewards per difficulty.
+// Build the quest detail markup (text only): name + its item rewards per
+// difficulty.
 static void
-update_detail_quest(DbBrowserState *st, DbBrowseItem *bi)
+build_quest_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
   DbQuest *q = g_ptr_array_index(st->quests->quests, bi->src_idx);
-  char markup[32768];
   BufWriter w;
 
-  buf_init(&w, markup, sizeof(markup));
+  buf_init(&w, out, outsz);
 
   char *e_name = escape_markup(bi->name);
 
@@ -1026,7 +1262,15 @@ update_detail_quest(DbBrowserState *st, DbBrowseItem *bi)
     db_append_item_rows(st, &w, rows, 40);
     g_ptr_array_free(rows, TRUE);  // frees the DbItemChance shells, not item_lc
   }
+}
 
+// Rebuild the detail pane for a quest (quests have no icon).
+static void
+update_detail_quest(DbBrowserState *st, DbBrowseItem *bi)
+{
+  char markup[32768];
+
+  build_quest_markup(st, bi, markup, sizeof(markup));
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
   db_detail_set_icon(st, NULL, 0);
 }
@@ -1092,7 +1336,7 @@ db_append_reward_from(DbBrowserState *st, const char *item_path, BufWriter *w)
   {
     DbQuestReward *rw = g_ptr_array_index(rewards, i);
     DbQuest *q = g_ptr_array_index(st->quests->quests, rw->quest_idx);
-    const char *name = translation_get(st->widgets->translations, q->title_tag);
+    const char *name = translation_get(st->tr, q->title_tag);
     char *e = escape_markup((name && name[0]) ? name : q->title_tag);
     char chbuf[96];
 
@@ -1106,11 +1350,105 @@ db_append_reward_from(DbBrowserState *st, const char *item_path, BufWriter *w)
   }
 }
 
-// Rebuild the right-hand detail pane for the selected item: large icon plus
-// the full formatted tooltip (built from a synthetic vault item, the same
-// path the in-app tooltips use).  Relics/charms/artifacts get extra tq-db-style
-// sections appended (shard progression, completion bonuses, formula reagents);
-// every item gets "Dropped by" / "Quest reward from" cross-references.
+// Build the regular-item detail markup (text only): the full formatted tooltip
+// (built from a synthetic vault item, the same path the in-app tooltips use)
+// plus browser-only tq-db-style sections for relics/charms/artifacts/scrolls
+// (shard progression, completion bonuses, formula reagents) and the "Dropped
+// by" / "Quest reward from" cross-references.
+static void
+build_item_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
+{
+  // Full tooltip via the shared formatter (reads base_name only).
+  TQVaultItem vi;
+
+  memset(&vi, 0, sizeof(vi));
+  vi.base_name  = (char *)bi->path;  // formatter only reads it
+  vi.var1       = bi->var1;
+  vi.stack_size = 1;
+
+  vault_item_format_stats(&vi, st->tr, out, outsz);
+
+  size_t len = strlen(out);
+  BufWriter w;
+
+  buf_init(&w, out + len, outsz - len);
+
+  // Append browser-only detail for relics/charms/artifacts/scrolls.
+  if(item_is_relic_or_charm(bi->path) || item_is_artifact(bi->path) ||
+     db_is_scroll(bi->path))
+    db_append_consumable_detail(st, bi->path, &w);
+
+  // Cross-references: which creatures drop it and which quests grant it.
+  db_append_dropped_by(st, bi->path, &w);
+  db_append_reward_from(st, bi->path, &w);
+}
+
+// Dispatch to the matching text-only build_*_markup for an item, into out.
+// Mirrors update_detail's flag dispatch but produces only markup (no widgets) —
+// the basis for both the live detail pane and the search-blob generation.
+static void
+build_detail_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
+{
+  if(bi->is_set)
+    build_set_markup(st, bi, out, outsz);
+  else if(bi->is_affix)
+    build_affix_markup(st, bi, out, outsz);
+  else if(bi->is_skill)
+    build_skill_markup(st, bi, out, outsz);
+  else if(bi->is_creature)
+    build_creature_markup(st, bi, out, outsz);
+  else if(bi->is_quest)
+    build_quest_markup(st, bi, out, outsz);
+  else
+    build_item_markup(st, bi, out, outsz);
+}
+
+// Build the lowercased plain-text search blob for every indexed item: render
+// each entry's whole detail card to text, strip the Pango markup and lowercase
+// it (so a keyword search covers everything shown on the card, with no
+// per-field logic).  The display name is prefixed so name matches always hit
+// even for entries whose card is otherwise sparse.  Window-less: it only needs
+// st->tr (no widgets), so it runs on the startup-build path too.
+void
+build_search_blobs(DbBrowserState *st)
+{
+  char markup[32768];
+  char plain[32768];
+
+  for(int c = 0; c < CAT_COUNT; c++)
+  {
+    GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
+    guint n = m ? g_list_model_get_n_items(m) : 0;
+
+    for(guint i = 0; i < n; i++)
+    {
+      DbBrowseItem *bi = g_list_model_get_item(m, i);  // owns a ref
+
+      markup[0] = '\0';
+      build_detail_markup(st, bi, markup, sizeof(markup));
+      strip_pango_markup(plain, sizeof(plain), markup);
+
+      // Prefix the display name so names always match (the card may not repeat
+      // it verbatim, e.g. set/skill headers carry markup the strip removes).
+      GString *blob = g_string_new(bi->name ? bi->name : "");
+
+      g_string_append_c(blob, '\n');
+      g_string_append(blob, plain);
+
+      char *lc = g_ascii_strdown(blob->str, -1);
+
+      g_free(bi->search_blob);
+      bi->search_blob = lc;
+
+      g_string_free(blob, TRUE);
+      g_object_unref(bi);
+    }
+  }
+}
+
+// Rebuild the right-hand detail pane for the selected item: large icon plus the
+// full formatted detail card.  Dispatches by flag to the matching renderer
+// (set/affix/skill/creature/quest or the regular-item path).
 void
 update_detail(DbBrowserState *st, DbBrowseItem *bi)
 {
@@ -1121,62 +1459,16 @@ update_detail(DbBrowserState *st, DbBrowseItem *bi)
     return;
   }
 
-  if(bi->is_set)
-  {
-    update_detail_set(st, bi);
-    return;
-  }
+  if(bi->is_set)     { update_detail_set(st, bi);      return; }
+  if(bi->is_affix)   { update_detail_affix(st, bi);    return; }
+  if(bi->is_skill)   { update_detail_skill(st, bi);    return; }
+  if(bi->is_creature){ update_detail_creature(st, bi); return; }
+  if(bi->is_quest)   { update_detail_quest(st, bi);    return; }
 
-  if(bi->is_affix)
-  {
-    update_detail_affix(st, bi);
-    return;
-  }
-
-  if(bi->is_skill)
-  {
-    update_detail_skill(st, bi);
-    return;
-  }
-
-  if(bi->is_creature)
-  {
-    update_detail_creature(st, bi);
-    return;
-  }
-
-  if(bi->is_quest)
-  {
-    update_detail_quest(st, bi);
-    return;
-  }
-
-  // Full tooltip via the shared formatter (reads base_name only).
-  TQVaultItem vi;
-
-  memset(&vi, 0, sizeof(vi));
-  vi.base_name  = (char *)bi->path;  // formatter only reads it
-  vi.var1       = bi->var1;
-  vi.stack_size = 1;
-
+  // Regular item: markup via the shared builder, plus the item icon.
   char markup[32768];
 
-  vault_item_format_stats(&vi, st->widgets->translations, markup, sizeof(markup));
-
-  size_t len = strlen(markup);
-  BufWriter w;
-
-  buf_init(&w, markup + len, sizeof(markup) - len);
-
-  // Append browser-only detail for relics/charms/artifacts/scrolls.
-  if(item_is_relic_or_charm(bi->path) || item_is_artifact(bi->path) ||
-     db_is_scroll(bi->path))
-    db_append_consumable_detail(st, bi->path, &w);
-
-  // Cross-references: which creatures drop it and which quests grant it.
-  db_append_dropped_by(st, bi->path, &w);
-  db_append_reward_from(st, bi->path, &w);
-
+  build_item_markup(st, bi, markup, sizeof(markup));
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
   db_detail_set_icon(st, bi->path, bi->var1);
 }

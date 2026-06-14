@@ -996,6 +996,74 @@ slow_path:;
   return(out);
 }
 
+// Strip Pango/HTML markup tags from a string, producing plain text.
+// Decodes common XML entities (&amp; &lt; &gt; &apos; &quot;).
+//   dst      - output buffer
+//   dst_size - size of dst (must be at least as large as src)
+//   src      - input markup string
+void
+strip_pango_markup(char *dst, size_t dst_size, const char *src)
+{
+  size_t di = 0;
+  bool in_tag = false;
+
+  for(const char *p = src; *p && di + 1 < dst_size; p++)
+  {
+    if(*p == '<')
+    {
+      in_tag = true;
+      continue;
+    }
+
+    if(*p == '>')
+    {
+      in_tag = false;
+      continue;
+    }
+
+    if(in_tag)
+      continue;
+
+    if(*p == '&')
+    {
+      if(strncmp(p, "&amp;", 5) == 0)
+      {
+        dst[di++] = '&';
+        p += 4;
+      }
+      else if(strncmp(p, "&lt;", 4) == 0)
+      {
+        dst[di++] = '<';
+        p += 3;
+      }
+      else if(strncmp(p, "&gt;", 4) == 0)
+      {
+        dst[di++] = '>';
+        p += 3;
+      }
+      else if(strncmp(p, "&apos;", 6) == 0)
+      {
+        dst[di++] = '\'';
+        p += 5;
+      }
+      else if(strncmp(p, "&quot;", 6) == 0)
+      {
+        dst[di++] = '"';
+        p += 5;
+      }
+      else
+      {
+        dst[di++] = *p;
+      }
+    }
+    else
+    {
+      dst[di++] = *p;
+    }
+  }
+  dst[di] = '\0';
+}
+
 // Build a short stat summary string from a bonus DBR record.
 // record_path: DBR path to the bonus record.
 // Returns: malloc'd summary string, or NULL if no stats found.

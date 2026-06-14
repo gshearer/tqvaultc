@@ -161,6 +161,12 @@ pretty_name_from_path(const char *path);
 char*
 escape_markup(const char *str);
 
+// Strip Pango/HTML markup tags from a string, producing plain text (decoding
+// the common XML entities).  dst_size must be at least strlen(src)+1.  GTK-free,
+// so it's shared by the GUI search and the headless Database Browser blob-gen.
+void
+strip_pango_markup(char *dst, size_t dst_size, const char *src);
+
 // Append all stat lines from a single DBR record to a BufWriter.
 void
 add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w,

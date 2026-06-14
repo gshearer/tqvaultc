@@ -890,7 +890,7 @@ db_skill_name_rec(DbBrowserState *st, const char *path, int depth)
 }
 
 // Display name for a skill, with a path-derived fallback.  Caller frees (g_free).
-static char *
+char *
 db_skill_display_name(DbBrowserState *st, const char *path)
 {
   char *n = db_skill_name_rec(st, path, 0);

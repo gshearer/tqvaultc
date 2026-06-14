@@ -67,6 +67,7 @@ db_browse_item_finalize(GObject *object)
   g_free(self->path);
   g_free(self->name);
   g_free(self->name_lc);
+  g_free(self->search_blob);
   g_free(self->icon_path);
   g_free(self->equip_types);
   g_strfreev(self->variants);
@@ -90,10 +91,12 @@ db_browser_state_free(gpointer data)
 {
   DbBrowserState *st = data;
 
+  g_clear_object(&st->flatten);
   for(int i = 0; i < CAT_COUNT; i++)
     g_clear_object(&st->cat_stores[i]);
 
   g_clear_object(&st->custom_filter);
+  g_strfreev(st->search_tokens);
 
   if(st->creatures)
     db_creature_index_free(st->creatures);
@@ -267,19 +270,100 @@ on_grid_selection_changed(GObject *obj, GParamSpec *pspec, gpointer data)
 
 // -- Search filter ----------------------------------------------------------
 
-// GtkCustomFilter callback: keep items whose lowercased name contains the
-// current needle.  O(1) per row (precomputed name_lc).
+// Split a lowercased needle into whitespace-separated tokens, dropping empties.
+// Returns a NULL-terminated GStrv (g_strfreev'able), never NULL.
+static char **
+db_split_tokens(const char *lc)
+{
+  GPtrArray *toks = g_ptr_array_new();
+
+  for(const char *p = lc; *p;)
+  {
+    while(*p == ' ' || *p == '\t')
+      p++;
+    if(!*p)
+      break;
+
+    const char *start = p;
+
+    while(*p && *p != ' ' && *p != '\t')
+      p++;
+    g_ptr_array_add(toks, g_strndup(start, (size_t)(p - start)));
+  }
+  g_ptr_array_add(toks, NULL);
+  return((char **)g_ptr_array_free(toks, FALSE));
+}
+
+// True while a content search is active (the box holds at least one token).
+static gboolean
+db_searching(const DbBrowserState *st)
+{
+  return(st->search_tokens && st->search_tokens[0] != NULL);
+}
+
+// GtkCustomFilter callback: keyword/content match.  Empty needle keeps every
+// row; otherwise EVERY token must be a substring of the item's search_blob
+// (the lowercased plain text of its whole detail card), order-independent.
+// Falls back to name_lc if the blob is somehow missing.
 static gboolean
 filter_match(gpointer item, gpointer data)
 {
   DbBrowserState *st = data;
+  char **toks = st->search_tokens;
 
-  if(st->search_lc[0] == '\0')
+  if(!toks || !toks[0])
     return(TRUE);
 
   DbBrowseItem *bi = DB_BROWSE_ITEM(item);
+  const char *hay = bi->search_blob ? bi->search_blob : bi->name_lc;
 
-  return(bi->name_lc && strstr(bi->name_lc, st->search_lc) != NULL);
+  if(!hay)
+    return(FALSE);
+
+  for(char **t = toks; *t; t++)
+    if(!strstr(hay, *t))
+      return(FALSE);
+
+  return(TRUE);
+}
+
+// Point the filter model at the right source: the global flatten model (every
+// category) while searching, else the current category store (or NULL if no
+// category has been picked yet).
+static void
+db_apply_filter_model(DbBrowserState *st)
+{
+  GListModel *m;
+
+  if(db_searching(st))
+    m = G_LIST_MODEL(st->flatten);
+  else
+    m = (st->current_cat >= 0) ? G_LIST_MODEL(st->cat_stores[st->current_cat])
+                               : NULL;
+
+  gtk_filter_list_model_set_model(st->filter_model, m);
+}
+
+// Refresh the count line: "<n> matches" while searching, else the category's
+// item count (or the initial prompt).
+static void
+db_update_count_label(DbBrowserState *st)
+{
+  char buf[80];
+
+  if(db_searching(st))
+  {
+    guint n = g_list_model_get_n_items(G_LIST_MODEL(st->filter_model));
+
+    snprintf(buf, sizeof(buf), "%u match%s", n, n == 1 ? "" : "es");
+  }
+  else if(st->current_cat >= 0)
+    snprintf(buf, sizeof(buf), "%s — %d items",
+             CAT_INFO[st->current_cat].leaf, st->cat_counts[st->current_cat]);
+  else
+    snprintf(buf, sizeof(buf), "Select a category");
+
+  gtk_label_set_text(GTK_LABEL(st->count_label), buf);
 }
 
 static void
@@ -297,7 +381,14 @@ on_search_changed(GtkSearchEntry *entry, gpointer data)
 
   st->search_lc[len] = '\0';
 
+  g_strfreev(st->search_tokens);
+  st->search_tokens = db_split_tokens(st->search_lc);
+
+  // Searching scans every category (flatten); an empty box restores the
+  // current category view.
+  db_apply_filter_model(st);
   gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_DIFFERENT);
+  db_update_count_label(st);
 }
 
 // Display size of creature thumbnails cached for the center grid.  The cached
@@ -449,21 +540,26 @@ grid_factory_unbind(GtkSignalListItemFactory *factory, GtkListItem *li,
 
 // -- Sidebar ----------------------------------------------------------------
 
-// Switch the center grid to show the given category's items.
+// Switch the center grid to show the given category's items.  Picking a
+// category clears any active search so the user sees that whole category rather
+// than stale global results.
 static void
 show_category(DbBrowserState *st, int cat)
 {
   if(cat < 0 || cat >= CAT_COUNT)
     return;
 
-  gtk_filter_list_model_set_model(st->filter_model,
-                                   G_LIST_MODEL(st->cat_stores[cat]));
+  st->current_cat = cat;
 
-  char buf[64];
+  // Clear the search (needle + tokens + entry) so the category is fully shown.
+  st->search_lc[0] = '\0';
+  g_clear_pointer(&st->search_tokens, g_strfreev);
+  if(st->search_entry)
+    gtk_editable_set_text(GTK_EDITABLE(st->search_entry), "");
 
-  snprintf(buf, sizeof(buf), "%s — %d items",
-           CAT_INFO[cat].leaf, st->cat_counts[cat]);
-  gtk_label_set_text(GTK_LABEL(st->count_label), buf);
+  db_apply_filter_model(st);
+  gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_LESS_STRICT);
+  db_update_count_label(st);
 
   update_detail(st, NULL);
 }
@@ -600,17 +696,12 @@ db_find_item_by_path(DbBrowserState *st, const char *path, int *out_cat)
 static void
 db_jump_select(DbBrowserState *st, int cat, DbBrowseItem *target)
 {
-  // Clear the name filter so the target can't be filtered out.  Reset the
-  // needle and refresh the filter directly -- GtkSearchEntry's "search-changed"
-  // is debounced, so editing the entry alone wouldn't take effect in time.
-  st->search_lc[0] = '\0';
-  if(st->search_entry)
-    gtk_editable_set_text(GTK_EDITABLE(st->search_entry), "");
-  gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_LESS_STRICT);
-
   // Switch category via the sidebar so its highlight stays in sync; selecting
   // the row fires on_sidebar_row_selected -> show_category synchronously.  If
   // that category is already selected, switch the grid model directly.
+  // Either way show_category clears any active search (needle + tokens + entry)
+  // and points the filter model at the category store, so the target can't be
+  // filtered out -- it does this synchronously, unlike the debounced entry.
   GtkListBoxRow *want = GTK_LIST_BOX_ROW(st->sidebar_rows[cat]);
 
   if(st->sidebar && want &&
@@ -735,6 +826,7 @@ DB_LOAD_PHASES[] =
   { "Indexing skills...",        build_skill_index },
   { "Indexing creatures...",     build_creature_index_grid },
   { "Indexing quest rewards...", build_quest_index_grid },
+  { "Indexing search text...",   build_search_blobs },
 };
 
 #define DB_LOAD_NPHASES ((int)G_N_ELEMENTS(DB_LOAD_PHASES))
@@ -850,6 +942,7 @@ show_db_browser_dialog(AppWidgets *widgets)
 
   st->widgets = widgets;
   st->tr = widgets->translations;
+  st->current_cat = -1;   // nothing picked yet
   st->dlg_cursor_x = -10000.0;
   st->dlg_cursor_y = -10000.0;
 
@@ -953,7 +1046,7 @@ db_browser_build_ui(DbBrowserState *st)
 
   st->search_entry = search;
   gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(search),
-                                         "Filter by name...");
+                                         "Search all (name, stats, skills)...");
   g_signal_connect(search, "search-changed", G_CALLBACK(on_search_changed), st);
   gtk_box_append(GTK_BOX(center), search);
 
@@ -961,7 +1054,17 @@ db_browser_build_ui(DbBrowserState *st)
   gtk_label_set_xalign(GTK_LABEL(st->count_label), 0.0f);
   gtk_box_append(GTK_BOX(center), st->count_label);
 
-  // Filter model over the (initially empty) active category store.
+  // Global flatten model = every category store concatenated, used as the
+  // filter source while searching (an empty box swaps back to one category).
+  GListStore *cat_list = g_list_store_new(G_TYPE_LIST_MODEL);
+
+  for(int i = 0; i < CAT_COUNT; i++)
+    g_list_store_append(cat_list, st->cat_stores[i]);
+  st->flatten = gtk_flatten_list_model_new(G_LIST_MODEL(cat_list));
+  // transfer-full of cat_list above; flatten holds a ref on each category store.
+
+  // Filter model over the active source (NULL until a category is chosen or a
+  // search makes it the flatten model).
   st->custom_filter = gtk_custom_filter_new(filter_match, st, NULL);
   g_object_ref(st->custom_filter);
 
@@ -1114,6 +1217,7 @@ static void startup_step_affixes(StartupLoader *sl)   { build_affix_index(sl->st
 static void startup_step_skills(StartupLoader *sl)    { build_skill_index(sl->st); }
 static void startup_step_creatures(StartupLoader *sl) { build_creature_index_grid(sl->st); }
 static void startup_step_quests(StartupLoader *sl)    { build_quest_index_grid(sl->st); }
+static void startup_step_blobs(StartupLoader *sl)     { build_search_blobs(sl->st); }
 
 // Step C: persist the cache, then drop the throwaway build state.
 static void
@@ -1151,7 +1255,8 @@ STARTUP_PHASES[] =
   { "Indexing affixes…",          startup_step_affixes,   0.22 },
   { "Indexing skills…",           startup_step_skills,    0.27 },
   { "Indexing creatures…",        startup_step_creatures, 0.31 },
-  { "Indexing quest rewards…",    startup_step_quests,    0.33 },
+  { "Indexing quest rewards…",    startup_step_quests,    0.32 },
+  { "Indexing search text…",      startup_step_blobs,     0.33 },
 };
 
 #define STARTUP_NPHASES ((int)G_N_ELEMENTS(STARTUP_PHASES))
