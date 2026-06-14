@@ -122,11 +122,16 @@ update_detail_set(DbBrowserState *st, DbBrowseItem *bi)
 
       const char *color = get_item_color(mp, NULL, NULL);
       char *e_member = escape_markup(mname);
+      char *e_href = escape_markup(mp);
 
-      buf_write(&w, "<span color='%s'>    %s</span>\n",
+      // Clickable: jump to this member item (Phase 7 cross-pane navigation).
+      buf_write(&w, "    <a href='i:%s'><span color='%s'>%s</span></a>\n",
+                e_href ? e_href : "",
                 color ? color : "white", e_member ? e_member : "");
       if(e_member)
         free(e_member);
+      if(e_href)
+        free(e_href);
     }
   }
 
@@ -812,14 +817,18 @@ db_append_item_rows(DbBrowserState *st, BufWriter *w, GPtrArray *paths,
     char *name = db_item_display_name(st, ic->item_lc);
     const char *color = get_item_color(ic->item_lc, NULL, NULL);
     char *e = escape_markup(name ? name : ic->item_lc);
+    char *e_href = escape_markup(ic->item_lc);
     char chbuf[96];
 
     db_fmt_chances(ic->chance, chbuf, sizeof(chbuf));
-    buf_write(w, "<span color='%s'>    %s</span> "
+    // Clickable: jump to the dropped/rewarded item (Phase 7).
+    buf_write(w, "    <a href='i:%s'><span color='%s'>%s</span></a> "
                  "<span color='#808080'>%s</span>\n",
-              color ? color : "white", e ? e : "", chbuf);
+              e_href ? e_href : "", color ? color : "white", e ? e : "", chbuf);
     if(e)
       free(e);
+    if(e_href)
+      free(e_href);
     free(name);
   }
 
@@ -930,9 +939,11 @@ db_append_dropped_by(DbBrowserState *st, const char *item_path, BufWriter *w)
     char chbuf[96];
 
     db_fmt_chances(d->chance, chbuf, sizeof(chbuf));
-    buf_write(w, "<span color='%s'>    %s</span> "
+    // Clickable: jump to this creature's Monsters row (Phase 7).
+    buf_write(w, "    <a href='c:%d'><span color='%s'>%s</span></a> "
                  "<span color='#808080'>%s</span>\n",
-              db_creature_color(c->classification), e ? e : "", chbuf);
+              d->creature_idx, db_creature_color(c->classification),
+              e ? e : "", chbuf);
     if(e)
       free(e);
     g_free(name);
@@ -967,8 +978,10 @@ db_append_reward_from(DbBrowserState *st, const char *item_path, BufWriter *w)
     char chbuf[96];
 
     db_fmt_chances(rw->percent, chbuf, sizeof(chbuf));
-    buf_write(w, "<span color='#DAA520'>    %s</span> "
-                 "<span color='#808080'>%s</span>\n", e ? e : "", chbuf);
+    // Clickable: jump to this quest's Quests row (Phase 7).
+    buf_write(w, "    <a href='q:%d'><span color='#DAA520'>%s</span></a> "
+                 "<span color='#808080'>%s</span>\n",
+              rw->quest_idx, e ? e : "", chbuf);
     if(e)
       free(e);
   }

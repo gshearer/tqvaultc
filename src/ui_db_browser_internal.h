@@ -77,6 +77,12 @@ typedef struct {
   GtkSingleSelection *selection;
   char search_lc[256];                // lowercased needle
 
+  // Sidebar + search, retained so detail-pane cross-reference links can switch
+  // category, clear the filter and select the jump target (Phase 7).
+  GtkWidget *sidebar;                  // GtkListBox of categories
+  GtkWidget *sidebar_rows[CAT_COUNT];  // selectable leaf row per category
+  GtkWidget *search_entry;             // the name-filter GtkSearchEntry
+
   GtkWidget *detail_pic;              // GtkPicture: large icon
   GtkWidget *detail_label;            // GtkLabel: full formatted tooltip
   GtkWidget *count_label;             // "<n> items"

@@ -445,6 +445,7 @@ build_sidebar(DbBrowserState *st)
   GtkWidget *list = gtk_list_box_new();
 
   gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_SINGLE);
+  st->sidebar = list;
 
   const char *cur_group = NULL;
 
@@ -482,12 +483,161 @@ build_sidebar(DbBrowserState *st)
     gtk_list_box_row_set_child(GTK_LIST_BOX_ROW(row), lbl);
     g_object_set_data(G_OBJECT(row), "cat", GINT_TO_POINTER(cat));
     gtk_list_box_append(GTK_LIST_BOX(list), row);
+    st->sidebar_rows[cat] = row;
   }
 
   g_signal_connect(list, "row-selected",
                    G_CALLBACK(on_sidebar_row_selected), st);
 
   return(list);
+}
+
+// -- Cross-pane navigation (detail-pane links) ------------------------------
+//
+// Cross-reference rows in the detail pane are rendered as Pango <a href> links
+// whose URI encodes the jump target: "i:<dbr-path>" -> an item (searched across
+// all category stores), "c:<idx>" -> a creature row, "q:<idx>" -> a quest row.
+// Clicking one switches category, clears the filter and selects/scrolls to it.
+
+// Find the grid item in category `cat` whose creature/quest source index equals
+// `src_idx`.  Returns a new reference (caller g_object_unref's), or NULL.
+static DbBrowseItem *
+db_find_grid_item_by_src(DbBrowserState *st, int cat, int src_idx)
+{
+  GListModel *m = G_LIST_MODEL(st->cat_stores[cat]);
+  guint n = g_list_model_get_n_items(m);
+
+  for(guint i = 0; i < n; i++)
+  {
+    DbBrowseItem *bi = g_list_model_get_item(m, i);  // owns a ref
+
+    if(bi->src_idx == src_idx)
+      return(bi);  // transfer the ref to the caller
+    g_object_unref(bi);
+  }
+
+  return(NULL);
+}
+
+// Find the browse item carrying the given DBR path across every category store
+// (item paths are unique to one store).  Returns a new reference and writes the
+// owning category to *out_cat, or NULL if no browsable item has that path (e.g.
+// a set member or drop that didn't pass categorization).
+static DbBrowseItem *
+db_find_item_by_path(DbBrowserState *st, const char *path, int *out_cat)
+{
+  for(int c = 0; c < CAT_COUNT; c++)
+  {
+    GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
+    guint n = g_list_model_get_n_items(m);
+
+    for(guint i = 0; i < n; i++)
+    {
+      DbBrowseItem *bi = g_list_model_get_item(m, i);  // owns a ref
+
+      if(bi->path && g_ascii_strcasecmp(bi->path, path) == 0)
+      {
+        *out_cat = c;
+        return(bi);  // transfer the ref to the caller
+      }
+      g_object_unref(bi);
+    }
+  }
+
+  return(NULL);
+}
+
+// Jump the browser to `target` in category `cat`: switch the sidebar/grid to
+// that category, clear any active name filter so the target is visible, then
+// select it and scroll it into view (which fires the detail-pane update).
+static void
+db_jump_select(DbBrowserState *st, int cat, DbBrowseItem *target)
+{
+  // Clear the name filter so the target can't be filtered out.  Reset the
+  // needle and refresh the filter directly -- GtkSearchEntry's "search-changed"
+  // is debounced, so editing the entry alone wouldn't take effect in time.
+  st->search_lc[0] = '\0';
+  if(st->search_entry)
+    gtk_editable_set_text(GTK_EDITABLE(st->search_entry), "");
+  gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_LESS_STRICT);
+
+  // Switch category via the sidebar so its highlight stays in sync; selecting
+  // the row fires on_sidebar_row_selected -> show_category synchronously.  If
+  // that category is already selected, switch the grid model directly.
+  GtkListBoxRow *want = GTK_LIST_BOX_ROW(st->sidebar_rows[cat]);
+
+  if(st->sidebar && want &&
+     gtk_list_box_get_selected_row(GTK_LIST_BOX(st->sidebar)) != want)
+    gtk_list_box_select_row(GTK_LIST_BOX(st->sidebar), want);
+  else
+    show_category(st, cat);
+
+  // Locate the target in the (now unfiltered) filter model and select it.
+  GListModel *m = G_LIST_MODEL(st->filter_model);
+  guint n = g_list_model_get_n_items(m);
+
+  for(guint i = 0; i < n; i++)
+  {
+    DbBrowseItem *bi = g_list_model_get_item(m, i);
+
+    g_object_unref(bi);  // borrow; the store keeps it alive
+    if(bi == target)
+    {
+      gtk_single_selection_set_selected(st->selection, i);
+      gtk_grid_view_scroll_to(GTK_GRID_VIEW(st->grid_view), i,
+                              GTK_LIST_SCROLL_SELECT | GTK_LIST_SCROLL_FOCUS,
+                              NULL);
+      return;
+    }
+  }
+}
+
+// GtkLabel::activate-link handler for the detail pane.  Routes the private URI
+// schemes above; always returns TRUE so the URI is never handed to
+// gtk_show_uri() (which would try to open it as an external link).
+static gboolean
+on_detail_link(GtkLabel *label, const char *uri, gpointer data)
+{
+  (void)label;
+
+  DbBrowserState *st = data;
+
+  if(!uri || !uri[0] || uri[1] != ':')
+    return(TRUE);
+
+  if(uri[0] == 'i')
+  {
+    int cat = -1;
+    DbBrowseItem *t = db_find_item_by_path(st, uri + 2, &cat);
+
+    if(t)
+    {
+      db_jump_select(st, cat, t);
+      g_object_unref(t);
+    }
+  }
+  else if(uri[0] == 'c')
+  {
+    DbBrowseItem *t = db_find_grid_item_by_src(st, CAT_CREATURE, atoi(uri + 2));
+
+    if(t)
+    {
+      db_jump_select(st, CAT_CREATURE, t);
+      g_object_unref(t);
+    }
+  }
+  else if(uri[0] == 'q')
+  {
+    DbBrowseItem *t = db_find_grid_item_by_src(st, CAT_QUEST, atoi(uri + 2));
+
+    if(t)
+    {
+      db_jump_select(st, CAT_QUEST, t);
+      g_object_unref(t);
+    }
+  }
+
+  return(TRUE);
 }
 
 // -- Show the database browser ----------------------------------------------
@@ -737,6 +887,7 @@ db_browser_build_ui(DbBrowserState *st)
 
   GtkWidget *search = gtk_search_entry_new();
 
+  st->search_entry = search;
   gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(search),
                                          "Filter by name...");
   g_signal_connect(search, "search-changed", G_CALLBACK(on_search_changed), st);
@@ -807,6 +958,8 @@ db_browser_build_ui(DbBrowserState *st)
   gtk_label_set_yalign(GTK_LABEL(st->detail_label), 0.0f);
   gtk_label_set_selectable(GTK_LABEL(st->detail_label), TRUE);
   gtk_widget_add_css_class(st->detail_label, "item-tooltip");
+  g_signal_connect(st->detail_label, "activate-link",
+                   G_CALLBACK(on_detail_link), st);
   gtk_box_append(GTK_BOX(detail), st->detail_label);
 
   GtkWidget *detail_scroll = gtk_scrolled_window_new();
