@@ -114,7 +114,7 @@ db_item_display_name(DbBrowserState *st, const char *path)
 
   if(tag && tag[0])
   {
-    const char *name = translation_get(st->widgets->translations, tag);
+    const char *name = translation_get(st->tr, tag);
 
     // translation_get returns the tag itself when no translation exists.
     if(name && name[0] && strcmp(name, tag) != 0)
@@ -262,7 +262,7 @@ db_set_member_name(DbBrowserState *st, const char *member_path)
   if(!tag || !tag[0])
     return(NULL);
 
-  const char *name = translation_get(st->widgets->translations, tag);
+  const char *name = translation_get(st->tr, tag);
 
   // translation_get echoes the tag when no translation exists.
   if(!name || !name[0] || strcmp(name, tag) == 0)
@@ -296,7 +296,7 @@ build_set_index(DbBrowserState *st)
     if(!set_tag || !set_tag[0])
       continue;
 
-    const char *set_name = translation_get(st->widgets->translations, set_tag);
+    const char *set_name = translation_get(st->tr, set_tag);
 
     if(!set_name || !set_name[0] || strcmp(set_name, set_tag) == 0)
       continue;
@@ -492,7 +492,7 @@ db_affix_display_name(DbBrowserState *st, const char *path)
 
   if(tag && tag[0])
   {
-    const char *name = translation_get(st->widgets->translations, tag);
+    const char *name = translation_get(st->tr, tag);
 
     if(name && name[0] && strcmp(name, tag) != 0)
       return(g_strdup(name));
@@ -860,7 +860,7 @@ db_skill_name_rec(DbBrowserState *st, const char *path, int depth)
 
   if(tag && tag[0])
   {
-    const char *name = translation_get(st->widgets->translations, tag);
+    const char *name = translation_get(st->tr, tag);
 
     // translation_get echoes the tag when no translation exists.
     if(name && name[0] && strcmp(name, tag) != 0)
@@ -1077,7 +1077,7 @@ db_creature_display_name(DbBrowserState *st, DbCreature *c)
 {
   if(c->name_tag && c->name_tag[0])
   {
-    const char *name = translation_get(st->widgets->translations, c->name_tag);
+    const char *name = translation_get(st->tr, c->name_tag);
 
     if(name && name[0] && strcmp(name, c->name_tag) != 0)
       return(g_strdup(name));
@@ -1161,7 +1161,7 @@ build_quest_index_grid(DbBrowserState *st)
   {
     DbQuest *q = g_ptr_array_index(st->quests->quests, i);
 
-    const char *name = translation_get(st->widgets->translations, q->title_tag);
+    const char *name = translation_get(st->tr, q->title_tag);
 
     DbBrowseItem *it = g_object_new(DB_TYPE_BROWSE_ITEM, NULL);
 

@@ -13,6 +13,7 @@
 #include "item_stats.h"
 #include "prefetch.h"
 #include "translation.h"
+#include "db_browser_cache.h"
 
 static int g_saved_argc;
 static char **g_saved_argv;
@@ -222,33 +223,37 @@ on_activate(GtkApplication *app, gpointer user_data)
 {
   (void)user_data;
 
-  // Initialize asset manager (loads index + pre-loads ARZ mmaps)
-  if(global_config.game_folder)
-  {
-    if(tqvc_debug)
-      printf("Main: Initializing asset manager...\n");
-    asset_manager_init(global_config.game_folder);
-    if(tqvc_debug)
-      printf("Main: Asset manager initialized.\n");
-
-    arz_intern_init();
-    item_stats_init();
-    if(tqvc_debug)
-      printf("Main: String intern + item stats initialized.\n");
-
-    affix_table_init(NULL);
-    if(tqvc_debug)
-      printf("Main: Affix table initialized.\n");
-  }
-
+  // Debug builds keep the old synchronous init + probe path (the setup popup
+  // and its bundled cache build are skipped here so debug_run_tests can probe
+  // the freshly-initialized asset manager).
   if(tqvc_debug)
+  {
+    if(global_config.game_folder)
+    {
+      printf("Main: Initializing asset manager...\n");
+      asset_manager_init(global_config.game_folder);
+      arz_intern_init();
+      item_stats_init();
+      affix_table_init(NULL);
+      printf("Main: Asset manager + interns + item stats + affix initialized.\n");
+    }
+
     debug_run_tests(g_saved_argc, g_saved_argv);
 
-  // Build the main UI, or show first-run setup if no config exists
+    if(config_is_first_run())
+      ui_first_run_setup(app);
+    else
+      ui_app_activate(app, NULL);
+    return;
+  }
+
+  // Normal startup: first-run wizard collects folders (then on_first_run_save
+  // runs the shared init+activate path); otherwise init + activate directly,
+  // building the Database Browser cache behind a one-time popup if needed.
   if(config_is_first_run())
     ui_first_run_setup(app);
   else
-    ui_app_activate(app, NULL);
+    ui_startup_init_and_activate(app);
 }
 
 // Program entry point. Parses command-line flags (--version, --debug),
@@ -290,6 +295,8 @@ main(int argc, char **argv)
   bool skill_bonus_only = false;
   const char *skill_bonus_chr_path = NULL;
 
+  bool db_cache_selftest_only = false;
+
   for(int i = 1; i < argc; i++)
   {
     if(strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
@@ -316,6 +323,10 @@ main(int argc, char **argv)
     {
       skill_bonus_only = true;
       skill_bonus_chr_path = argv[++i];
+    }
+    else if(strcmp(argv[i], "--db-cache-selftest") == 0)
+    {
+      db_cache_selftest_only = true;
     }
     else
     {
@@ -402,6 +413,29 @@ main(int argc, char **argv)
     asset_manager_free();
     config_free();
     return(0);
+  }
+
+  if(db_cache_selftest_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --db-cache-selftest: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+
+    int rc = db_browser_cache_selftest();
+
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(rc);
   }
 
   // Strip our custom flags so GTK doesn't see them

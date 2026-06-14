@@ -49,4 +49,21 @@ void db_creature_index_free(DbCreatureIndex *idx);
 // Drops for a given item path (any case/slash style), or NULL if none.
 GPtrArray *db_creature_drops_for_item(DbCreatureIndex *idx, const char *item_path);
 
+// -- Cache reconstruction ---------------------------------------------------
+// Rebuild an index from pre-resolved data (the disk cache in db_browser_cache.c)
+// without re-reading any loot tables.  Allocate with db_creature_index_new_empty,
+// append each creature + its forward drops, then call …_finalize_reverse to
+// build and sort the reverse ("dropped by") map.  Free with the usual
+// db_creature_index_free().
+
+DbCreatureIndex *db_creature_index_new_empty(void);
+DbCreature *db_creature_index_append(DbCreatureIndex *idx, const char *path,
+                                     const char *name_tag,
+                                     const char *classification,
+                                     const char *race, const int level[3],
+                                     const bool active[3], bool has_drops);
+void db_creature_append_drop(DbCreature *c, const char *item_lc,
+                             const double chance[3]);
+void db_creature_index_finalize_reverse(DbCreatureIndex *idx);
+
 #endif

@@ -60,7 +60,11 @@ struct _DbBrowseItem {
 // -- Dialog state -----------------------------------------------------------
 
 typedef struct {
-  AppWidgets *widgets;
+  AppWidgets *widgets;     // NULL on the window-less startup-build path
+  TQTranslation *tr;       // translation table used by the index builders;
+                           // == widgets->translations on the GUI path, or an
+                           // independently-loaded table on the startup-build
+                           // path (lets builders run without a window)
   GtkWidget *dialog;
   TQArzFile *arz;  // used only to enumerate record paths
   bool owns_arz;   // true only if we arz_load'd our own copy (fallback path)

@@ -80,7 +80,8 @@ app_sources = [
   'src/ui_database_dialog.c',
   'src/ui_db_browser.c',
   'src/ui_db_browser_index.c',
-  'src/ui_db_browser_detail.c'
+  'src/ui_db_browser_detail.c',
+  'src/db_browser_cache.c'
 ]
 
 # 5. Build the GUI Application

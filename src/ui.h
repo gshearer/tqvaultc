@@ -938,6 +938,14 @@ show_database_dialog(AppWidgets *widgets);
 void
 show_db_browser_dialog(AppWidgets *widgets);
 
+// Run the asset-manager init tail and activate the main UI, building the
+// Database Browser disk cache first (behind a one-time "Setting up…" popup)
+// when it is missing or stale.  Shared by both normal-startup paths
+// (main.c on_activate and ui_settings.c on_first_run_save).  Requires
+// global_config.game_folder to be set.
+void
+ui_startup_init_and_activate(GtkApplication *app);
+
 // ── Entry points in ui_checklist_dialog.c ─────────────────────────────────
 
 // Show the quest checklist dialog.

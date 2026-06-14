@@ -45,4 +45,17 @@ void db_quest_index_free(DbQuestIndex *idx);
 // Quest rewards that can grant a given item path (any case), or NULL.
 GPtrArray *db_quest_rewards_for_item(DbQuestIndex *idx, const char *item_path);
 
+// -- Cache reconstruction ---------------------------------------------------
+// Rebuild an index from pre-resolved data (the disk cache in db_browser_cache.c)
+// without re-reading any .qst archives.  Allocate with db_quest_index_new_empty,
+// append each quest + its per-difficulty rewards, then call …_finalize_reverse
+// to build the reverse ("reward from") map.  Free with db_quest_index_free().
+
+DbQuestIndex *db_quest_index_new_empty(void);
+DbQuest *db_quest_index_append(DbQuestIndex *idx, const char *title_tag,
+                               const char *label);
+void db_quest_append_reward(DbQuest *q, int diff, const char *item_lc,
+                            double percent);
+void db_quest_index_finalize_reverse(DbQuestIndex *idx);
+
 #endif

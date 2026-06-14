@@ -20,9 +20,11 @@
 // load_item_texture); nothing is pre-baked.  See AGENTS.md "Database Browser".
 
 #include "ui_db_browser_internal.h"
+#include "db_browser_cache.h"
 
 #include "config.h"
 #include "asset_lookup.h"
+#include "affix_table.h"
 #include "texture.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -802,15 +804,32 @@ show_db_browser_dialog(AppWidgets *widgets)
   DbBrowserState *st = g_new0(DbBrowserState, 1);
 
   st->widgets = widgets;
+  st->tr = widgets->translations;
   st->dlg_cursor_x = -10000.0;
   st->dlg_cursor_y = -10000.0;
 
-  // Cheap to create; populated by the indexing phases below.
+  // Cheap to create; populated either from the disk cache (fast path) or by
+  // the indexing phases below.
   for(int i = 0; i < CAT_COUNT; i++)
     st->cat_stores[i] = g_list_store_new(DB_TYPE_BROWSE_ITEM);
 
-  // Show the progress dialog immediately, then load in phases from the idle
-  // loop so the UI never appears frozen while the database is indexed.
+  // Fast path: a valid on-disk cache (built once at startup, see Step 4) lets
+  // us skip the ~4s index build and the progress dialog entirely — populate
+  // the stores from disk and present the window immediately.
+  if(db_browser_cache_load(st, global_config.game_folder))
+  {
+    // Keep the shared database handle around for any record lookups the
+    // UI/detail might do; it's never freed (owns_arz == false) and may be NULL
+    // on installs where asset_get_database_arz() can't match (the cache build
+    // path doesn't need it).
+    st->arz = asset_get_database_arz();
+    st->owns_arz = false;
+    db_browser_build_ui(st);
+    return;
+  }
+
+  // Fallback (missing/stale/corrupt cache): show the progress dialog and index
+  // in phases from the idle loop so the UI never appears frozen.
   DbLoader *ld = g_new0(DbLoader, 1);
 
   ld->st = st;
@@ -973,4 +992,224 @@ db_browser_build_ui(DbBrowserState *st)
   gtk_paned_set_shrink_end_child(GTK_PANED(paned2), FALSE);
 
   gtk_window_present(GTK_WINDOW(st->dialog));
+}
+
+// ── First-run / cache-rebuild setup popup ─────────────────────────────────
+//
+// When the Database Browser cache is missing or stale we build it once at
+// startup, bundled with the resource-index build, behind a single modal
+// "Setting up TQVaultC…" progress bar.  After that the browser opens instantly
+// (the fast path in show_db_browser_dialog).  Driven from the idle loop in the
+// same two-pass (announce, then work) style as the in-browser loader, so the
+// bar repaints between steps even though each step blocks the main loop.
+
+typedef struct
+{
+  GtkApplication *app;
+  GtkWidget      *win;       // modal progress window
+  GtkWidget      *bar;       // GtkProgressBar
+  GtkWidget      *status;    // status label
+  DbBrowserState *st;        // throwaway build state (freed after save)
+  TQTranslation  *tr;        // throwaway translations (freed after save)
+  int             phase;     // next phase to run
+  gboolean        announced; // current phase's label has been shown
+} StartupLoader;
+
+// Step A: the synchronous init tail (resource-index build happens inside
+// asset_manager_init) plus a throwaway translation table + build state.
+static void
+startup_step_init(StartupLoader *sl)
+{
+  asset_manager_init(global_config.game_folder);
+  arz_intern_init();
+  item_stats_init();
+  affix_table_init(NULL);
+
+  // The index builders need a translation table; the real UI loads its own
+  // later inside ui_app_activate, so this one is temporary.
+  sl->tr = translation_init();
+  if(sl->tr)
+  {
+    char p[1024];
+
+    snprintf(p, sizeof(p), "%s/Text/Text_EN.arc", global_config.game_folder);
+    translation_load_from_arc(sl->tr, p);
+  }
+
+  sl->st = g_new0(DbBrowserState, 1);
+  sl->st->tr = sl->tr;
+  // Mirror db_load_arz(): shared handle if available, else our own copy.
+  sl->st->arz = asset_get_database_arz();
+  sl->st->owns_arz = false;
+  if(!sl->st->arz)
+  {
+    char arz_path[1024];
+
+    snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
+             global_config.game_folder);
+    sl->st->arz = arz_load(arz_path);
+    sl->st->owns_arz = true;
+  }
+  for(int i = 0; i < CAT_COUNT; i++)
+    sl->st->cat_stores[i] = g_list_store_new(DB_TYPE_BROWSE_ITEM);
+}
+
+// Steps B: one index builder each (thin wrappers so the phase table can carry
+// a uniform StartupLoader* signature).
+static void startup_step_categories(StartupLoader *sl){ build_category_index(sl->st); }
+static void startup_step_sets(StartupLoader *sl)      { build_set_index(sl->st); }
+static void startup_step_affixes(StartupLoader *sl)   { build_affix_index(sl->st); }
+static void startup_step_skills(StartupLoader *sl)    { build_skill_index(sl->st); }
+static void startup_step_creatures(StartupLoader *sl) { build_creature_index_grid(sl->st); }
+static void startup_step_quests(StartupLoader *sl)    { build_quest_index_grid(sl->st); }
+
+// Step C: persist the cache, then drop the throwaway build state.
+static void
+startup_step_save(StartupLoader *sl)
+{
+  if(!db_browser_cache_save(sl->st, global_config.game_folder))
+    g_warning("startup: failed to save Database Browser cache");
+
+  db_browser_state_free(sl->st);   // unrefs stores, frees creatures/quests/arz
+  sl->st = NULL;
+  if(sl->tr)
+  {
+    translation_free(sl->tr);
+    sl->tr = NULL;
+  }
+}
+
+// Phase table: label shown while the step runs + the bar position to settle on
+// once it finishes.  Step A is the resource-index build (the "fake" 0→10%),
+// steps B animate 10→90%, step C (save) lands 90→100%.
+static const struct
+{
+  const char *label;
+  void      (*fn)(StartupLoader *sl);
+  double      frac;
+}
+STARTUP_PHASES[] =
+{
+  { "Preparing game database…",   startup_step_init,      0.10 },
+  { "Indexing equipment…",        startup_step_categories,0.25 },
+  { "Indexing item sets…",        startup_step_sets,      0.35 },
+  { "Indexing affixes…",          startup_step_affixes,   0.50 },
+  { "Indexing skills…",           startup_step_skills,    0.65 },
+  { "Indexing creatures…",        startup_step_creatures, 0.85 },
+  { "Indexing quest rewards…",    startup_step_quests,    0.90 },
+  { "Saving cache…",              startup_step_save,      1.00 },
+};
+
+#define STARTUP_NPHASES ((int)G_N_ELEMENTS(STARTUP_PHASES))
+
+static gboolean
+startup_build_step(gpointer data)
+{
+  StartupLoader *sl = data;
+
+  // All phases done: bring up the real UI first (so the application keeps a
+  // window), then drop the popup.
+  if(sl->phase >= STARTUP_NPHASES)
+  {
+    GtkApplication *app = sl->app;
+    GtkWidget      *win = sl->win;
+
+    g_free(sl);
+    ui_app_activate(app, NULL);
+    gtk_window_destroy(GTK_WINDOW(win));
+    return(G_SOURCE_REMOVE);
+  }
+
+  // First pass: show this phase's label, then yield so the bar repaints before
+  // the blocking work below.
+  if(!sl->announced)
+  {
+    gtk_label_set_text(GTK_LABEL(sl->status), STARTUP_PHASES[sl->phase].label);
+    sl->announced = TRUE;
+    return(G_SOURCE_CONTINUE);
+  }
+
+  // Second pass: do the work, advance the bar.
+  STARTUP_PHASES[sl->phase].fn(sl);
+  gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(sl->bar),
+                                STARTUP_PHASES[sl->phase].frac);
+  sl->phase++;
+  sl->announced = FALSE;
+  return(G_SOURCE_CONTINUE);
+}
+
+// Build and present the modal setup window, then start the idle build.
+static void
+startup_build_show(GtkApplication *app)
+{
+  StartupLoader *sl = g_new0(StartupLoader, 1);
+
+  sl->app = app;
+  sl->win = gtk_window_new();
+  gtk_window_set_title(GTK_WINDOW(sl->win), "TQVaultC");
+  gtk_window_set_default_size(GTK_WINDOW(sl->win), 420, -1);
+  gtk_window_set_resizable(GTK_WINDOW(sl->win), FALSE);
+  gtk_window_set_deletable(GTK_WINDOW(sl->win), FALSE);
+  // Register with the application so it's the live window keeping the app
+  // running until the main window is created (no main window exists yet).
+  gtk_window_set_application(GTK_WINDOW(sl->win), app);
+
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+
+  gtk_widget_set_margin_start(box, 18);
+  gtk_widget_set_margin_end(box, 18);
+  gtk_widget_set_margin_top(box, 16);
+  gtk_widget_set_margin_bottom(box, 16);
+
+  GtkWidget *title = gtk_label_new(NULL);
+
+  gtk_label_set_markup(GTK_LABEL(title), "<b>Setting up TQVaultC…</b>");
+  gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+  gtk_box_append(GTK_BOX(box), title);
+
+  GtkWidget *sub = gtk_label_new("First-time setup — this happens once.");
+
+  gtk_label_set_xalign(GTK_LABEL(sub), 0.0f);
+  gtk_widget_add_css_class(sub, "dim-label");
+  gtk_box_append(GTK_BOX(box), sub);
+
+  sl->status = gtk_label_new("Preparing…");
+  gtk_label_set_xalign(GTK_LABEL(sl->status), 0.0f);
+  gtk_widget_add_css_class(sl->status, "dim-label");
+  gtk_box_append(GTK_BOX(box), sl->status);
+
+  sl->bar = gtk_progress_bar_new();
+  gtk_box_append(GTK_BOX(box), sl->bar);
+
+  gtk_window_set_child(GTK_WINDOW(sl->win), box);
+  gtk_window_present(GTK_WINDOW(sl->win));
+
+  g_idle_add(startup_build_step, sl);
+}
+
+void
+ui_startup_init_and_activate(GtkApplication *app)
+{
+  // No game folder: nothing to initialize (shouldn't normally happen here).
+  if(!global_config.game_folder)
+  {
+    ui_app_activate(app, NULL);
+    return;
+  }
+
+  // Fast path: a valid browser cache means init is cheap (just loads the
+  // existing resource index) and the browser will open instantly — no popup.
+  if(db_browser_cache_valid(global_config.game_folder))
+  {
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+    ui_app_activate(app, NULL);
+    return;
+  }
+
+  // Slow path (first run / game updated / format bumped): build the resource
+  // index and the browser cache behind a one-time progress popup.
+  startup_build_show(app);
 }

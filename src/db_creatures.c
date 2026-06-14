@@ -493,6 +493,95 @@ db_creature_index_build(TQArzFile *arz)
   return(idx);
 }
 
+// -- Cache reconstruction ---------------------------------------------------
+
+DbCreatureIndex *
+db_creature_index_new_empty(void)
+{
+  DbCreatureIndex *idx = g_new0(DbCreatureIndex, 1);
+
+  idx->creatures = g_ptr_array_new_with_free_func(db_creature_free);
+  idx->by_item   = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                          g_free, drop_array_free);
+  return(idx);
+}
+
+DbCreature *
+db_creature_index_append(DbCreatureIndex *idx, const char *path,
+                         const char *name_tag, const char *classification,
+                         const char *race, const int level[3],
+                         const bool active[3], bool has_drops)
+{
+  DbCreature *c = g_new0(DbCreature, 1);
+
+  c->path           = g_strdup(path);
+  c->name_tag       = g_strdup(name_tag);
+  c->classification = g_strdup(classification);
+  c->race           = g_strdup(race);
+  for(int i = 0; i < 3; i++)
+  {
+    c->level[i]  = level ? level[i] : 0;
+    c->active[i] = active ? active[i] : false;
+  }
+  c->has_drops = has_drops;
+  c->drops     = g_ptr_array_new_with_free_func(item_chance_free);
+
+  g_ptr_array_add(idx->creatures, c);
+  return(c);
+}
+
+void
+db_creature_append_drop(DbCreature *c, const char *item_lc,
+                        const double chance[3])
+{
+  DbItemChance *ic = g_new0(DbItemChance, 1);
+
+  ic->item_lc   = g_strdup(item_lc);
+  ic->chance[0] = chance ? chance[0] : 0.0;
+  ic->chance[1] = chance ? chance[1] : 0.0;
+  ic->chance[2] = chance ? chance[2] : 0.0;
+  g_ptr_array_add(c->drops, ic);
+}
+
+// Rebuild the reverse (item -> creatures) map from the already-loaded forward
+// drop lists, then sort each list — mirrors the tail of db_creature_index_build.
+void
+db_creature_index_finalize_reverse(DbCreatureIndex *idx)
+{
+  if(!idx)
+    return;
+
+  for(guint ci = 0; ci < idx->creatures->len; ci++)
+  {
+    DbCreature *c = g_ptr_array_index(idx->creatures, ci);
+
+    for(guint di = 0; di < c->drops->len; di++)
+    {
+      DbItemChance *ic = g_ptr_array_index(c->drops, di);
+
+      GPtrArray *drops = g_hash_table_lookup(idx->by_item, ic->item_lc);
+      if(!drops)
+      {
+        drops = g_ptr_array_new_with_free_func(g_free);
+        g_hash_table_insert(idx->by_item, g_strdup(ic->item_lc), drops);
+      }
+
+      DbDrop *drop = g_new0(DbDrop, 1);
+      drop->creature_idx = (int)ci;
+      drop->chance[0] = ic->chance[0];
+      drop->chance[1] = ic->chance[1];
+      drop->chance[2] = ic->chance[2];
+      g_ptr_array_add(drops, drop);
+    }
+  }
+
+  GHashTableIter rit;
+  gpointer rk, rv;
+  g_hash_table_iter_init(&rit, idx->by_item);
+  while(g_hash_table_iter_next(&rit, &rk, &rv))
+    g_ptr_array_sort((GPtrArray *)rv, drop_cmp);
+}
+
 void
 db_creature_index_free(DbCreatureIndex *idx)
 {

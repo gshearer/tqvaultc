@@ -262,6 +262,56 @@ db_quest_index_build(TQArzFile *arz, const char *const *arc_files, int n_arcs)
     qi++;
   }
 
+  db_quest_index_finalize_reverse(idx);
+
+  return(idx);
+}
+
+// -- Cache reconstruction ---------------------------------------------------
+
+DbQuestIndex *
+db_quest_index_new_empty(void)
+{
+  DbQuestIndex *idx = g_new0(DbQuestIndex, 1);
+
+  idx->quests  = g_ptr_array_new_with_free_func(db_quest_free);
+  idx->by_item = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                       g_free, quest_reward_array_free);
+  return(idx);
+}
+
+DbQuest *
+db_quest_index_append(DbQuestIndex *idx, const char *title_tag,
+                      const char *label)
+{
+  DbQuest *q = g_new0(DbQuest, 1);
+
+  q->title_tag = g_strdup(title_tag);
+  q->label     = g_strdup(label);
+  g_ptr_array_add(idx->quests, q);
+  return(q);
+}
+
+void
+db_quest_append_reward(DbQuest *q, int diff, const char *item_lc,
+                       double percent)
+{
+  if(diff < 0 || diff > 2)
+    return;
+
+  quest_add_reward(q, diff, item_lc, percent);
+}
+
+// Build the reverse (item -> quests) map from each quest's per-difficulty
+// reward buckets.  Shared by the live build and the disk-cache reload, so the
+// "reward from" view is identical either way.  Assumes empty-reward quests are
+// already pruned (the live build does so before calling this).
+void
+db_quest_index_finalize_reverse(DbQuestIndex *idx)
+{
+  if(!idx)
+    return;
+
   for(guint qi = 0; qi < idx->quests->len; qi++)
   {
     DbQuest *q = g_ptr_array_index(idx->quests, qi);
@@ -308,8 +358,6 @@ db_quest_index_build(TQArzFile *arz, const char *const *arc_files, int n_arcs)
 
     g_hash_table_destroy(items);
   }
-
-  return(idx);
 }
 
 void

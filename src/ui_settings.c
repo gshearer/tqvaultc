@@ -4,9 +4,6 @@
 #include "config.h"
 #include "translation.h"
 #include "item_stats.h"
-#include "asset_lookup.h"
-#include "arz.h"
-#include "affix_table.h"
 #include "version.h"
 #include "build_number.h"
 #include <stdio.h>
@@ -500,19 +497,12 @@ on_first_run_save(GtkButton *btn, gpointer user_data)
 
   gtk_window_destroy(GTK_WINDOW(win));
 
-  // Run the same init sequence as on_activate(). Without this, the asset
-  // manager (DBR cache, ARZ mmaps), intern table, item stats, and affix
-  // tables stay uninitialized — which on first run produces missing item
-  // textures and "g_hash_table_lookup: hash_table != NULL" spam.
-  if(global_config.game_folder)
-  {
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-  }
-
-  ui_app_activate(app, NULL);
+  // Shared init+activate path (same as on_activate's normal branch): brings up
+  // the asset manager (DBR cache, ARZ mmaps), intern table, item stats and
+  // affix tables — without which first run shows missing textures and
+  // "g_hash_table_lookup: hash_table != NULL" spam — and builds the Database
+  // Browser cache behind a one-time "Setting up…" popup before activating.
+  ui_startup_init_and_activate(app);
 }
 
 // Deferred callback to show the About dialog once the settings window is mapped.
