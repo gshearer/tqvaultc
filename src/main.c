@@ -14,6 +14,8 @@
 #include "prefetch.h"
 #include "translation.h"
 #include "db_browser_cache.h"
+#include "db_creatures.h"
+#include "creature_thumbs.h"
 
 static int g_saved_argc;
 static char **g_saved_argv;
@@ -278,6 +280,17 @@ on_activate(GtkApplication *app, gpointer user_data)
     ui_startup_init_and_activate(app);
 }
 
+// Progress callback for --creature-thumbs-build: a periodic one-line counter.
+static void
+thumbs_build_progress(int done, int total, void *user)
+{
+  (void)user;
+  if(done == total || done % 25 == 0)
+    printf("\r  %d / %d", done, total), fflush(stdout);
+  if(done == total)
+    printf("\n");
+}
+
 // Program entry point. Parses command-line flags (--version, --debug),
 // initializes config, creates the GTK application, and runs the main loop.
 // argc: argument count
@@ -318,6 +331,7 @@ main(int argc, char **argv)
   const char *skill_bonus_chr_path = NULL;
 
   bool db_cache_selftest_only = false;
+  bool thumbs_build_only = false;
 
   for(int i = 1; i < argc; i++)
   {
@@ -349,6 +363,10 @@ main(int argc, char **argv)
     else if(strcmp(argv[i], "--db-cache-selftest") == 0)
     {
       db_cache_selftest_only = true;
+    }
+    else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
+    {
+      thumbs_build_only = true;
     }
     else
     {
@@ -452,6 +470,64 @@ main(int argc, char **argv)
 
     int rc = db_browser_cache_selftest();
 
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(rc);
+  }
+
+  if(thumbs_build_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --creature-thumbs-build: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+
+    // Shared database handle if cached, else load our own (mirrors startup).
+    TQArzFile *arz = asset_get_database_arz();
+    TQArzFile *own_arz = NULL;
+
+    if(!arz)
+    {
+      char arz_path[1024];
+
+      snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
+               global_config.game_folder);
+      arz = own_arz = arz_load(arz_path);
+    }
+
+    int rc = 1;
+
+    if(arz)
+    {
+      gint64 t0 = g_get_monotonic_time();
+      DbCreatureIndex *idx = db_creature_index_build(arz);
+
+      if(idx)
+      {
+        printf("Rendering thumbnails for %u creatures…\n", idx->creatures->len);
+        creature_thumbs_build(idx, global_config.game_folder,
+                              thumbs_build_progress, NULL);
+        double secs = (g_get_monotonic_time() - t0) / 1e6;
+
+        printf("Done in %.1fs.\n", secs);
+        db_creature_index_free(idx);
+        rc = 0;
+      }
+    }
+    else
+      fprintf(stderr, "tqvaultc --creature-thumbs-build: no database.arz\n");
+
+    if(own_arz)
+      arz_free(own_arz);
     item_stats_free();
     affix_table_free();
     arz_intern_free();

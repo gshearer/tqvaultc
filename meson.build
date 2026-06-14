@@ -81,7 +81,12 @@ app_sources = [
   'src/ui_db_browser.c',
   'src/ui_db_browser_index.c',
   'src/ui_db_browser_detail.c',
-  'src/db_browser_cache.c'
+  'src/db_browser_cache.c',
+  'src/mesh.c',
+  'src/mesh_render.c',
+  'src/mesh_skin.c',
+  'src/anm.c',
+  'src/creature_thumbs.c'
 ]
 
 # 5. Build the GUI Application
@@ -105,8 +110,10 @@ executable('tq-stats',
 # 7. Build the DBR/ARC Inspection Tool
 executable('tq-dbr-tool',
   ['src/utils/tq_dbr_tool.c', 'src/arz.c', 'src/arc.c',
-   'src/db_loot.c', 'src/db_creatures.c', 'src/db_quests.c'] + platform_sources,
-  dependencies: [gtk_dep, zlib_dep, m_dep],
+   'src/db_loot.c', 'src/db_creatures.c', 'src/db_quests.c',
+   'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/config.c',
+   'src/mesh.c', 'src/mesh_render.c', 'src/mesh_skin.c', 'src/anm.c'] + platform_sources,
+  dependencies: [gtk_dep, json_dep, zlib_dep, m_dep],
   install: true)
 
 # 8. Build the Player.chr Debugging Tool

@@ -42,12 +42,15 @@ main(int argc, char *argv[])
 {
   if(argc < 2)
   {
-    printf("Usage: %s <arc_file> [output_dir]\n", argv[0]);
+    printf("Usage: %s <arc_file> [output_dir] [path_substr]\n", argv[0]);
+    printf("  path_substr: only extract entries whose path contains this "
+           "(case-insensitive)\n");
     return(1);
   }
 
   const char *arc_path = argv[1];
   const char *out_base = (argc > 2) ? argv[2] : "extracted_textures";
+  const char *filter   = (argc > 3) ? argv[3] : NULL;
 
   TQArcFile *arc = arc_load(arc_path);
 
@@ -62,6 +65,9 @@ main(int argc, char *argv[])
   for(uint32_t i = 0; i < arc->num_files; i++)
   {
     const char *entry_path = arc->entries[i].path;
+
+    if(filter && !strcasestr(entry_path, filter))
+      continue;
 
     if(strstr(entry_path, ".tex") || strstr(entry_path, ".TEX"))
     {
