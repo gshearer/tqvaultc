@@ -41,6 +41,13 @@ item_resolve_bitmap(const char *base_name, uint32_t var1)
   if(bitmap)
     return(bitmap);
 
+  // Artifact formulae (recipes -- Class ItemArtifactFormula) keep their icon in
+  // artifactFormulaBitmapName rather than "bitmap"/"artifactBitmap".  Without
+  // this the recipe items render as the purple no-texture placeholder.
+  bitmap = arz_record_get_string(data, "artifactFormulaBitmapName", NULL);
+  if(bitmap)
+    return(bitmap);
+
   // For relics/charms: use shardBitmap when incomplete, relicBitmap when complete.
   // completedRelicLevel from the DBR tells us how many shards are needed.
   char *relic_bmp = arz_record_get_string(data, "relicBitmap", NULL);
