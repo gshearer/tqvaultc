@@ -1338,6 +1338,11 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   // of floating over (and stealing events from) the stash notebook's own
   // scrollbar, which sits just inside it.
   gtk_scrolled_window_set_overlay_scrolling(GTK_SCROLLED_WINDOW(content_scroll), FALSE);
+  // Floor the vertical shrink at something usable: without this the scrolled
+  // window happily collapses to ~10px tall, leaving the grids invisible behind
+  // the scrollbar. 300px keeps a couple of grid rows on screen before the bar
+  // takes over.
+  gtk_scrolled_window_set_min_content_height(GTK_SCROLLED_WINDOW(content_scroll), 300);
   gtk_widget_set_hexpand(content_scroll, TRUE);
   gtk_widget_set_vexpand(content_scroll, TRUE);
   gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(content_scroll), main_hbox);
