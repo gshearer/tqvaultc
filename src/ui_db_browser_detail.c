@@ -6,6 +6,7 @@
 #include "item_stats.h"
 #include "asset_lookup.h"
 #include "texture.h"
+#include "creature_thumbs.h"
 #include "vault.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -802,18 +803,114 @@ db_fmt_chances(const double ch[3], char *out, size_t outsz)
     snprintf(out, outsz, "—");
 }
 
-// Append a list of item rows (name in rarity color + chances) to w, capped at
-// `limit` entries with a "+N more" note.  `paths`/`chances` are parallel.
+// Value rank for ordering a drop/reward list: higher == more desirable, so the
+// most valuable items are the ones that survive a "+N more" truncation.  Based
+// on the game's own itemClassification, with the special consumable/craftable
+// types (relics, charms, artifacts, arcane formulae, scrolls — all classed
+// "Common") promoted above mundane gear.
+static int
+db_item_value_rank(const char *item_lc)
+{
+  if(!item_lc)
+    return(0);
+
+  const char *cls = get_record_variable_string(item_lc, INT_itemClassification);
+
+  if(cls)
+  {
+    if(strcasecmp(cls, "Legendary") == 0) return(7);
+    if(strcasecmp(cls, "Epic") == 0)      return(6);
+    if(strcasecmp(cls, "Rare") == 0)      return(5);
+  }
+
+  if(path_contains_ci(item_lc, "\\artifacts\\") ||
+     path_contains_ci(item_lc, "\\arcaneformulae\\") ||
+     path_contains_ci(item_lc, "\\relics\\") ||
+     path_contains_ci(item_lc, "\\charms\\") ||
+     path_contains_ci(item_lc, "\\scrolls\\"))
+    return(4);
+
+  if(cls)
+  {
+    if(strcasecmp(cls, "Quest") == 0)    return(3);
+    if(strcasecmp(cls, "Magical") == 0)  return(2);
+  }
+
+  return(1);  // Common / Broken / unknown
+}
+
+// True if a dropped item is hidden from a creature's drop list.  We drop the
+// clutter that buries the worthwhile loot:
+//   - health / energy (mana) potions;
+//   - mundane common (white) gear — get_item_color() returns "white" only for
+//     common gear with no affixes that isn't one of the special path types
+//     ranked above.
+static bool
+db_drop_is_excluded(const char *item_lc)
+{
+  if(path_contains_ci(item_lc, "\\oneshot\\potionhealth") ||
+     path_contains_ci(item_lc, "\\oneshot\\potionmana"))
+    return(true);
+
+  const char *col = get_item_color(item_lc, NULL, NULL);
+
+  return(col && strcmp(col, "white") == 0);
+}
+
+// One row to be sorted by db_append_item_rows: the source entry plus its
+// precomputed value rank and best per-difficulty drop chance.
+typedef struct {
+  DbItemChance *ic;
+  int           rank;
+  double        best;
+} DropSortRow;
+
+static int
+db_drop_sort_cmp(const void *a, const void *b)
+{
+  const DropSortRow *x = a;
+  const DropSortRow *y = b;
+
+  if(x->rank != y->rank)
+    return(y->rank - x->rank);     // most valuable first
+  if(x->best < y->best) return(1); // then best drop chance first (tiebreak)
+  if(x->best > y->best) return(-1);
+  return(0);
+}
+
+// Append a list of item rows (name in rarity color + chances) to w, sorted by
+// item value (rarity) and capped at `limit` entries with a "+N more" note.
+// Sorting by value means that when the list is truncated, the most valuable
+// drops stay visible rather than whatever happened to have the highest drop
+// chance.  A private copy is sorted so the caller's array (e.g. a creature's
+// shared drop index) keeps its own order.
 static void
 db_append_item_rows(DbBrowserState *st, BufWriter *w, GPtrArray *paths,
                     int limit)
 {
   guint n = paths->len;
+
+  if(n == 0)
+    return;
+
+  DropSortRow *rows = g_new(DropSortRow, n);
+
+  for(guint i = 0; i < n; i++)
+  {
+    DbItemChance *ic = g_ptr_array_index(paths, i);
+
+    rows[i].ic   = ic;
+    rows[i].rank = db_item_value_rank(ic->item_lc);
+    rows[i].best = MAX(ic->chance[0], MAX(ic->chance[1], ic->chance[2]));
+  }
+
+  qsort(rows, n, sizeof(*rows), db_drop_sort_cmp);
+
   guint shown = (n > (guint)limit) ? (guint)limit : n;
 
   for(guint i = 0; i < shown; i++)
   {
-    DbItemChance *ic = g_ptr_array_index(paths, i);
+    DbItemChance *ic = rows[i].ic;
     char *name = db_item_display_name(st, ic->item_lc);
     const char *color = get_item_color(ic->item_lc, NULL, NULL);
     char *e = escape_markup(name ? name : ic->item_lc);
@@ -834,6 +931,8 @@ db_append_item_rows(DbBrowserState *st, BufWriter *w, GPtrArray *paths,
 
   if(n > shown)
     buf_write(w, "<span color='#808080'>    … +%u more</span>\n", n - shown);
+
+  g_free(rows);
 }
 
 // Detail pane for a creature: name, classification/race/levels, and the items
@@ -859,11 +958,31 @@ update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
             c->race ? " · " : "", c->race ? c->race : "",
             c->level[0], c->level[1], c->level[2]);
 
-  buf_write(&w, "\n<span color='#B0B0B0'>Drops (%u):</span>\n", c->drops->len);
-  db_append_item_rows(st, &w, c->drops, 80);
+  // Curate the drop list: hide mundane common (white) gear and health/energy
+  // potions (heroes/bosses drop heaps of both), keeping the worthwhile loot.
+  // Sort + truncation then happen in db_append_item_rows over this view.
+  GPtrArray *shown = g_ptr_array_new();
+
+  for(guint i = 0; i < c->drops->len; i++)
+  {
+    DbItemChance *ic = g_ptr_array_index(c->drops, i);
+
+    if(!db_drop_is_excluded(ic->item_lc))
+      g_ptr_array_add(shown, ic);
+  }
+
+  buf_write(&w, "\n<span color='#B0B0B0'>Drops (%u):</span>\n", shown->len);
+  db_append_item_rows(st, &w, shown, 80);
+  g_ptr_array_free(shown, FALSE);   // borrowed DbItemChance* — don't free items
 
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
-  db_detail_set_icon(st, NULL, 0);
+
+  // Show the creature's rendered model thumbnail (cached at startup), if any.
+  GdkPixbuf *pb = creature_thumbs_load(c->path);
+
+  db_detail_set_pixbuf(st, pb);
+  if(pb)
+    g_object_unref(pb);
 }
 
 // Detail pane for a quest: name and its item rewards per difficulty.

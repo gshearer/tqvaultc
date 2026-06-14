@@ -21,6 +21,7 @@
 
 #include "ui_db_browser_internal.h"
 #include "db_browser_cache.h"
+#include "creature_thumbs.h"
 
 #include "config.h"
 #include "asset_lookup.h"
@@ -299,6 +300,48 @@ on_search_changed(GtkSearchEntry *entry, gpointer data)
   gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_DIFFERENT);
 }
 
+// Display size of creature thumbnails cached for the center grid.  The cached
+// PNGs are CREATURE_THUMB_SIZE (256px); we downscale once to this on load so
+// the per-cell pixbufs stay small and scrolling the ~1100-creature Monsters
+// list doesn't re-decode a 256px PNG on every bind.
+#define DB_GRID_CREATURE_PX 96
+
+// Load a creature's rendered model thumbnail for the center grid, caching the
+// downscaled result in the shared texture cache (keyed apart from item icons).
+// creature_thumbs_load() decodes a PNG from disk on each call, so without this
+// scrolling the Monsters category would stutter as cells rebind.
+static GdkPixbuf *
+grid_creature_thumb(DbBrowserState *st, const char *path)
+{
+  if(!path || !st->widgets)
+    return(NULL);
+
+  char key[1200];
+
+  snprintf(key, sizeof(key), "creature:%s", path);
+
+  GdkPixbuf *cached = g_hash_table_lookup(st->widgets->texture_cache, key);
+
+  if(cached)
+    return(g_object_ref(cached));
+
+  GdkPixbuf *full = creature_thumbs_load(path);
+
+  if(!full)
+    return(NULL);
+
+  GdkPixbuf *pb = gdk_pixbuf_scale_simple(full, DB_GRID_CREATURE_PX,
+                                          DB_GRID_CREATURE_PX,
+                                          GDK_INTERP_BILINEAR);
+
+  g_object_unref(full);
+  if(pb)
+    g_hash_table_insert(st->widgets->texture_cache, strdup(key),
+                        g_object_ref(pb));
+
+  return(pb);
+}
+
 // -- Grid factory -----------------------------------------------------------
 
 // setup: a vertical box holding a fixed-size GtkPicture (icon, aspect kept)
@@ -367,6 +410,8 @@ grid_factory_bind(GtkSignalListItemFactory *factory, GtkListItem *li,
 
   if(bi->is_skill)
     pb = bi->icon_path ? texture_load(bi->icon_path) : NULL;
+  else if(bi->is_creature)
+    pb = grid_creature_thumb(st, bi->path);
   else
   {
     const char *icon = bi->icon_path ? bi->icon_path : bi->path;
@@ -1013,6 +1058,13 @@ typedef struct
   TQTranslation  *tr;        // throwaway translations (freed after save)
   int             phase;     // next phase to run
   gboolean        announced; // current phase's label has been shown
+  // Creature-thumbnail render stage (runs after the index phases, in batches so
+  // the bar animates; see startup_build_step).
+  CreatureThumbJobs *jobs;   // NULL until built; freed in jobs_finish
+  int             job_total;
+  int             job_i;     // next job index to render
+  gboolean        thumbs_done;
+  gboolean        saved;
 } StartupLoader;
 
 // Step A: the synchronous init tail (resource-index build happens inside
@@ -1080,8 +1132,11 @@ startup_step_save(StartupLoader *sl)
 }
 
 // Phase table: label shown while the step runs + the bar position to settle on
-// once it finishes.  Step A is the resource-index build (the "fake" 0→10%),
-// steps B animate 10→90%, step C (save) lands 90→100%.
+// once it finishes.  Step A is the resource-index build (the "fake" 0→5%), the
+// rest of the index phases animate up to ~33%.  After this table the creature
+// thumbnails render (33→97%, in batches) and the cache is saved (→100%) -- both
+// handled directly in startup_build_step since they don't fit the one-shot
+// phase shape (save must run after thumbnails, which need st->creatures).
 static const struct
 {
   const char *label;
@@ -1090,52 +1145,95 @@ static const struct
 }
 STARTUP_PHASES[] =
 {
-  { "Preparing game database…",   startup_step_init,      0.10 },
-  { "Indexing equipment…",        startup_step_categories,0.25 },
-  { "Indexing item sets…",        startup_step_sets,      0.35 },
-  { "Indexing affixes…",          startup_step_affixes,   0.50 },
-  { "Indexing skills…",           startup_step_skills,    0.65 },
-  { "Indexing creatures…",        startup_step_creatures, 0.85 },
-  { "Indexing quest rewards…",    startup_step_quests,    0.90 },
-  { "Saving cache…",              startup_step_save,      1.00 },
+  { "Preparing game database…",   startup_step_init,      0.05 },
+  { "Indexing equipment…",        startup_step_categories,0.12 },
+  { "Indexing item sets…",        startup_step_sets,      0.16 },
+  { "Indexing affixes…",          startup_step_affixes,   0.22 },
+  { "Indexing skills…",           startup_step_skills,    0.27 },
+  { "Indexing creatures…",        startup_step_creatures, 0.31 },
+  { "Indexing quest rewards…",    startup_step_quests,    0.33 },
 };
 
 #define STARTUP_NPHASES ((int)G_N_ELEMENTS(STARTUP_PHASES))
+
+// Creature thumbnails rendered per idle tick: small enough that the window
+// repaints (~quarter second of work per tick), large enough to finish promptly.
+#define STARTUP_THUMB_BATCH 8
 
 static gboolean
 startup_build_step(gpointer data)
 {
   StartupLoader *sl = data;
 
-  // All phases done: bring up the real UI first (so the application keeps a
-  // window), then drop the popup.
-  if(sl->phase >= STARTUP_NPHASES)
+  // -- Index phases (init … quest rewards) --------------------------------
+  if(sl->phase < STARTUP_NPHASES)
   {
-    GtkApplication *app = sl->app;
-    GtkWidget      *win = sl->win;
+    // First pass: show this phase's label, then yield so the bar repaints
+    // before the blocking work below.
+    if(!sl->announced)
+    {
+      gtk_label_set_text(GTK_LABEL(sl->status), STARTUP_PHASES[sl->phase].label);
+      sl->announced = TRUE;
+      return(G_SOURCE_CONTINUE);
+    }
 
-    g_free(sl);
-    ui_app_activate(app, NULL);
-    gtk_window_destroy(GTK_WINDOW(win));
-    return(G_SOURCE_REMOVE);
-  }
-
-  // First pass: show this phase's label, then yield so the bar repaints before
-  // the blocking work below.
-  if(!sl->announced)
-  {
-    gtk_label_set_text(GTK_LABEL(sl->status), STARTUP_PHASES[sl->phase].label);
-    sl->announced = TRUE;
+    STARTUP_PHASES[sl->phase].fn(sl);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(sl->bar),
+                                  STARTUP_PHASES[sl->phase].frac);
+    sl->phase++;
+    sl->announced = FALSE;
     return(G_SOURCE_CONTINUE);
   }
 
-  // Second pass: do the work, advance the bar.
-  STARTUP_PHASES[sl->phase].fn(sl);
-  gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(sl->bar),
-                                STARTUP_PHASES[sl->phase].frac);
-  sl->phase++;
-  sl->announced = FALSE;
-  return(G_SOURCE_CONTINUE);
+  // -- Creature thumbnails (batched so the bar animates) ------------------
+  if(!sl->thumbs_done)
+  {
+    if(!sl->jobs)
+    {
+      gtk_label_set_text(GTK_LABEL(sl->status), "Rendering creature models…");
+      sl->jobs = creature_thumbs_jobs_new(sl->st->creatures);
+      sl->job_total = creature_thumbs_jobs_total(sl->jobs);
+      sl->job_i = 0;
+      return(G_SOURCE_CONTINUE);    // yield so the label paints first
+    }
+
+    if(sl->job_i < sl->job_total)
+    {
+      int end = MIN(sl->job_i + STARTUP_THUMB_BATCH, sl->job_total);
+
+      for(; sl->job_i < end; sl->job_i++)
+        creature_thumbs_jobs_render(sl->jobs, sl->job_i);
+
+      double frac = 0.33 + 0.64 * ((double)sl->job_i / (double)sl->job_total);
+
+      gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(sl->bar), frac);
+      return(G_SOURCE_CONTINUE);
+    }
+
+    creature_thumbs_jobs_finish(sl->jobs, global_config.game_folder);
+    sl->jobs = NULL;
+    sl->thumbs_done = TRUE;
+    return(G_SOURCE_CONTINUE);
+  }
+
+  // -- Save the browser cache (frees st) ----------------------------------
+  if(!sl->saved)
+  {
+    gtk_label_set_text(GTK_LABEL(sl->status), "Saving cache…");
+    startup_step_save(sl);
+    gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(sl->bar), 1.0);
+    sl->saved = TRUE;
+    return(G_SOURCE_CONTINUE);
+  }
+
+  // -- Done: bring up the real UI, then drop the popup --------------------
+  GtkApplication *app = sl->app;
+  GtkWidget      *win = sl->win;
+
+  g_free(sl);
+  ui_app_activate(app, NULL);
+  gtk_window_destroy(GTK_WINDOW(win));
+  return(G_SOURCE_REMOVE);
 }
 
 // Build and present the modal setup window, then start the idle build.
@@ -1197,9 +1295,11 @@ ui_startup_init_and_activate(GtkApplication *app)
     return;
   }
 
-  // Fast path: a valid browser cache means init is cheap (just loads the
-  // existing resource index) and the browser will open instantly — no popup.
-  if(db_browser_cache_valid(global_config.game_folder))
+  // Fast path: valid browser cache AND creature thumbnails mean init is cheap
+  // (just loads the existing resource index) and the browser opens instantly —
+  // no popup.  Both caches are validated against the live database.arz.
+  if(db_browser_cache_valid(global_config.game_folder) &&
+     creature_thumbs_cache_valid(global_config.game_folder))
   {
     asset_manager_init(global_config.game_folder);
     arz_intern_init();
@@ -1210,6 +1310,7 @@ ui_startup_init_and_activate(GtkApplication *app)
   }
 
   // Slow path (first run / game updated / format bumped): build the resource
-  // index and the browser cache behind a one-time progress popup.
+  // index, the browser cache and the creature thumbnails behind a one-time
+  // progress popup.
   startup_build_show(app);
 }
