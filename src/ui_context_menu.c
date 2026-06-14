@@ -506,8 +506,11 @@ show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
 
   // Completion Bonus submenus
   {
-    // Case 1: Standalone relic/charm/artifact -- base_name IS the relic/charm/artifact
-    if(base && (item_is_relic_or_charm(base) || item_is_artifact(base)))
+    // Case 1: Standalone relic/charm/artifact -- base_name IS the relic/charm/artifact.
+    // Single-piece quest relics/charms are always complete but never roll a
+    // bonus, so they are excluded here (no "Completion Bonus" entry).
+    if(base && !relic_is_single_piece(base) &&
+       (item_is_relic_or_charm(base) || item_is_artifact(base)))
     {
       const char *cur_bonus = equip_item ? equip_item->relic_bonus
                                          : (item ? item->relic_bonus : NULL);
@@ -536,7 +539,8 @@ show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
     }
 
     // Case 2: Equipped relic/charm in slot 1
-    if(rn1 && rn1[0] && (item_is_relic_or_charm(rn1) || item_is_artifact(rn1)))
+    if(rn1 && rn1[0] && !relic_is_single_piece(rn1) &&
+       (item_is_relic_or_charm(rn1) || item_is_artifact(rn1)))
     {
       const char *cur_bonus1 = equip_item ? equip_item->relic_bonus
                                           : (item ? item->relic_bonus : NULL);
@@ -563,7 +567,8 @@ show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
     }
 
     // Case 3: Equipped relic/charm in slot 2
-    if(rn2 && rn2[0] && (item_is_relic_or_charm(rn2) || item_is_artifact(rn2)))
+    if(rn2 && rn2[0] && !relic_is_single_piece(rn2) &&
+       (item_is_relic_or_charm(rn2) || item_is_artifact(rn2)))
     {
       const char *cur_bonus2 = equip_item ? equip_item->relic_bonus2
                                           : (item ? item->relic_bonus2 : NULL);

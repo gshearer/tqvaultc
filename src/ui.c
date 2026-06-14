@@ -15,6 +15,62 @@
 #include <strings.h>
 #include <ctype.h>
 
+// Resolve the in-game bitmap an item draws (before the ".tex" swap): "bitmap"/
+// "artifactBitmap" for normal items, or the shard vs complete relic/charm
+// bitmap chosen from var1.  See ui.h for the single-piece rule.
+//   base_name - DBR record path for the item
+//   var1      - shard count (only affects multi-piece relics/charms)
+// Returns a malloc'd bitmap path (caller frees), or NULL.
+char*
+item_resolve_bitmap(const char *base_name, uint32_t var1)
+{
+  if(!base_name)
+    return(NULL);
+
+  TQArzRecordData *data = asset_get_dbr(base_name);
+
+  if(!data)
+    return(NULL);
+
+  char *bitmap = arz_record_get_string(data, "bitmap", NULL);
+
+  if(bitmap)
+    return(bitmap);
+
+  bitmap = arz_record_get_string(data, "artifactBitmap", NULL);
+  if(bitmap)
+    return(bitmap);
+
+  // For relics/charms: use shardBitmap when incomplete, relicBitmap when complete.
+  // completedRelicLevel from the DBR tells us how many shards are needed.
+  char *relic_bmp = arz_record_get_string(data, "relicBitmap", NULL);
+  char *shard_bmp = arz_record_get_string(data, "shardBitmap", NULL);
+
+  if(relic_bmp && shard_bmp)
+  {
+    int max_shards = arz_record_get_int(data, "completedRelicLevel", 0, NULL);
+
+    // Single-piece relics/charms (completedRelicLevel <= 1) are always awarded
+    // complete, so they always use the full relicBitmap and never the shard
+    // image -- only genuinely multi-piece items can be partial.
+    bool incomplete = (max_shards > 1 && var1 < (uint32_t)max_shards);
+
+    if(incomplete)
+    {
+      free(relic_bmp);
+      return(shard_bmp);
+    }
+
+    free(shard_bmp);
+    return(relic_bmp);
+  }
+
+  if(relic_bmp)
+    return(relic_bmp);
+
+  return(shard_bmp);   // may be NULL
+}
+
 // Load the texture for a vault item, using a cache keyed by base_name:var1.
 // Handles relics/charms (shard vs complete bitmap), artifacts, and normal items.
 //   widgets   - app state (owns the texture cache)
@@ -40,43 +96,7 @@ load_item_texture(AppWidgets *widgets, const char *base_name, uint32_t var1)
   if(cached)
     return(g_object_ref(cached));
 
-  char *bitmap_path = NULL;
-  TQArzRecordData *data = asset_get_dbr(base_name);
-
-  if(data)
-  {
-    bitmap_path = arz_record_get_string(data, "bitmap", NULL);
-    if(!bitmap_path)
-      bitmap_path = arz_record_get_string(data, "artifactBitmap", NULL);
-
-    if(!bitmap_path)
-    {
-      // For relics/charms: use shardBitmap when incomplete, relicBitmap when complete.
-      // completedRelicLevel from the DBR tells us how many shards are needed.
-      char *relic_bmp = arz_record_get_string(data, "relicBitmap", NULL);
-      char *shard_bmp = arz_record_get_string(data, "shardBitmap", NULL);
-
-      if(relic_bmp && shard_bmp)
-      {
-        int max_shards = arz_record_get_int(data, "completedRelicLevel", 0, NULL);
-
-        if(max_shards > 0 && var1 < (uint32_t)max_shards)
-        {
-          bitmap_path = shard_bmp;
-          free(relic_bmp);
-        }
-        else
-        {
-          bitmap_path = relic_bmp;
-          free(shard_bmp);
-        }
-      }
-      else if(relic_bmp)
-        bitmap_path = relic_bmp;
-      else if(shard_bmp)
-        bitmap_path = shard_bmp;
-    }
-  }
+  char *bitmap_path = item_resolve_bitmap(base_name, var1);
 
   char tex_path[1024];
   const char *source = bitmap_path ? bitmap_path : base_name;
@@ -110,16 +130,11 @@ item_is_relic_or_charm(const char *base_name)
   if(!base_name)
     return(false);
 
-  // Case-insensitive substring checks matching the C# reference logic
-  for(const char *p = base_name; *p; p++)
-  {
-    if(strncasecmp(p, "animalrelics", 12) == 0)
-      return(true);
-    if(strncasecmp(p, "\\relics\\", 8) == 0)
-      return(true);
-    if(strncasecmp(p, "\\charms\\", 8) == 0)
-      return(true);
-  }
+  // Case-insensitive, separator-agnostic path checks (matching the C# reference)
+  if(path_contains_ci(base_name, "animalrelics") ||
+     path_contains_ci(base_name, "\\relics\\") ||
+     path_contains_ci(base_name, "\\charms\\"))
+    return(true);
 
   // Fallback: check DBR Class for items in non-standard directories (e.g. HCDUNGEON)
   const char *cls = dbr_get_string(base_name, "Class");
@@ -196,18 +211,18 @@ item_is_stackable_type(const TQVaultItem *a)
   if(a->relic_name2 && a->relic_name2[0])
     return(false);
 
-  // Only relics, charms, potions, and scrolls are stackable
+  // Only relics, charms, potions, and scrolls are stackable.  Single-piece
+  // quest relics/charms (completedRelicLevel 1) are always awarded complete and
+  // never exist as shards, so they have no quantity to set.
   const char *b = a->base_name;
 
-  if(strcasestr(b, "\\relics\\"))
+  if(path_contains_ci(b, "\\relics\\") ||
+     path_contains_ci(b, "\\charms\\") ||
+     path_contains_ci(b, "\\animalrelic"))
+    return(!relic_is_single_piece(b));
+  if(path_contains_ci(b, "\\oneshot\\"))
     return(true);
-  if(strcasestr(b, "\\charms\\"))
-    return(true);
-  if(strcasestr(b, "\\animalrelic"))
-    return(true);
-  if(strcasestr(b, "\\oneshot\\"))
-    return(true);
-  if(strcasestr(b, "\\scrolls\\"))
+  if(path_contains_ci(b, "\\scrolls\\"))
     return(true);
 
   // Fallback: items like HCDungeon potions live outside the above paths
@@ -239,9 +254,9 @@ item_is_artifact(const char *base_name)
 {
   if(!base_name)
     return(false);
-  if(strcasestr(base_name, "\\artifacts\\") == NULL)
+  if(!path_contains_ci(base_name, "\\artifacts\\"))
     return(false);
-  if(strcasestr(base_name, "\\arcaneformulae\\") != NULL)
+  if(path_contains_ci(base_name, "\\arcaneformulae\\"))
     return(false);
 
   return(true);

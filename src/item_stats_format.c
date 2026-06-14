@@ -8,10 +8,24 @@
 
 // relic/charm header helpers
 
-// Case-insensitive substring search within a path.
+// Compare two path characters, treating '/' and '\\' as the same separator
+// and ignoring case.  DBR paths reach us in mixed forms -- save files use
+// lowercase backslashes, TQVaultAE vaults use uppercase backslashes, and some
+// in-game drops use forward slashes -- so segment checks like "\\charms\\" must
+// match regardless of which separator/case the path happens to use.
+static inline bool
+path_char_eq(char a, char b)
+{
+  if((a == '/' || a == '\\') && (b == '/' || b == '\\'))
+    return(true);
+
+  return(g_ascii_tolower((guchar)a) == g_ascii_tolower((guchar)b));
+}
+
+// Case-insensitive, separator-agnostic substring search within a path.
 // path: string to search in.
-// needle: substring to find.
-// Returns: true if needle found (case-insensitive).
+// needle: substring to find ('/' and '\\' are interchangeable).
+// Returns: true if needle found.
 bool
 path_contains_ci(const char *path, const char *needle)
 {
@@ -20,9 +34,17 @@ path_contains_ci(const char *path, const char *needle)
 
   size_t plen = strlen(path), nlen = strlen(needle);
 
+  if(nlen == 0)
+    return(true);
+
   for(size_t i = 0; i + nlen <= plen; i++)
   {
-    if(strncasecmp(path + i, needle, nlen) == 0)
+    size_t j = 0;
+
+    while(j < nlen && path_char_eq(path[i + j], needle[j]))
+      j++;
+
+    if(j == nlen)
       return(true);
   }
 
@@ -66,6 +88,23 @@ relic_max_shards(const char *relic_path)
   return(3);
 }
 
+// True for "single-piece" relics/charms whose completedRelicLevel is 1 -- quest
+// rewards (e.g. quest_artifice charm, nerthusmistletoe relic) that are always
+// awarded complete and never exist as shards.  See item_stats.h.
+bool
+relic_is_single_piece(const char *relic_path)
+{
+  TQArzRecordData *data = asset_get_dbr(relic_path);
+
+  if(!data)
+    return(false);
+
+  TQVariable *v = arz_record_get_var(data, INT_completedRelicLevel);
+
+  return(v && v->type == TQ_VAR_INT && v->count > 0 &&
+         v->value.i32[0] > 0 && v->value.i32[0] <= 1);
+}
+
 // Add a relic/charm section to the tooltip output.
 // relic_name: DBR path to the relic/charm.
 // relic_bonus: DBR path to the completion bonus record (may be NULL).
@@ -93,7 +132,8 @@ add_relic_section(const char *relic_name, const char *relic_bonus,
   char *e_relic = escape_markup(relic_str);
   const char *type_label = relic_type_label(relic_name);
   int max_shards = relic_max_shards(relic_name);
-  bool completed = relic_bonus || (shard_count >= (uint32_t)max_shards);
+  bool completed = relic_is_single_piece(relic_name) || relic_bonus ||
+                   (shard_count >= (uint32_t)max_shards);
 
   buf_write(w, "\n<b><span color='#C1A472'>%s</span></b>\n", e_relic);
 
@@ -752,7 +792,9 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   if(standalone_relic_charm)
   {
     standalone_max_shards = relic_max_shards(base_name);
-    standalone_complete = (relic_bonus && relic_bonus[0]) || (var1 >= (uint32_t)standalone_max_shards);
+    // Single-piece quest relics/charms are always awarded complete.
+    standalone_complete = relic_is_single_piece(base_name)
+        || (relic_bonus && relic_bonus[0]) || (var1 >= (uint32_t)standalone_max_shards);
     base_shard_index = standalone_complete ? standalone_max_shards - 1
         : (var1 > 0 ? (int)var1 - 1 : 0);
   }

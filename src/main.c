@@ -109,6 +109,28 @@ dump_dbr(const char *record_path)
   strip_markup_inplace(buf);
   printf("%s", buf);
 
+  // Classification of the raw (un-normalized) path, exactly as the GUI sees it.
+  // Lets us verify separator/case handling drives colour + context-menu items.
+  printf("\n--- Classification (raw path) ---\n");
+  printf("colour=%s relic_or_charm=%d artifact=%d stackable=%d "
+         "single_piece=%d max_shards=%d\n",
+         get_item_color(record_path, NULL, NULL),
+         item_is_relic_or_charm(record_path),
+         item_is_artifact(record_path),
+         item_is_stackable_type(&(TQVaultItem){ .base_name = (char *)record_path }),
+         relic_is_single_piece(record_path),
+         relic_max_shards(record_path));
+
+  // Which bitmap the grid would draw, at zero shards vs one shard.  Single-piece
+  // relics/charms must resolve to the same (complete) bitmap regardless of var1.
+  char *bmp0 = item_resolve_bitmap(record_path, 0);
+  char *bmp1 = item_resolve_bitmap(record_path, 1);
+
+  printf("bitmap(var1=0)=%s\nbitmap(var1=1)=%s\n",
+         bmp0 ? bmp0 : "(none)", bmp1 ? bmp1 : "(none)");
+  free(bmp0);
+  free(bmp1);
+
   // Aggregate requirements (level/str/dex/int) computed the same way the
   // equippability highlight does, for quick verification.
   int req[4];

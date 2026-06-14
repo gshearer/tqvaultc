@@ -103,6 +103,14 @@ item_get_guaranteed_dot(TQItem *item, const char *min_attr, const char *dur_attr
 int
 relic_max_shards(const char *relic_path);
 
+// True for "single-piece" relics/charms (completedRelicLevel <= 1), e.g. the
+// Atlantis quest_artifice charm and the Ragnarok nerthusmistletoe relic.  These
+// are quest rewards awarded already complete: they never exist as shards, so
+// they do not stack, never take a quantity, and never roll a completion bonus.
+// Safe to call on any path -- non single-piece relics/charms return false.
+bool
+relic_is_single_piece(const char *relic_path);
+
 // Returns a malloc'd short stat summary string from a bonus DBR
 // (e.g. "+30% Attack Speed"). Caller must free().
 // record_path: DBR path to the bonus record.

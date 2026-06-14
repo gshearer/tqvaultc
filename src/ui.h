@@ -461,6 +461,16 @@ safe_strdup(const char *s);
 void
 get_item_dims(AppWidgets *widgets, TQVaultItem *item, int *w, int *h);
 
+// Resolve which in-game bitmap an item uses, before the ".tex" swap.
+// Plain items use "bitmap"/"artifactBitmap"; relics/charms switch between the
+// shardBitmap (incomplete multi-piece) and relicBitmap (complete -- always used
+// for single-piece quest relics/charms).
+// base_name: DBR path of the item.
+// var1: shard count (only affects multi-piece relics/charms).
+// Returns: a malloc'd bitmap path (caller frees), or NULL if none.
+char *
+item_resolve_bitmap(const char *base_name, uint32_t var1);
+
 // Load or retrieve from cache the texture for an item.
 // widgets: the application widget state (for texture cache).
 // base_name: DBR path of the item.
