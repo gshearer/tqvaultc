@@ -629,6 +629,18 @@ cancel_held_item(AppWidgets *widgets);
 void
 free_held_item(AppWidgets *widgets);
 
+// Try to drop the held item into the first free spot in a sack that fits.
+// Used when a bag selector icon is clicked while holding an item.
+// widgets: the application widget state (must hold an item).
+// sack: destination sack.
+// ctype: destination container type (for dirty flags).
+// cols: grid column count.
+// rows: grid row count.
+// Returns: true if placed (held item freed); false if no room (item kept held).
+bool
+drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
+                    ContainerType ctype, int cols, int rows);
+
 // Deep-copy a vault item (all strings are strdup'd).
 // dst: destination item.
 // src: source item.

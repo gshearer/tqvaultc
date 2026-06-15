@@ -1086,8 +1086,18 @@ on_bag_clicked(GtkButton *btn, gpointer user_data)
 {
   AppWidgets *widgets = (AppWidgets *)user_data;
 
-  cancel_held_item(widgets);
   int bag_idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "bag-index"));
+
+  // Holding an item: drop it into the clicked bag rather than switching to its
+  // view -- but only if the bag has room.  No room (or the sack doesn't exist)
+  // falls through to switch the view, keeping the item on the cursor.
+  if(widgets->held_item &&
+     widgets->current_vault &&
+     bag_idx >= 0 && bag_idx < widgets->current_vault->num_sacks &&
+     drop_held_into_sack(widgets, &widgets->current_vault->sacks[bag_idx],
+                         CONTAINER_VAULT, VAULT_COLS, VAULT_ROWS))
+    return;
+
   int prev = widgets->current_sack;
 
   if(prev != bag_idx)
@@ -1109,11 +1119,23 @@ on_bag_clicked(GtkButton *btn, gpointer user_data)
 void
 on_char_bag_clicked(GtkButton *btn, gpointer user_data)
 {
-  (void)btn;
   AppWidgets *widgets = (AppWidgets *)user_data;
 
-  cancel_held_item(widgets);
   int idx = GPOINTER_TO_INT(g_object_get_data(G_OBJECT(btn), "bag-index"));
+
+  // Holding an item: drop it into the clicked bag rather than switching to its
+  // view -- but only if the bag has room.  Char bag idx 0-2 -> inv_sacks[1-3].
+  if(widgets->held_item && widgets->current_character)
+  {
+    int sidx = 1 + idx;
+
+    if(sidx < widgets->current_character->num_inv_sacks &&
+       drop_held_into_sack(widgets,
+                           &widgets->current_character->inv_sacks[sidx],
+                           CONTAINER_BAG, CHAR_BAG_COLS, CHAR_BAG_ROWS))
+      return;
+  }
+
   int prev = widgets->current_char_bag;
 
   if(prev != idx)

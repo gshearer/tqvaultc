@@ -917,6 +917,43 @@ pick_up_from_sack(AppWidgets *widgets, TQVaultSack *sack,
   queue_redraw_all(widgets);
 }
 
+// Mark every container touched by a place/move operation dirty and refresh the
+// save button.  ctype is the destination container; held_source is where the
+// moved item came from (may equal ctype).
+// widgets: app context
+// ctype: destination container type
+// held_source: source container type of the moved item
+static void
+mark_place_dirty(AppWidgets *widgets, ContainerType ctype,
+                 ContainerType held_source)
+{
+  // Mark vault dirty if this container is a vault or item came from vault
+  if(ctype == CONTAINER_VAULT || held_source == CONTAINER_VAULT)
+    widgets->vault_dirty = true;
+
+  // Mark character dirty if source or destination is character inventory/bag
+  if(ctype == CONTAINER_INV || ctype == CONTAINER_BAG ||
+     held_source == CONTAINER_INV || held_source == CONTAINER_BAG ||
+     held_source == CONTAINER_EQUIP)
+  {
+    widgets->char_dirty = true;
+    update_save_button_sensitivity(widgets);
+  }
+
+  // Mark stash dirty if source or destination is a stash
+  if(ctype == CONTAINER_TRANSFER || held_source == CONTAINER_TRANSFER)
+    if(widgets->transfer_stash)
+      widgets->transfer_stash->dirty = true;
+
+  if(ctype == CONTAINER_PLAYER_STASH || held_source == CONTAINER_PLAYER_STASH)
+    if(widgets->player_stash)
+      widgets->player_stash->dirty = true;
+
+  if(ctype == CONTAINER_RELIC_VAULT || held_source == CONTAINER_RELIC_VAULT)
+    if(widgets->relic_vault)
+      widgets->relic_vault->dirty = true;
+}
+
 // Place the currently held item into a sack at the given pixel position,
 // handling stacking, socketing, swapping, and occupancy checks.
 // widgets: app context
@@ -1119,34 +1156,65 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
   vault_item_free_strings(&target_copy);
 
 done:
-  // Mark vault dirty if this container is a vault or item came from vault
-  if(ctype == CONTAINER_VAULT || held_source == CONTAINER_VAULT)
-    widgets->vault_dirty = true;
-
-  // Mark character dirty if source or destination is character inventory/bag
-  if(ctype == CONTAINER_INV || ctype == CONTAINER_BAG ||
-     held_source == CONTAINER_INV || held_source == CONTAINER_BAG ||
-     held_source == CONTAINER_EQUIP)
-  {
-    widgets->char_dirty = true;
-    update_save_button_sensitivity(widgets);
-  }
-
-  // Mark stash dirty if source or destination is a stash
-  if(ctype == CONTAINER_TRANSFER || held_source == CONTAINER_TRANSFER)
-    if(widgets->transfer_stash)
-      widgets->transfer_stash->dirty = true;
-
-  if(ctype == CONTAINER_PLAYER_STASH || held_source == CONTAINER_PLAYER_STASH)
-    if(widgets->player_stash)
-      widgets->player_stash->dirty = true;
-
-  if(ctype == CONTAINER_RELIC_VAULT || held_source == CONTAINER_RELIC_VAULT)
-    if(widgets->relic_vault)
-      widgets->relic_vault->dirty = true;
-
+  mark_place_dirty(widgets, ctype, held_source);
   invalidate_tooltips(widgets);
   queue_redraw_all(widgets);
+}
+
+// Try to drop the held item into the first free spot in a sack that fits its
+// footprint (top-to-bottom, left-to-right scan).  Used when a bag selector icon
+// is clicked while holding an item: the item lands in that bag instead of just
+// switching the view to it.
+// widgets: app context (must hold an item)
+// sack: destination sack
+// ctype: destination container type (for dirty flags)
+// cols, rows: destination grid dimensions
+// returns: true if placed (held item freed); false if no room (item kept on cursor)
+bool
+drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
+                    ContainerType ctype, int cols, int rows)
+{
+  HeldItem *hi = widgets->held_item;
+
+  if(!hi || !sack)
+    return(false);
+
+  bool *grid = build_occupancy_grid(widgets, sack, cols, rows, NULL);
+
+  if(!grid)
+    return(false);
+
+  int fx = -1, fy = -1;
+
+  for(int y = 0; y <= rows - hi->item_h && fy < 0; y++)
+    for(int x = 0; x <= cols - hi->item_w; x++)
+      if(can_place_item(grid, cols, rows, x, y, hi->item_w, hi->item_h))
+      {
+        fx = x;
+        fy = y;
+        break;
+      }
+
+  free(grid);
+
+  if(fx < 0)
+    return(false); // no room -- leave the item on the cursor
+
+  ContainerType held_source = hi->source;
+  TQVaultItem place_copy;
+
+  vault_item_deep_copy(&place_copy, &hi->item);
+  place_copy.point_x = fx;
+  place_copy.point_y = fy;
+  place_copy.width = hi->item_w;
+  place_copy.height = hi->item_h;
+  sack_add_item(sack, &place_copy);
+  free_held_item(widgets);
+
+  mark_place_dirty(widgets, ctype, held_source);
+  invalidate_tooltips(widgets);
+  queue_redraw_all(widgets);
+  return(true);
 }
 
 // -- Sack click handler: handles both pick-up and place ---------------------
