@@ -783,13 +783,14 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
       int px = cx - hi->item_w / 2;
       int py = cy - hi->item_h / 2;
 
-      bool *grid = build_occupancy_grid(widgets, sack, cols, rows, NULL);
-      bool valid = can_place_item(grid, cols, rows, px, py, hi->item_w, hi->item_h);
+      // Green when the footprint is in-bounds and at most one existing item
+      // overlaps it (0 = empty drop, 1 = swap with that single item); red when
+      // out of bounds or two-plus items block it.  Mirrors place_in_sack().
+      bool in_bounds = (px >= 0 && py >= 0 &&
+                        px + hi->item_w <= cols && py + hi->item_h <= rows);
+      int overlap = 0;
 
-      free(grid);
-
-      // Also valid if hovering over a stackable target
-      if(!valid && sack)
+      if(in_bounds && sack)
       {
         for(int i = 0; i < sack->num_items; i++)
         {
@@ -801,15 +802,14 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
           int iw, ih;
 
           get_item_dims(widgets, it, &iw, &ih);
-          if(cx >= it->point_x && cx < it->point_x + iw &&
-             cy >= it->point_y && cy < it->point_y + ih &&
-             items_stackable(&hi->item, it))
-          {
-            valid = true;
-            break;
-          }
+
+          if(px < it->point_x + iw && it->point_x < px + hi->item_w &&
+             py < it->point_y + ih && it->point_y < py + hi->item_h)
+            overlap++;
         }
       }
+
+      bool valid = in_bounds && overlap <= 1;
 
       for(int dy = 0; dy < hi->item_h; dy++)
       {

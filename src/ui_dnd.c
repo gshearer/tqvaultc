@@ -940,9 +940,9 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
   int place_x = col - hi->item_w / 2;
   int place_y = row - hi->item_h / 2;
 
-  // Check if we're clicking on an existing item -> swap
+  // Find the item (if any) directly under the clicked cell -- used for the
+  // relic-socket and stack-merge interactions below.
   TQVaultItem *target = NULL;
-  int target_idx = -1;
 
   for(int i = 0; i < sack->num_items; i++)
   {
@@ -959,7 +959,6 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
        row >= it->point_y && row < it->point_y + h)
     {
       target = it;
-      target_idx = i;
       break;
     }
   }
@@ -1024,55 +1023,48 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
       goto done;
     }
 
-    // Swap: pick up target, place held at target's position
-    TQVaultItem target_copy;
-
-    vault_item_deep_copy(&target_copy, target);
-
-    int tw, th;
-
-    get_item_dims(widgets, target, &tw, &th);
-
-    // Remove target from sack
-    if(target_idx < sack->num_items - 1)
-      memmove(&sack->items[target_idx], &sack->items[target_idx + 1],
-              (size_t)(sack->num_items - 1 - target_idx) * sizeof(TQVaultItem));
-
-    sack->num_items--;
-
-    // Place held item at target's position
-    TQVaultItem place_copy;
-
-    vault_item_deep_copy(&place_copy, &hi->item);
-    place_copy.point_x = target_copy.point_x;
-    place_copy.point_y = target_copy.point_y;
-    sack_add_item(sack, &place_copy);
-
-    // Update held item to be the swapped target
-    vault_item_free_strings(&hi->item);
-    vault_item_deep_copy(&hi->item, &target_copy);
-    hi->item_w = tw;
-    hi->item_h = th;
-
-    if(hi->texture)
-      g_object_unref(hi->texture);
-
-    hi->texture = load_item_texture(widgets, target_copy.base_name, target_copy.var1);
-    hi->source = ctype;
-    hi->source_sack_idx = sack_idx;
-    vault_item_free_strings(&target_copy);
   }
-  else
+
+  // General placement at the cursor-centred footprint (matches the drag
+  // preview drawn in ui_draw.c).  Reject anything that would leave the bounds.
+  if(place_x < 0 || place_y < 0 ||
+     place_x + hi->item_w > cols || place_y + hi->item_h > rows)
+    return;
+
+  // Count the existing items whose footprint overlaps the held item's
+  // footprint.  0 -> drop into empty space; exactly 1 -> swap with that single
+  // blocker (removing it leaves the footprint clear, so the held item fits);
+  // 2+ -> can't swap one-for-one, leave the held item on the cursor.
+  TQVaultItem *swap_with = NULL;
+  int swap_idx = -1;
+  int overlap_count = 0;
+
+  for(int i = 0; i < sack->num_items; i++)
   {
-    // Check occupancy for placement
-    bool *grid = build_occupancy_grid(widgets, sack, cols, rows, NULL);
-    bool valid = can_place_item(grid, cols, rows, place_x, place_y, hi->item_w, hi->item_h);
+    TQVaultItem *it = &sack->items[i];
 
-    free(grid);
+    if(!it->base_name)
+      continue;
 
-    if(!valid)
-      return;
+    int iw, ih;
 
+    get_item_dims(widgets, it, &iw, &ih);
+
+    if(place_x < it->point_x + iw && it->point_x < place_x + hi->item_w &&
+       place_y < it->point_y + ih && it->point_y < place_y + hi->item_h)
+    {
+      overlap_count++;
+      swap_with = it;
+      swap_idx = i;
+    }
+  }
+
+  if(overlap_count > 1)
+    return; // more than one item blocks the footprint -- can't swap
+
+  if(overlap_count == 0)
+  {
+    // Empty space: drop the held item here.
     TQVaultItem place_copy;
 
     vault_item_deep_copy(&place_copy, &hi->item);
@@ -1082,7 +1074,49 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
     place_copy.height = hi->item_h;
     sack_add_item(sack, &place_copy);
     free_held_item(widgets);
+    goto done;
   }
+
+  // Exactly one item overlaps: swap it onto the cursor and drop the held item
+  // into the footprint.
+  TQVaultItem target_copy;
+
+  vault_item_deep_copy(&target_copy, swap_with);
+
+  int tw, th;
+
+  get_item_dims(widgets, swap_with, &tw, &th);
+
+  // Remove the swapped item from the sack
+  if(swap_idx < sack->num_items - 1)
+    memmove(&sack->items[swap_idx], &sack->items[swap_idx + 1],
+            (size_t)(sack->num_items - 1 - swap_idx) * sizeof(TQVaultItem));
+
+  sack->num_items--;
+
+  // Place held item at the cursor-centred footprint
+  TQVaultItem place_copy;
+
+  vault_item_deep_copy(&place_copy, &hi->item);
+  place_copy.point_x = place_x;
+  place_copy.point_y = place_y;
+  place_copy.width = hi->item_w;
+  place_copy.height = hi->item_h;
+  sack_add_item(sack, &place_copy);
+
+  // Update held item to be the swapped-out item
+  vault_item_free_strings(&hi->item);
+  vault_item_deep_copy(&hi->item, &target_copy);
+  hi->item_w = tw;
+  hi->item_h = th;
+
+  if(hi->texture)
+    g_object_unref(hi->texture);
+
+  hi->texture = load_item_texture(widgets, target_copy.base_name, target_copy.var1);
+  hi->source = ctype;
+  hi->source_sack_idx = sack_idx;
+  vault_item_free_strings(&target_copy);
 
 done:
   // Mark vault dirty if this container is a vault or item came from vault
