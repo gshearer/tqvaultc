@@ -1,5 +1,11 @@
 .bag-button { padding: 0; margin: 0; min-width: 0; min-height: 0; }
 .bag-button-search-match { outline: 2px solid red; outline-offset: -2px; }
+
+/* Database Browser search: highlight matches in place (do not filter). */
+.db-search-cat-match { border-left: 3px solid #e0a020; }
+.db-search-cat-match label { font-weight: bold; }
+.db-search-hit { outline: 2px solid #e0a020; outline-offset: -2px;
+  background-color: rgba(224, 160, 32, 0.12); border-radius: 4px; }
 .affix-current { font-weight: bold; }
 .affix-preview { background: #1a1a2e; padding: 16px; }
 .affix-group-header { font-weight: bold; font-size: 0.85em; opacity: 0.7; }

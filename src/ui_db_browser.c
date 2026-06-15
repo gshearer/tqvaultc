@@ -30,7 +30,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <ctype.h>
 
 // -- Category model ---------------------------------------------------------
 
@@ -91,12 +90,10 @@ db_browser_state_free(gpointer data)
 {
   DbBrowserState *st = data;
 
-  g_clear_object(&st->flatten);
   for(int i = 0; i < CAT_COUNT; i++)
     g_clear_object(&st->cat_stores[i]);
 
-  g_clear_object(&st->custom_filter);
-  g_strfreev(st->search_tokens);
+  g_clear_pointer(&st->search_query, search_query_free);
 
   if(st->creatures)
     db_creature_index_free(st->creatures);
@@ -270,92 +267,142 @@ on_grid_selection_changed(GObject *obj, GParamSpec *pspec, gpointer data)
 
 // -- Search filter ----------------------------------------------------------
 
-// Split a lowercased needle into whitespace-separated tokens, dropping empties.
-// Returns a NULL-terminated GStrv (g_strfreev'able), never NULL.
-static char **
-db_split_tokens(const char *lc)
-{
-  GPtrArray *toks = g_ptr_array_new();
-
-  for(const char *p = lc; *p;)
-  {
-    while(*p == ' ' || *p == '\t')
-      p++;
-    if(!*p)
-      break;
-
-    const char *start = p;
-
-    while(*p && *p != ' ' && *p != '\t')
-      p++;
-    g_ptr_array_add(toks, g_strndup(start, (size_t)(p - start)));
-  }
-  g_ptr_array_add(toks, NULL);
-  return((char **)g_ptr_array_free(toks, FALSE));
-}
-
-// True while a content search is active (the box holds at least one token).
+// True while a content search is active (the box holds a non-empty query).
 static gboolean
 db_searching(const DbBrowserState *st)
 {
-  return(st->search_tokens && st->search_tokens[0] != NULL);
+  return(!search_query_is_empty(st->search_query));
 }
 
-// GtkCustomFilter callback: keyword/content match.  Empty needle keeps every
-// row; otherwise EVERY token must be a substring of the item's search_blob
-// (the lowercased plain text of its whole detail card), order-independent.
-// Falls back to name_lc if the blob is somehow missing.
+// True if `bi` matches the active search query.  The shared matcher (regex
+// alternation/grouping/class, else multi-token AND) tests the item's
+// search_blob -- the lowercased plain text of its whole detail card -- falling
+// back to name_lc if the blob is somehow missing.  False when no search active.
 static gboolean
-filter_match(gpointer item, gpointer data)
+db_item_matches(DbBrowserState *st, DbBrowseItem *bi)
 {
-  DbBrowserState *st = data;
-  char **toks = st->search_tokens;
-
-  if(!toks || !toks[0])
-    return(TRUE);
-
-  DbBrowseItem *bi = DB_BROWSE_ITEM(item);
-  const char *hay = bi->search_blob ? bi->search_blob : bi->name_lc;
-
-  if(!hay)
+  if(search_query_is_empty(st->search_query) || !bi)
     return(FALSE);
 
-  for(char **t = toks; *t; t++)
-    if(!strstr(hay, *t))
-      return(FALSE);
+  const char *hay = bi->search_blob ? bi->search_blob : bi->name_lc;
 
-  return(TRUE);
+  return(hay && search_query_match(st->search_query, hay));
 }
 
-// Point the filter model at the right source: the global flatten model (every
-// category) while searching, else the current category store (or NULL if no
-// category has been picked yet).
+// Point the (passthrough) filter model at the current category store, or NULL
+// if no category has been picked yet.  The search never changes this -- it
+// highlights matches in place instead of filtering.
 static void
 db_apply_filter_model(DbBrowserState *st)
 {
-  GListModel *m;
-
-  if(db_searching(st))
-    m = G_LIST_MODEL(st->flatten);
-  else
-    m = (st->current_cat >= 0) ? G_LIST_MODEL(st->cat_stores[st->current_cat])
-                               : NULL;
+  GListModel *m = (st->current_cat >= 0)
+                    ? G_LIST_MODEL(st->cat_stores[st->current_cat]) : NULL;
 
   gtk_filter_list_model_set_model(st->filter_model, m);
 }
 
-// Refresh the count line: "<n> matches" while searching, else the category's
-// item count (or the initial prompt).
+// Toggle the per-cell "db-search-hit" outline on one bound grid cell box from
+// the active query (used by bind, unbind clears it, and the live refresh walk).
+static void
+db_highlight_cell(DbBrowserState *st, GtkWidget *box)
+{
+  DbBrowseItem *bi = g_object_get_data(G_OBJECT(box), "dbitem");
+
+  if(db_item_matches(st, bi))
+    gtk_widget_add_css_class(box, "db-search-hit");
+  else
+    gtk_widget_remove_css_class(box, "db-search-hit");
+}
+
+// Recurse the grid's widget tree re-toggling "db-search-hit" on every currently
+// bound cell box (they carry the "dbitem" pointer).  This updates cells already
+// scrolled into view when the query changes; newly bound cells are marked in
+// grid_factory_bind.
+static void
+db_walk_grid_highlights(DbBrowserState *st, GtkWidget *w)
+{
+  if(g_object_get_data(G_OBJECT(w), "dbitem"))
+    db_highlight_cell(st, w);
+
+  for(GtkWidget *c = gtk_widget_get_first_child(w); c;
+      c = gtk_widget_get_next_sibling(c))
+    db_walk_grid_highlights(st, c);
+}
+
+static void
+db_refresh_grid_highlights(DbBrowserState *st)
+{
+  if(st->grid_view)
+    db_walk_grid_highlights(st, st->grid_view);
+}
+
+// Recompute which categories contain >=1 match, toggle the sidebar marker class
+// on those leaf rows, and tally the totals (st->search_total_matches /
+// st->search_match_cats) for the count label.  With no search active every
+// marker is cleared and the totals are zero.
+static void
+db_refresh_sidebar_highlights(DbBrowserState *st)
+{
+  bool searching = db_searching(st);
+
+  st->search_total_matches = 0;
+  st->search_match_cats = 0;
+
+  for(int cat = 0; cat < CAT_COUNT; cat++)
+  {
+    int hits = 0;
+
+    if(searching)
+    {
+      GListModel *m = G_LIST_MODEL(st->cat_stores[cat]);
+      guint n = g_list_model_get_n_items(m);
+
+      for(guint i = 0; i < n; i++)
+      {
+        DbBrowseItem *bi = g_list_model_get_item(m, i);  // owns a ref
+
+        if(db_item_matches(st, bi))
+          hits++;
+        g_object_unref(bi);
+      }
+    }
+
+    GtkWidget *row = st->sidebar_rows[cat];
+
+    if(row)
+    {
+      if(hits > 0)
+        gtk_widget_add_css_class(row, "db-search-cat-match");
+      else
+        gtk_widget_remove_css_class(row, "db-search-cat-match");
+    }
+
+    if(hits > 0)
+    {
+      st->search_match_cats++;
+      st->search_total_matches += hits;
+    }
+  }
+}
+
+// Refresh the count line: "<n> matches in <m> categories" while searching, else
+// the category's item count (or the initial prompt).  Reads the tallies left by
+// db_refresh_sidebar_highlights, so call that first.
 static void
 db_update_count_label(DbBrowserState *st)
 {
-  char buf[80];
+  char buf[96];
 
   if(db_searching(st))
   {
-    guint n = g_list_model_get_n_items(G_LIST_MODEL(st->filter_model));
+    int n = st->search_total_matches;
+    int c = st->search_match_cats;
 
-    snprintf(buf, sizeof(buf), "%u match%s", n, n == 1 ? "" : "es");
+    if(n == 0)
+      snprintf(buf, sizeof(buf), "No matches");
+    else
+      snprintf(buf, sizeof(buf), "%d match%s in %d categor%s",
+               n, n == 1 ? "" : "es", c, c == 1 ? "y" : "ies");
   }
   else if(st->current_cat >= 0)
     snprintf(buf, sizeof(buf), "%s — %d items",
@@ -371,23 +418,16 @@ on_search_changed(GtkSearchEntry *entry, gpointer data)
 {
   DbBrowserState *st = data;
   const char *text = gtk_editable_get_text(GTK_EDITABLE(entry));
-  size_t len = strlen(text);
 
-  if(len >= sizeof(st->search_lc))
-    len = sizeof(st->search_lc) - 1;
+  // Recompile the shared matcher from the RAW entry text (regex needs the
+  // unfolded metacharacters; case is handled inside the matcher).
+  g_clear_pointer(&st->search_query, search_query_free);
+  st->search_query = search_query_compile(text);
 
-  for(size_t i = 0; i < len; i++)
-    st->search_lc[i] = (char)tolower((unsigned char)text[i]);
-
-  st->search_lc[len] = '\0';
-
-  g_strfreev(st->search_tokens);
-  st->search_tokens = db_split_tokens(st->search_lc);
-
-  // Searching scans every category (flatten); an empty box restores the
-  // current category view.
-  db_apply_filter_model(st);
-  gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_DIFFERENT);
+  // Highlight in place: never hide non-matches.  Re-mark the sidebar categories
+  // (this also tallies the totals for the count label) and the visible cells.
+  db_refresh_sidebar_highlights(st);
+  db_refresh_grid_highlights(st);
   db_update_count_label(st);
 }
 
@@ -485,6 +525,9 @@ grid_factory_bind(GtkSignalListItemFactory *factory, GtkListItem *li,
   // Stash the item so right-click pickup can find it.
   g_object_set_data(G_OBJECT(box), "dbitem", bi);
 
+  // Mark the cell if it matches the active search (highlight in place).
+  db_highlight_cell(st, box);
+
   char *esc = escape_markup(bi->name);
   char *markup = g_strdup_printf("<span foreground='%s'>%s</span>",
                                   bi->color ? bi->color : "white",
@@ -536,13 +579,16 @@ grid_factory_unbind(GtkSignalListItemFactory *factory, GtkListItem *li,
   GtkWidget *box = gtk_list_item_get_child(li);
 
   g_object_set_data(G_OBJECT(box), "dbitem", NULL);
+  // Drop any search outline so a recycled cell starts clean before its rebind.
+  gtk_widget_remove_css_class(box, "db-search-hit");
 }
 
 // -- Sidebar ----------------------------------------------------------------
 
-// Switch the center grid to show the given category's items.  Picking a
-// category clears any active search so the user sees that whole category rather
-// than stale global results.
+// Switch the center grid to show the given category's items.  Any active search
+// is kept (highlight-in-place): its sidebar markers persist and the new
+// category's matching cells are re-highlighted, so clicking a lit category jumps
+// straight to its hits.
 static void
 show_category(DbBrowserState *st, int cat)
 {
@@ -551,14 +597,8 @@ show_category(DbBrowserState *st, int cat)
 
   st->current_cat = cat;
 
-  // Clear the search (needle + tokens + entry) so the category is fully shown.
-  st->search_lc[0] = '\0';
-  g_clear_pointer(&st->search_tokens, g_strfreev);
-  if(st->search_entry)
-    gtk_editable_set_text(GTK_EDITABLE(st->search_entry), "");
-
   db_apply_filter_model(st);
-  gtk_filter_changed(GTK_FILTER(st->custom_filter), GTK_FILTER_CHANGE_LESS_STRICT);
+  db_refresh_grid_highlights(st);
   db_update_count_label(st);
 
   update_detail(st, NULL);
@@ -691,17 +731,16 @@ db_find_item_by_path(DbBrowserState *st, const char *path, int *out_cat)
 }
 
 // Jump the browser to `target` in category `cat`: switch the sidebar/grid to
-// that category, clear any active name filter so the target is visible, then
-// select it and scroll it into view (which fires the detail-pane update).
+// that category, then select it and scroll it into view (which fires the
+// detail-pane update).
 static void
 db_jump_select(DbBrowserState *st, int cat, DbBrowseItem *target)
 {
   // Switch category via the sidebar so its highlight stays in sync; selecting
   // the row fires on_sidebar_row_selected -> show_category synchronously.  If
-  // that category is already selected, switch the grid model directly.
-  // Either way show_category clears any active search (needle + tokens + entry)
-  // and points the filter model at the category store, so the target can't be
-  // filtered out -- it does this synchronously, unlike the debounced entry.
+  // that category is already selected, switch the grid model directly.  The
+  // search highlights in place rather than filtering, so the target is always
+  // present in the category store regardless of any active query.
   GtkListBoxRow *want = GTK_LIST_BOX_ROW(st->sidebar_rows[cat]);
 
   if(st->sidebar && want &&
@@ -710,7 +749,7 @@ db_jump_select(DbBrowserState *st, int cat, DbBrowseItem *target)
   else
     show_category(st, cat);
 
-  // Locate the target in the (now unfiltered) filter model and select it.
+  // Locate the target in the category's model and select it.
   GListModel *m = G_LIST_MODEL(st->filter_model);
   guint n = g_list_model_get_n_items(m);
 
@@ -1054,22 +1093,10 @@ db_browser_build_ui(DbBrowserState *st)
   gtk_label_set_xalign(GTK_LABEL(st->count_label), 0.0f);
   gtk_box_append(GTK_BOX(center), st->count_label);
 
-  // Global flatten model = every category store concatenated, used as the
-  // filter source while searching (an empty box swaps back to one category).
-  GListStore *cat_list = g_list_store_new(G_TYPE_LIST_MODEL);
-
-  for(int i = 0; i < CAT_COUNT; i++)
-    g_list_store_append(cat_list, st->cat_stores[i]);
-  st->flatten = gtk_flatten_list_model_new(G_LIST_MODEL(cat_list));
-  // transfer-full of cat_list above; flatten holds a ref on each category store.
-
-  // Filter model over the active source (NULL until a category is chosen or a
-  // search makes it the flatten model).
-  st->custom_filter = gtk_custom_filter_new(filter_match, st, NULL);
-  g_object_ref(st->custom_filter);
-
-  st->filter_model = gtk_filter_list_model_new(NULL, GTK_FILTER(st->custom_filter));
-  // transfer-full of the filter on the line above.
+  // Passthrough model over the current category store (NULL until a category is
+  // chosen).  The search highlights matches in place instead of filtering, so
+  // there is no filter -- db_apply_filter_model just swaps the source model.
+  st->filter_model = gtk_filter_list_model_new(NULL, NULL);
 
   st->selection = gtk_single_selection_new(G_LIST_MODEL(st->filter_model));
   gtk_single_selection_set_autoselect(st->selection, FALSE);
@@ -1123,7 +1150,12 @@ db_browser_build_ui(DbBrowserState *st)
   gtk_label_set_wrap(GTK_LABEL(st->detail_label), TRUE);
   gtk_label_set_xalign(GTK_LABEL(st->detail_label), 0.0f);
   gtk_label_set_yalign(GTK_LABEL(st->detail_label), 0.0f);
-  gtk_label_set_selectable(GTK_LABEL(st->detail_label), TRUE);
+  // NOT selectable: a selectable GtkLabel competes for the click between text
+  // selection and link activation, so cross-reference <a href> links fired only
+  // intermittently (a hair of pointer movement became a selection drag) and the
+  // whole pane showed the I-beam cursor.  Non-selectable keeps activate-link
+  // firing reliably with a pointer cursor over links.
+  gtk_label_set_selectable(GTK_LABEL(st->detail_label), FALSE);
   gtk_widget_add_css_class(st->detail_label, "item-tooltip");
   g_signal_connect(st->detail_label, "activate-link",
                    G_CALLBACK(on_detail_link), st);

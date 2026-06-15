@@ -79,17 +79,21 @@ typedef struct {
   DbQuestIndex    *quests;     // quest item-reward index ("reward from")
 
   GtkWidget *grid_view;
-  GtkFilterListModel *filter_model;   // sits over the active model (see below)
-  GtkFlattenListModel *flatten;       // all category stores concatenated; the
-                                      // filter_model's source while searching
-                                      // (empty box -> the current category)
-  GtkCustomFilter *custom_filter;     // keyword/content filter (search_tokens)
+  GtkFilterListModel *filter_model;   // NULL-filter passthrough over the current
+                                      // category store; the search highlights in
+                                      // place rather than filtering, so this is
+                                      // never used to hide rows
   GtkSingleSelection *selection;
-  int  current_cat;                   // category shown when not searching (-1 ==
-                                      // none picked yet)
-  char search_lc[256];                // lowercased needle
-  char **search_tokens;               // search_lc split on whitespace (GStrv);
-                                      // a content match requires ALL of them
+  int  current_cat;                   // category shown in the grid (-1 == none
+                                      // picked yet)
+  SearchQuery *search_query;          // compiled matcher (regex/AND auto-detect)
+                                      // over each item's search_blob; recompiled
+                                      // on every search-changed, NULL/empty when
+                                      // idle.  Drives the highlights (sidebar
+                                      // category markers + per-cell outlines),
+                                      // NOT filtering -- non-matches stay visible
+  int  search_total_matches;          // # hits across all categories (search on)
+  int  search_match_cats;             // # categories with >=1 hit (search on)
 
   // Sidebar + search, retained so detail-pane cross-reference links can switch
   // category, clear the filter and select the jump target (Phase 7).
