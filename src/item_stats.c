@@ -1516,7 +1516,7 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
 
       char part[80];
 
-      snprintf(part, sizeof(part), "%+d%% Damage to %ss", (int)roundf(rdmg), race);
+      snprintf(part, sizeof(part), "%+d%% Damage to %s", (int)roundf(rdmg), race);
 
       size_t cur = strlen(buf), plen = strlen(part);
 
@@ -1544,7 +1544,7 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
 
       char part[80];
 
-      snprintf(part, sizeof(part), "%d%% less damage from %ss", (int)roundf(rdef), race);
+      snprintf(part, sizeof(part), "%d%% less damage from %s", (int)roundf(rdef), race);
 
       size_t cur = strlen(buf), plen = strlen(part);
 
@@ -2766,22 +2766,22 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     float dmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
 
     if(fabs(dmg) > 0.001f)
-      buf_write(w, "<span color='%s'>%+d%% Damage to %ss</span>\n", color, (int)round(dmg), race);
+      buf_write(w, "<span color='%s'>%+d%% Damage to %s</span>\n", color, (int)round(dmg), race);
 
     float abs_dmg = dbr_get_float_fast(data, INT_racialBonusAbsoluteDamage, shard_index);
 
     if(fabs(abs_dmg) > 0.001f)
-      buf_write(w, "<span color='%s'>%+d Damage to %ss</span>\n", color, (int)round(abs_dmg), race);
+      buf_write(w, "<span color='%s'>%+d Damage to %s</span>\n", color, (int)round(abs_dmg), race);
 
     float def = dbr_get_float_fast(data, INT_racialBonusPercentDefense, shard_index);
 
     if(fabs(def) > 0.001f)
-      buf_write(w, "<span color='%s'>%d%% less damage from %ss</span>\n", color, (int)round(def), race);
+      buf_write(w, "<span color='%s'>%d%% less damage from %s</span>\n", color, (int)round(def), race);
 
     float abs_def = dbr_get_float_fast(data, INT_racialBonusAbsoluteDefense, shard_index);
 
     if(fabs(abs_def) > 0.001f)
-      buf_write(w, "<span color='%s'>%d Less Damage from %ss</span>\n", color, (int)round(abs_def), race);
+      buf_write(w, "<span color='%s'>%d Less Damage from %s</span>\n", color, (int)round(abs_def), race);
   }
 
   // Mastery augmentation: "+N to all skills in X Mastery"
