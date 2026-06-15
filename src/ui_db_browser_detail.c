@@ -968,33 +968,35 @@ db_creature_attr(TQArzRecordData *d, const char *name)
 }
 
 // The creature resistance fields we surface, in the game's display order, each
-// with a friendly label.  A field absent from a creature reads 0 and is skipped,
-// so this list can stay comprehensive without harm.  The flat-absorption fields
+// with a friendly label and a damage-type tint (so the Resistances section reads
+// at a glance).  A field absent from a creature reads 0 and is skipped, so this
+// list can stay comprehensive without harm.  The flat-absorption fields
 // (defensiveAbsorption/Protection) are intentionally omitted — they aren't %
-// resistances.
-static const struct { const char *field; const char *label; }
+// resistances.  Hues track the in-game elemental palette where one exists
+// (fire=orange, cold=ice, lightning=yellow, poison=green, vitality=purple…).
+static const struct { const char *field; const char *label; const char *color; }
 DB_CREATURE_RESISTS[] = {
-  { "defensivePhysical",   "Physical" },
-  { "defensivePierce",     "Pierce" },
-  { "defensiveFire",       "Fire" },
-  { "defensiveCold",       "Cold" },
-  { "defensiveLightning",  "Lightning" },
-  { "defensivePoison",     "Poison" },
-  { "defensiveLife",       "Vitality" },
-  { "defensiveBleeding",   "Bleeding" },
-  { "defensiveElemental",  "Elemental" },
-  { "defensiveDisruption", "Skill Disruption" },
-  { "defensiveStun",       "Stun" },
-  { "defensiveFreeze",     "Freeze" },
-  { "defensivePetrify",    "Petrify" },
-  { "defensiveTrap",       "Entrapment" },
-  { "defensiveConvert",    "Conversion" },
-  { "defensiveFear",       "Fear" },
-  { "defensiveConfusion",  "Confusion" },
-  { "defensiveSleep",      "Sleep" },
-  { "defensiveLifeLeach",  "Life Leech" },
-  { "defensiveManaLeach",  "Mana Leech" },
-  { "defensiveTotalSpeed", "Slow" },
+  { "defensivePhysical",   "Physical",         "#E0CBA0" },
+  { "defensivePierce",     "Pierce",           "#C6CAD2" },
+  { "defensiveFire",       "Fire",             "#FF7A3D" },
+  { "defensiveCold",       "Cold",             "#5FD0FF" },
+  { "defensiveLightning",  "Lightning",        "#FFDA47" },
+  { "defensivePoison",     "Poison",           "#93D845" },
+  { "defensiveLife",       "Vitality",         "#C56BE6" },
+  { "defensiveBleeding",   "Bleeding",         "#E2493F" },
+  { "defensiveElemental",  "Elemental",        "#FFC24A" },
+  { "defensiveDisruption", "Skill Disruption", "#A9B6FF" },
+  { "defensiveStun",       "Stun",             "#EAD15F" },
+  { "defensiveFreeze",     "Freeze",           "#A6E9FF" },
+  { "defensivePetrify",    "Petrify",          "#B7AE96" },
+  { "defensiveTrap",       "Entrapment",       "#C7A45E" },
+  { "defensiveConvert",    "Conversion",       "#D98AD0" },
+  { "defensiveFear",       "Fear",             "#9F77C7" },
+  { "defensiveConfusion",  "Confusion",        "#D793B6" },
+  { "defensiveSleep",      "Sleep",            "#92A6D6" },
+  { "defensiveLifeLeach",  "Life Leech",       "#C2425F" },
+  { "defensiveManaLeach",  "Mana Leech",       "#4E78D0" },
+  { "defensiveTotalSpeed", "Slow",             "#86C7D6" },
 };
 
 // True for utility skill records that aren't "cast" by the creature: passives
@@ -1011,10 +1013,21 @@ db_cast_skill_skip(const char *path)
   return(cls && strncasecmp(cls, "Skill_Passive", 13) == 0);
 }
 
-// Append the tq-db-style "Properties" block for a creature: Life/Mana (+ regen),
-// Str/Dex/Int, a Resistances line (non-zero % resists) and a Casts line (the
-// active skills it uses, resolved to display names).  Levels + race already
-// print in the header line above, so they aren't repeated here.
+// Emit a colored section banner — a tinted vertical bar plus a bold title — used
+// to split the creature stat block into Attributes / Resistances / Abilities.  A
+// leading blank line gives each section a little breathing room.
+static void
+db_section_header(BufWriter *w, const char *accent, const char *title)
+{
+  buf_write(w, "\n<span color='%s' weight='bold'>▌ %s</span>\n", accent, title);
+}
+
+// Append the creature's stat block to the detail pane as three colored sections:
+// Attributes (Health/Energy + regen, Str/Dex/Int), Resistances (non-zero %
+// resists tinted per element, vulnerabilities flagged in red) and Abilities (the
+// active skills it casts, resolved to display names).  Levels + race already
+// print in the header line above, so they aren't repeated here.  Each section is
+// emitted only when it has content.
 static void
 db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
 {
@@ -1023,63 +1036,87 @@ db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
   if(!d)
     return;
 
-  buf_write(w, "\n<span color='#B0B0B0'>Properties:</span>\n");
-
-  // Life / Mana, with regen appended when non-zero.
-  float life = db_creature_attr(d, "characterLife");
-  float mana = db_creature_attr(d, "characterMana");
+  // -- Attributes -----------------------------------------------------------
+  // gold accent.  Health/Energy each carry their pool color (red / blue) with
+  // muted regen in tow; Str/Dex/Int take the warrior/hunter/mage tints.
+  float life    = db_creature_attr(d, "characterLife");
+  float mana    = db_creature_attr(d, "characterMana");
   float life_rg = db_creature_attr(d, "characterLifeRegen");
   float mana_rg = db_creature_attr(d, "characterManaRegen");
+  int   str     = (int)(db_creature_attr(d, "characterStrength") + 0.5f);
+  int   dex     = (int)(db_creature_attr(d, "characterDexterity") + 0.5f);
+  int   intl    = (int)(db_creature_attr(d, "characterIntelligence") + 0.5f);
 
-  if(life > 0 || mana > 0)
+  if(life > 0 || mana > 0 || str > 0 || dex > 0 || intl > 0)
   {
-    buf_write(w, "<span color='#C8C8C8'>Life %d", (int)(life + 0.5f));
-    if(life_rg > 0)
-      buf_write(w, " (+%d/s)", (int)(life_rg + 0.5f));
-    if(mana > 0)
+    db_section_header(w, "#E8B24A", "Attributes");
+
+    if(life > 0 || mana > 0)
     {
-      buf_write(w, " · Mana %d", (int)(mana + 0.5f));
-      if(mana_rg > 0)
-        buf_write(w, " (+%d/s)", (int)(mana_rg + 0.5f));
+      buf_write(w, "  <span color='#8A8A98'>Health</span> "
+                   "<span color='#F06B6B'>%d</span>", (int)(life + 0.5f));
+      if(life_rg > 0)
+        buf_write(w, " <span color='#7E8A82'>(+%d/s)</span>",
+                  (int)(life_rg + 0.5f));
+      if(mana > 0)
+      {
+        buf_write(w, "    <span color='#8A8A98'>Energy</span> "
+                     "<span color='#5FA8F0'>%d</span>", (int)(mana + 0.5f));
+        if(mana_rg > 0)
+          buf_write(w, " <span color='#7E8A82'>(+%d/s)</span>",
+                    (int)(mana_rg + 0.5f));
+      }
+      buf_write(w, "\n");
     }
-    buf_write(w, "</span>\n");
+
+    if(str > 0 || dex > 0 || intl > 0)
+      buf_write(w,
+        "  <span color='#8A8A98'>Strength</span> <span color='#E8945C'>%d</span>"
+        "    <span color='#8A8A98'>Dexterity</span> <span color='#7FD08A'>%d</span>"
+        "    <span color='#8A8A98'>Intelligence</span> "
+        "<span color='#7FB4F0'>%d</span>\n",
+        str, dex, intl);
   }
 
-  // Strength / Dexterity / Intelligence.
-  int str = (int)(db_creature_attr(d, "characterStrength") + 0.5f);
-  int dex = (int)(db_creature_attr(d, "characterDexterity") + 0.5f);
-  int intl = (int)(db_creature_attr(d, "characterIntelligence") + 0.5f);
-
-  if(str > 0 || dex > 0 || intl > 0)
-    buf_write(w, "<span color='#C8C8C8'>Str %d · Dex %d · Int %d</span>\n",
-              str, dex, intl);
-
-  // Resistances: non-zero % resists in display order.
+  // -- Resistances ----------------------------------------------------------
+  // teal accent.  Each non-zero resist is tinted by its element; vulnerabilities
+  // (a negative resist = extra damage taken) are flagged in bold red instead.
   bool any_res = false;
 
   for(size_t i = 0; i < G_N_ELEMENTS(DB_CREATURE_RESISTS); i++)
   {
     float v = db_creature_attr(d, DB_CREATURE_RESISTS[i].field);
 
-    if(v <= 0)
+    if(v == 0)
       continue;
 
     if(!any_res)
     {
-      buf_write(w, "<span color='#B0B0B0'>Resistances:</span> "
-                   "<span color='#C8C8C8'>");
+      db_section_header(w, "#46C2B0", "Resistances");
+      buf_write(w, "  ");
       any_res = true;
     }
     else
-      buf_write(w, " · ");
+      buf_write(w, "  <span color='#5A5A66'>·</span>  ");
 
-    buf_write(w, "%s %d%%", DB_CREATURE_RESISTS[i].label, (int)(v + 0.5f));
+    int pct = (int)(v >= 0 ? v + 0.5f : v - 0.5f);
+
+    if(v < 0)
+      buf_write(w, "<span color='%s'>%s</span> "
+                   "<span color='#FF5C5C' weight='bold'>%d%%</span>",
+                DB_CREATURE_RESISTS[i].color, DB_CREATURE_RESISTS[i].label, pct);
+    else
+      buf_write(w, "<span color='%s'>%s %d%%</span>",
+                DB_CREATURE_RESISTS[i].color, DB_CREATURE_RESISTS[i].label, pct);
   }
   if(any_res)
-    buf_write(w, "</span>\n");
+    buf_write(w, "\n");
 
-  // Casts: the active skills it uses (skillName1..N + attack/special slots),
-  // deduped by path then by resolved name, skipping passive/utility records.
+  // -- Abilities ------------------------------------------------------------
+  // violet accent.  The active skills it uses (skillName1..N + attack/special
+  // slots), deduped by path then by resolved name, skipping passive/utility
+  // records.  The section header is emitted lazily on the first shown skill so
+  // pure-melee creatures get no empty "Abilities" banner.
   static const char *ATTACK_FIELDS[] = {
     "attackSkillName", "specialAttackSkillName", "specialAttack2SkillName",
   };
@@ -1138,10 +1175,12 @@ db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
     char *e = escape_markup(name);
 
     if(shown == 0)
-      buf_write(w, "<span color='#B0B0B0'>Casts:</span> "
-                   "<span color='#C8C8C8'>%s", e ? e : "");
+    {
+      db_section_header(w, "#B57BE8", "Abilities");
+      buf_write(w, "  <span color='#D2C9E0'>%s", e ? e : "");
+    }
     else
-      buf_write(w, ", %s", e ? e : "");
+      buf_write(w, "<span color='#5A5A66'>,</span> %s", e ? e : "");
     shown++;
 
     if(e)
@@ -1179,7 +1218,7 @@ build_creature_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t ou
             c->race ? " · " : "", c->race ? c->race : "",
             c->level[0], c->level[1], c->level[2]);
 
-  // tq-db-style Properties block (HP/mana, attributes, resistances, casts).
+  // Stat block in colored sections: Attributes, Resistances, Abilities.
   db_append_creature_properties(st, c, &w);
 
   // Curate the drop list: hide mundane common (white) gear and health/energy
