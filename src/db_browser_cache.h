@@ -60,4 +60,11 @@ int db_browser_cache_selftest(void);
 // initialized by the caller.
 int db_browser_search_selftest(const char *keywords);
 
+// Headless display-sort self-test (tqvaultc --db-sort-selftest): build the real
+// full index live, apply db_browser_sort_stores(), then assert that every
+// non-skill category is alphabetical by name and that same-named difficulty
+// variants run legendary->epic->normal.  Prints any ordering violations plus a
+// few sample multi-tier runs, and returns a process exit code (0 == all pass).
+int db_browser_sort_selftest(void);
+
 #endif

@@ -518,6 +518,83 @@ db_affix_item_cmp(gconstpointer a, gconstpointer b)
   return(g_ascii_strcasecmp(x->name ? x->name : "", y->name ? y->name : ""));
 }
 
+// -- Display sort ----------------------------------------------------------
+
+// Difficulty-tier rank from an item DBR filename: legendary=3, epic=2,
+// normal=1, untiered=0.  Titan Quest encodes the tier as a "_n_/_e_/_l_"
+// infix in the basename (mi_l_wraith, u_e_alexander, us_n_..., ...) -- the same
+// convention that makes the three versions of a Monster Infrequent, and an
+// epic/legendary unique pair, share one display name.  Used only to break ties
+// between equally-named items, so a stray match on an untiered item is benign.
+int
+db_item_tier_rank(const char *path)
+{
+  if(!path)
+    return(0);
+
+  // Isolate the basename (record paths use '\\', but stay tolerant of '/').
+  const char *base = path;
+
+  for(const char *p = path; *p; p++)
+    if(*p == '\\' || *p == '/')
+      base = p + 1;
+
+  // First "_<t>_" infix with t in {n,e,l} wins.
+  for(const char *u = strchr(base, '_'); u && u[1]; u = strchr(u + 1, '_'))
+  {
+    if(u[2] == '_')
+    {
+      switch(g_ascii_tolower((unsigned char)u[1]))
+      {
+        case 'l': return(3);
+        case 'e': return(2);
+        case 'n': return(1);
+      }
+    }
+  }
+
+  return(0);
+}
+
+// g_list_store_sort comparator: alphabetical by display name (CI), then -- for
+// same-named difficulty variants -- legendary->epic->normal, then by path so
+// the order is stable and deterministic.
+static int
+db_browse_item_cmp(gconstpointer a, gconstpointer b, gpointer user_data)
+{
+  (void)user_data;
+
+  const DbBrowseItem *x = (const DbBrowseItem *)a;
+  const DbBrowseItem *y = (const DbBrowseItem *)b;
+
+  int c = g_ascii_strcasecmp(x->name ? x->name : "", y->name ? y->name : "");
+
+  if(c != 0)
+    return(c);
+
+  int tx = db_item_tier_rank(x->path);
+  int ty = db_item_tier_rank(y->path);
+
+  if(tx != ty)
+    return(ty - tx);  // higher tier first
+
+  return(g_ascii_strcasecmp(x->path ? x->path : "", y->path ? y->path : ""));
+}
+
+void
+db_browser_sort_stores(DbBrowserState *st)
+{
+  for(int cat = 0; cat < CAT_COUNT; cat++)
+  {
+    // Skill categories keep their mastery-first, in-game tree order.
+    if(cat >= CAT_SKILL_DEFENSE && cat <= CAT_SKILL_NEIDAN)
+      continue;
+
+    if(st->cat_stores[cat])
+      g_list_store_sort(st->cat_stores[cat], db_browse_item_cmp, NULL);
+  }
+}
+
 // qsort helper: order char* by strcmp (for sorting equipment-type labels).
 static int
 db_strptr_cmp(const void *a, const void *b)

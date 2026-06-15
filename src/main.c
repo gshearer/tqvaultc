@@ -332,6 +332,7 @@ main(int argc, char **argv)
 
   bool db_cache_selftest_only = false;
   bool db_search_selftest_only = false;
+  bool db_sort_selftest_only = false;
   const char *db_search_keywords = NULL;
   bool search_query_selftest_only = false;
   const char *sq_pattern = NULL;
@@ -373,6 +374,10 @@ main(int argc, char **argv)
     {
       db_search_selftest_only = true;
       db_search_keywords = argv[++i];
+    }
+    else if(strcmp(argv[i], "--db-sort-selftest") == 0)
+    {
+      db_sort_selftest_only = true;
     }
     else if(strcmp(argv[i], "--search-query-selftest") == 0 && i + 2 < argc)
     {
@@ -508,6 +513,29 @@ main(int argc, char **argv)
     affix_table_init(NULL);
 
     int rc = db_browser_search_selftest(db_search_keywords);
+
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(rc);
+  }
+
+  if(db_sort_selftest_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --db-sort-selftest: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+
+    int rc = db_browser_sort_selftest();
 
     item_stats_free();
     affix_table_free();

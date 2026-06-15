@@ -1033,3 +1033,142 @@ db_browser_search_selftest(const char *keywords)
     translation_free(tr);
   return(0);
 }
+
+// Short label for a difficulty tier rank (see db_item_tier_rank).
+static const char *
+db_tier_label(int rank)
+{
+  switch(rank)
+  {
+    case 3: return("Legendary");
+    case 2: return("Epic");
+    case 1: return("Normal");
+    default: return("-");
+  }
+}
+
+int
+db_browser_sort_selftest(void)
+{
+  const char *gf = global_config.game_folder;
+
+  if(!gf)
+  {
+    fprintf(stderr, "db-sort-selftest: game_folder not configured\n");
+    return(1);
+  }
+
+  TQTranslation *tr = db_selftest_translations();
+
+  // Build the real full index live, then sort it exactly as the browser does
+  // when it opens a window.
+  DbBrowserState *st = db_selftest_build_state(tr);
+
+  db_browser_sort_stores(st);
+
+  // 1. Assert the invariants on every non-skill category: names non-decreasing
+  //    (case-insensitive), and within an equal-name run the tier never rises
+  //    (legendary -> epic -> normal).
+  int violations = 0;
+
+  for(int c = 0; c < CAT_COUNT; c++)
+  {
+    if(c >= CAT_SKILL_DEFENSE && c <= CAT_SKILL_NEIDAN)
+      continue;  // skills keep their in-game tree order
+
+    GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
+    guint n = g_list_model_get_n_items(m);
+    char *prev_name = NULL;
+    int prev_tier = 0;
+
+    for(guint i = 0; i < n; i++)
+    {
+      DbBrowseItem *bi = g_list_model_get_item(m, i);
+      const char *name = bi->name ? bi->name : "";
+      int tier = db_item_tier_rank(bi->path);
+
+      if(prev_name)
+      {
+        int nc = g_ascii_strcasecmp(prev_name, name);
+
+        if(nc > 0)
+        {
+          if(violations < 10)
+            printf("  ORDER %s: \"%s\" before \"%s\"\n",
+                   db_cat_label(c), prev_name, name);
+          violations++;
+        }
+        else if(nc == 0 && tier > prev_tier)
+        {
+          if(violations < 10)
+            printf("  TIER  %s: \"%s\" %s before %s\n", db_cat_label(c), name,
+                   db_tier_label(prev_tier), db_tier_label(tier));
+          violations++;
+        }
+      }
+
+      g_free(prev_name);
+      prev_name = g_strdup(name);
+      prev_tier = tier;
+      g_object_unref(bi);
+    }
+    g_free(prev_name);
+  }
+
+  // 2. Demonstrate the tiering: print a few same-named runs that span more than
+  //    one difficulty, confirming the legendary -> epic -> normal order.
+  printf("Sample multi-tier runs (legendary->epic->normal):\n");
+  int shown = 0;
+
+  for(int c = 0; c < CAT_COUNT && shown < 6; c++)
+  {
+    if(c >= CAT_SKILL_DEFENSE && c <= CAT_SKILL_NEIDAN)
+      continue;
+
+    GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
+    guint n = g_list_model_get_n_items(m);
+
+    for(guint i = 0; i < n && shown < 6; )
+    {
+      DbBrowseItem *a = g_list_model_get_item(m, i);
+      guint j = i + 1;
+
+      // Extend the run while the display name stays the same.
+      while(j < n)
+      {
+        DbBrowseItem *b = g_list_model_get_item(m, j);
+        int same = g_ascii_strcasecmp(a->name ? a->name : "",
+                                      b->name ? b->name : "") == 0;
+        g_object_unref(b);
+        if(!same)
+          break;
+        j++;
+      }
+
+      if(j - i >= 2)
+      {
+        printf("  [%s] %s\n", db_cat_label(c), a->name ? a->name : "");
+        for(guint k = i; k < j; k++)
+        {
+          DbBrowseItem *b = g_list_model_get_item(m, k);
+
+          printf("      %-10s %s\n", db_tier_label(db_item_tier_rank(b->path)),
+                 b->path);
+          g_object_unref(b);
+        }
+        shown++;
+      }
+
+      g_object_unref(a);
+      i = j;
+    }
+  }
+
+  printf("\nSORT %s (%d violation%s)\n", violations == 0 ? "OK" : "FAIL",
+         violations, violations == 1 ? "" : "s");
+
+  db_free_state(st);
+  if(tr)
+    translation_free(tr);
+  return(violations == 0 ? 0 : 1);
+}

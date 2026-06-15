@@ -121,6 +121,16 @@ void build_skill_index(DbBrowserState *st);
 void build_creature_index_grid(DbBrowserState *st);
 void build_quest_index_grid(DbBrowserState *st);
 
+// Sort every category store for display: alphabetical by name, with same-named
+// difficulty variants ordered legendary->epic->normal.  Skill categories keep
+// their in-game tree order.  Run once after all stores are populated, on both
+// the fresh-index and disk-cache paths.
+void db_browser_sort_stores(DbBrowserState *st);
+
+// Difficulty-tier rank from an item DBR filename's "_n_/_e_/_l_" infix:
+// legendary=3, epic=2, normal=1, untiered=0.  Exposed for --db-sort-selftest.
+int db_item_tier_rank(const char *path);
+
 // Resolution helpers (ui_db_browser_index.c) reused by the detail renderers.
 char *db_item_display_name(DbBrowserState *st, const char *path);
 const char *db_skill_effective_path(const char *path, int depth);

@@ -1020,6 +1020,10 @@ db_browser_build_ui(DbBrowserState *st)
 {
   AppWidgets *widgets = st->widgets;
 
+  // Sort each category for display now that every store is populated -- one
+  // place covering both the fresh-index and disk-cache load paths.
+  db_browser_sort_stores(st);
+
   // -- Window + held-item overlay --
   st->dialog = gtk_window_new();
   gtk_window_set_title(GTK_WINDOW(st->dialog), "Database Browser");
