@@ -333,6 +333,9 @@ main(int argc, char **argv)
   bool db_cache_selftest_only = false;
   bool db_search_selftest_only = false;
   const char *db_search_keywords = NULL;
+  bool search_query_selftest_only = false;
+  const char *sq_pattern = NULL;
+  const char *sq_haystack = NULL;
   bool thumbs_build_only = false;
 
   for(int i = 1; i < argc; i++)
@@ -370,6 +373,12 @@ main(int argc, char **argv)
     {
       db_search_selftest_only = true;
       db_search_keywords = argv[++i];
+    }
+    else if(strcmp(argv[i], "--search-query-selftest") == 0 && i + 2 < argc)
+    {
+      search_query_selftest_only = true;
+      sq_pattern = argv[++i];
+      sq_haystack = argv[++i];
     }
     else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
     {
@@ -506,6 +515,25 @@ main(int argc, char **argv)
     asset_manager_free();
     config_free();
     return(rc);
+  }
+
+  if(search_query_selftest_only)
+  {
+    // Pure unit test for the shared matcher: no game files needed.  Lowercase
+    // the haystack the same way the real callers do before matching.
+    SearchQuery *q = search_query_compile(sq_pattern);
+    char *hay = g_ascii_strdown(sq_haystack, -1);
+    bool match = search_query_match(q, hay);
+
+    printf("pattern : \"%s\"\n", sq_pattern);
+    printf("mode    : %s\n", search_query_mode_name(q));
+    printf("haystack: \"%s\"\n", sq_haystack);
+    printf("result  : %s\n", match ? "MATCH" : "no match");
+
+    g_free(hay);
+    search_query_free(q);
+    config_free();
+    return(0);
   }
 
   if(thumbs_build_only)

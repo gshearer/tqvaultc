@@ -494,7 +494,9 @@ item_matches_search(AppWidgets *widgets, TQVaultItem *item)
   for(char *p = plain; *p; p++)
     *p = (char)tolower((unsigned char)*p);
 
-  bool match = strstr(plain, widgets->search_text) != NULL;
+  // The compiled query auto-detects regex (alternation/grouping/class) vs the
+  // original multi-token AND; plain is already lowercased.
+  bool match = search_query_match(widgets->search_query, plain);
 
   if(tqvc_debug && match)
     printf("SEARCH MATCH [%s] in '%s'\n", widgets->search_text, item->base_name);
@@ -598,6 +600,12 @@ on_search_changed(GtkSearchEntry *entry, gpointer user_data)
     // the clear button) so keyboard shortcuts become accessible again.
     gtk_widget_grab_focus(widgets->vault_drawing_area);
   }
+
+  // Recompile the matcher from the RAW entry text (regex needs the unfolded
+  // metacharacters; case is handled inside).  search_text[0] stays the
+  // "search active" flag for run_search / the draw stroke.
+  g_clear_pointer(&widgets->search_query, search_query_free);
+  widgets->search_query = search_query_compile(text);
 
   run_search(widgets);
 }

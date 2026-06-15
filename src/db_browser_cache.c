@@ -969,30 +969,6 @@ db_browser_cache_selftest(void)
   return(ok ? 0 : 1);
 }
 
-// Split a lowercased needle into whitespace tokens (drops empties).  Returns a
-// NULL-terminated GStrv (g_strfreev'able).  Mirrors db_split_tokens() in the GUI.
-static char **
-db_selftest_tokens(const char *lc)
-{
-  GPtrArray *toks = g_ptr_array_new();
-
-  for(const char *p = lc; *p;)
-  {
-    while(*p == ' ' || *p == '\t')
-      p++;
-    if(!*p)
-      break;
-
-    const char *start = p;
-
-    while(*p && *p != ' ' && *p != '\t')
-      p++;
-    g_ptr_array_add(toks, g_strndup(start, (size_t)(p - start)));
-  }
-  g_ptr_array_add(toks, NULL);
-  return((char **)g_ptr_array_free(toks, FALSE));
-}
-
 int
 db_browser_search_selftest(const char *keywords)
 {
@@ -1015,14 +991,11 @@ db_browser_search_selftest(const char *keywords)
   // Build the real full index + search blobs, exactly as the browser does.
   DbBrowserState *st = db_selftest_build_state(tr);
 
-  // Tokenize the query the same way the GUI does (lowercase, multi-token AND).
-  char *lc = g_ascii_strdown(keywords, -1);
-  char **toks = db_selftest_tokens(lc);
+  // Compile the query with the SAME shared matcher the GUI search boxes use, so
+  // this exercises regex (alternation/grouping/class) and multi-token AND alike.
+  SearchQuery *q = search_query_compile(keywords);
 
-  printf("Search: \"%s\"  ->  tokens:", keywords);
-  for(char **t = toks; *t; t++)
-    printf(" [%s]", *t);
-  printf("\n\n");
+  printf("Search: \"%s\"  ->  mode: %s\n\n", keywords, search_query_mode_name(q));
 
   int total = 0;
   int per_cat[CAT_COUNT] = { 0 };
@@ -1036,13 +1009,8 @@ db_browser_search_selftest(const char *keywords)
     {
       DbBrowseItem *bi = g_list_model_get_item(m, i);
       const char *hay = bi->search_blob ? bi->search_blob : bi->name_lc;
-      bool match = (hay != NULL);
 
-      for(char **t = toks; *t && match; t++)
-        if(!strstr(hay, *t))
-          match = false;
-
-      if(match)
+      if(hay && search_query_match(q, hay))
       {
         printf("  %-14s %s\n", db_cat_label(c), bi->name ? bi->name : bi->path);
         per_cat[c]++;
@@ -1059,8 +1027,7 @@ db_browser_search_selftest(const char *keywords)
       printf(" %s=%d", db_cat_label(c), per_cat[c]);
   printf("\n\n%d match%s for \"%s\"\n", total, total == 1 ? "" : "es", keywords);
 
-  g_strfreev(toks);
-  g_free(lc);
+  search_query_free(q);
   db_free_state(st);
   if(tr)
     translation_free(tr);

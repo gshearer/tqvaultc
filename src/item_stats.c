@@ -1064,6 +1064,158 @@ strip_pango_markup(char *dst, size_t dst_size, const char *src)
   dst[di] = '\0';
 }
 
+// ── Shared search-query matcher ────────────────────────────────────────────
+
+struct SearchQuery {
+  SearchQueryMode mode;
+  char **tokens;   // TOKENS: NULL-terminated lowercased GStrv (AND semantics)
+  GRegex *re;      // REGEX:  compiled case-insensitive pattern
+  char *literal;   // LITERAL: lowercased raw text (substring fallback)
+};
+
+// True if the raw query carries a regex metacharacter we honor: alternation,
+// grouping, or a character class.  Plain searches (which may contain + . % etc.)
+// stay on the fast literal-token path so common item text is matched verbatim.
+static bool
+search_has_regex_meta(const char *raw)
+{
+  for(const char *p = raw; *p; p++)
+    if(*p == '|' || *p == '(' || *p == ')' || *p == '[' || *p == ']')
+      return(true);
+
+  return(false);
+}
+
+// Split a lowercased string into whitespace-separated tokens (drops empties).
+// Returns a NULL-terminated GStrv (g_strfreev'able), never NULL.
+static char **
+search_split_tokens(const char *lc)
+{
+  GPtrArray *toks = g_ptr_array_new();
+
+  for(const char *p = lc; *p;)
+  {
+    while(*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
+      p++;
+    if(!*p)
+      break;
+
+    const char *start = p;
+
+    while(*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
+      p++;
+    g_ptr_array_add(toks, g_strndup(start, (size_t)(p - start)));
+  }
+  g_ptr_array_add(toks, NULL);
+  return((char **)g_ptr_array_free(toks, FALSE));
+}
+
+SearchQuery *
+search_query_compile(const char *raw)
+{
+  SearchQuery *q = g_new0(SearchQuery, 1);
+
+  if(!raw || !raw[0])
+  {
+    q->mode = SEARCH_QUERY_EMPTY;
+    return(q);
+  }
+
+  if(search_has_regex_meta(raw))
+  {
+    GError *err = NULL;
+
+    q->re = g_regex_new(raw, G_REGEX_CASELESS | G_REGEX_OPTIMIZE,
+                        (GRegexMatchFlags)0, &err);
+    if(q->re)
+    {
+      q->mode = SEARCH_QUERY_REGEX;
+    }
+    else
+    {
+      // Incomplete/invalid pattern (e.g. "(vita" typed so far): degrade to a
+      // case-insensitive substring of the raw text so the UI never breaks.
+      g_clear_error(&err);
+      q->mode = SEARCH_QUERY_LITERAL;
+      q->literal = g_ascii_strdown(raw, -1);
+    }
+    return(q);
+  }
+
+  // Plain text: lowercase, then split into order-independent AND tokens.
+  char *lc = g_ascii_strdown(raw, -1);
+
+  q->tokens = search_split_tokens(lc);
+  g_free(lc);
+  q->mode = (q->tokens[0] == NULL) ? SEARCH_QUERY_EMPTY : SEARCH_QUERY_TOKENS;
+  return(q);
+}
+
+bool
+search_query_is_empty(const SearchQuery *q)
+{
+  return(!q || q->mode == SEARCH_QUERY_EMPTY);
+}
+
+bool
+search_query_match(const SearchQuery *q, const char *haystack_lc)
+{
+  if(!q || q->mode == SEARCH_QUERY_EMPTY)
+    return(true);
+  if(!haystack_lc)
+    return(false);
+
+  switch(q->mode)
+  {
+    case SEARCH_QUERY_REGEX:
+      return(g_regex_match(q->re, haystack_lc, (GRegexMatchFlags)0, NULL));
+
+    case SEARCH_QUERY_LITERAL:
+      return(strstr(haystack_lc, q->literal) != NULL);
+
+    case SEARCH_QUERY_TOKENS:
+      for(char **t = q->tokens; *t; t++)
+        if(!strstr(haystack_lc, *t))
+          return(false);
+      return(true);
+
+    default:
+      return(true);
+  }
+}
+
+SearchQueryMode
+search_query_mode(const SearchQuery *q)
+{
+  return(q ? q->mode : SEARCH_QUERY_EMPTY);
+}
+
+const char *
+search_query_mode_name(const SearchQuery *q)
+{
+  switch(q ? q->mode : SEARCH_QUERY_EMPTY)
+  {
+    case SEARCH_QUERY_REGEX:   return("regex");
+    case SEARCH_QUERY_LITERAL: return("literal");
+    case SEARCH_QUERY_TOKENS:  return("tokens");
+    default:                   return("empty");
+  }
+}
+
+void
+search_query_free(SearchQuery *q)
+{
+  if(!q)
+    return;
+
+  if(q->tokens)
+    g_strfreev(q->tokens);
+  if(q->re)
+    g_regex_unref(q->re);
+  g_free(q->literal);
+  g_free(q);
+}
+
 // Build a short stat summary string from a bonus DBR record.
 // record_path: DBR path to the bonus record.
 // Returns: malloc'd summary string, or NULL if no stats found.

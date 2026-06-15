@@ -295,6 +295,8 @@ typedef struct {
     // Search
     GtkWidget *search_entry;
     char search_text[256];          // lowercased search term, empty = no search
+    SearchQuery *search_query;      // compiled matcher (regex/AND auto-detect);
+                                    // recompiled on every search-changed
     bool vault_sack_match[12];      // per-sack: any items match?
     bool char_sack_match[4];        // per-char-inv-sack: any items match?
 
