@@ -424,6 +424,19 @@ queue_redraw_equip(AppWidgets *widgets)
   gtk_widget_queue_draw(widgets->bag_drawing_area);
   gtk_widget_queue_draw(widgets->equip_drawing_area);
 
+  // Equipping/unequipping changes the character's buffed attributes, which the
+  // always-on equippability tint depends on for every sack -- including the
+  // stashes -- so refresh those too (and to hide the tint when an item is picked
+  // up out of an equipment slot).  No-op when the stash dialog is closed.
+  if(widgets->stash_transfer_da)
+    gtk_widget_queue_draw(widgets->stash_transfer_da);
+
+  if(widgets->stash_player_da)
+    gtk_widget_queue_draw(widgets->stash_player_da);
+
+  if(widgets->stash_relic_da)
+    gtk_widget_queue_draw(widgets->stash_relic_da);
+
   // The held-item overlay floats above the equip area; placing or swapping an
   // item changes the held-item state, so the overlay must be repainted too.
   // Otherwise its last frame (the held item at the drop position) lingers as a

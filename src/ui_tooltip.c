@@ -435,9 +435,11 @@ on_motion(GtkEventControllerMotion *ctrl, double x, double y, gpointer user_data
   widgets->cursor_y = y;
   widgets->cursor_widget = w;
 
-  // Redraw to track the held-item placement preview, or the hover
-  // equippability highlight (only meaningful when a character is loaded).
-  if(widgets->held_item || widgets->current_character)
+  // Redraw to track the held-item placement preview as it follows the cursor.
+  // The equippability tint is now always-on (static, not cursor-driven), so
+  // plain hovering no longer needs a per-frame grid redraw -- only the tooltip,
+  // which update_instant_tooltip() handles below regardless.
+  if(widgets->held_item)
     gtk_widget_queue_draw(w);
 
   update_instant_tooltip(widgets);
@@ -456,8 +458,9 @@ on_motion_leave(GtkEventControllerMotion *ctrl, gpointer user_data)
 
   widgets->cursor_widget = NULL;
 
-  // Clear the held-item preview or the hover equippability highlight.
-  if(widgets->held_item || widgets->current_character)
+  // Clear the held-item placement preview.  The equippability tint is always-on
+  // and not cursor-driven, so it needs no clearing when the pointer leaves.
+  if(widgets->held_item)
     queue_redraw_all(widgets);
 
   if(widgets->tooltip_popover)

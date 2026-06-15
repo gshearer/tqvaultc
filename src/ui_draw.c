@@ -511,18 +511,24 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
       highlight_compare = true;
   }
 
-  // Hover equippability highlight: when a character is loaded and the user is
-  // not carrying an item, shade the item under the cursor green (the character
-  // meets its requirements) or red (it does not).  Computed once per draw.
-  bool hover_equip = (!widgets->held_item &&
-                      widgets->cursor_widget == this_widget &&
-                      widgets->current_character != NULL);
-  int hover_cx = -1, hover_cy = -1;
+  // Always-on equippability highlight: when a character is loaded and the user
+  // is not carrying an item, shade every gear item green (the character meets its
+  // requirements) or red (it does not) -- no hover required, matching TQVaultAE.
+  // The character-constant work (buffed attributes + reduction profile) is
+  // computed once here and reused per item via item_is_equippable_pre(); without
+  // this hoist a full vault would redo ~23 stat lookups per gear item per redraw.
+  bool show_equip = (!widgets->held_item &&
+                     widgets->current_character != NULL);
+  float equip_str = 0.0f, equip_dex = 0.0f, equip_int = 0.0f;
+  int equip_level = 0;
+  ReqReductionProfile equip_prof;
 
-  if(hover_equip)
+  if(show_equip)
   {
-    hover_cx = (int)(widgets->cursor_x / cell_width);
-    hover_cy = (int)(widgets->cursor_y / cell_height);
+    character_buffed_attributes(widgets->current_character,
+                               &equip_str, &equip_dex, &equip_int);
+    character_req_reduction_profile(widgets->current_character, &equip_prof);
+    equip_level = (int)widgets->current_character->level;
   }
 
   for(int i = 0; i < sack->num_items; i++)
@@ -562,21 +568,21 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
       cairo_fill(cr);
     }
 
-    // Equippability highlight for the hovered item (green = can equip,
-    // red = requirements not met by the loaded character).  Only items that
-    // occupy an equipment slot (armour, jewellery, weapons, shields) qualify;
-    // scrolls, charms, relics, artifacts, potions and dyes are never slotted
-    // into the character and so get no highlight.
-    if(hover_equip &&
-       item_gear_type(item->base_name) != 0 &&
-       hover_cx >= item->point_x && hover_cx < item->point_x + w &&
-       hover_cy >= item->point_y && hover_cy < item->point_y + h)
+    // Equippability highlight (green = can equip, red = requirements not met by
+    // the loaded character).  Only items that occupy an equipment slot (armour,
+    // jewellery, weapons, shields) qualify; scrolls, charms, relics, artifacts,
+    // potions and dyes are never slotted into the character and so get no
+    // highlight.  Dimmed ~20% (RGB x0.8) vs the old hover-only tint so the
+    // always-on shading is less distracting.
+    if(show_equip && item_gear_type(item->base_name) != 0)
     {
-      bool equippable = item_is_equippable(widgets->current_character, item);
+      bool equippable = item_is_equippable_pre(item, equip_str, equip_dex,
+                                              equip_int, equip_level,
+                                              &equip_prof);
 
       cairo_set_source_rgba(cr,
-          equippable ? 0.0 : 0.8,
-          equippable ? 0.8 : 0.0,
+          equippable ? 0.0 : 0.64,
+          equippable ? 0.64 : 0.0,
           0.0, 0.35);
       cairo_rectangle(cr, x, y, rw, rh);
       cairo_fill(cr);

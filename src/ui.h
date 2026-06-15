@@ -700,6 +700,30 @@ int
 item_can_accept_relic_equip(const TQItem *eq,
                             const char *relic_base_name, TQTranslation *tr);
 
+// Per-character requirement-reduction profile: every requirement-reduction
+// percentage a character's gear/skills grant, precomputed once.  The always-on
+// equippability tint checks every gear item on every redraw, so the
+// character-constant reduction work (~23 character_stat_total() calls) is hoisted
+// here instead of being redone per item.  Categories are indexed by RR_CAT_*,
+// attributes by RR_STR/RR_DEX/RR_INT.
+enum {
+  RR_CAT_ARMOR = 0,
+  RR_CAT_JEWELRY,
+  RR_CAT_SHIELD,
+  RR_CAT_WEAPON,
+  RR_CAT_MELEE,
+  RR_CAT_HUNTING,
+  RR_CAT_STAFF,
+  RR_CAT_COUNT
+};
+enum { RR_STR = 0, RR_DEX, RR_INT, RR_ATTR_COUNT };
+
+typedef struct {
+  float global;                            // characterGlobalReqReduction
+  float level;                             // characterLevelReqReduction
+  float cat[RR_CAT_COUNT][RR_ATTR_COUNT];  // per gear-category str/dex/int reduction
+} ReqReductionProfile;
+
 // Determine whether the loaded character meets an item's requirements (player
 // level, strength, dexterity, intelligence), after any gear/skill requirement
 // reduction, and could equip it.  Returns true when chr is NULL or the item has
@@ -708,6 +732,27 @@ item_can_accept_relic_equip(const TQItem *eq,
 // it: the item to test.
 bool
 item_is_equippable(TQCharacter *chr, const TQVaultItem *it);
+
+// Compute a character's full requirement-reduction profile (global + level +
+// per-gear-category str/dex/int) in one pass.  Zeroed when chr is NULL.
+void
+character_req_reduction_profile(TQCharacter *chr, ReqReductionProfile *out);
+
+// Resolve the requirement reduction for one item from a precomputed profile,
+// picking the item's gear categories from its DBR Class.  Equivalent in result
+// to item_req_reduction() but reuses a shared profile.  Zeroed when prof or
+// base_name is NULL.
+void
+item_req_reduction_from_profile(const ReqReductionProfile *prof,
+                                const char *base_name, ItemReqReduction *out);
+
+// Equippability test from precomputed character state (the per-item work only).
+// it: the item to test (NULL/no base_name -> always equippable).
+// str/dex/intel: the character's buffed attributes.
+// level: the character's level.  prof: the character's reduction profile.
+bool
+item_is_equippable_pre(const TQVaultItem *it, float str, float dex, float intel,
+                       int level, const ReqReductionProfile *prof);
 
 // Compute the requirement-reduction percentages (level/str/dex/int) the
 // character's gear/skills grant for a specific item, resolving the item's gear
