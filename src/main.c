@@ -145,6 +145,78 @@ dump_dbr(const char *record_path)
     translation_free(tr);
 }
 
+// Headless unit test for stack_merge_onto(): relic/charm completion, the 100
+// potion/scroll cap, overflow remainders, and the already-full no-op.  Needs an
+// initialized asset manager (relic_max_shards reads completedRelicLevel).
+// Returns 0 if every case passes, 1 otherwise.
+static int
+stack_merge_selftest(void)
+{
+  const char *RELIC  = "records\\item\\relics\\03_act1_zeusthunderbolt.dbr";   // max 3
+  const char *CHARM  = "records\\xpack\\item\\charms\\03_act4_erebancrystal.dbr"; // max 5
+  const char *POTION = "records\\item\\miscellaneous\\oneshot\\potionhealth_02.dbr"; // cap 100
+
+  struct {
+    const char *name;
+    const char *path;
+    bool        is_relic;       // count lives in var1 (relic/charm) vs stack_size
+    int         tcur, hcur;     // starting target / held counts
+    int         exp_ret;        // expected return code (0 no-op / 1 partial / 2 absorbed)
+    int         exp_t, exp_h;   // expected target / held counts afterwards
+  } cases[] = {
+    { "relic 0+0 (lone shards)",   RELIC,  true,   0, 0, 2,   2,   0 },
+    { "relic 0+0 charm style",     CHARM,  true,   0, 0, 2,   2,   0 },
+    { "relic 2+0 -> complete",     RELIC,  true,   2, 0, 2,   3,   0 },
+    { "relic 2+1 -> complete",     RELIC,  true,   2, 1, 2,   3,   1 },
+    { "relic 1+1 -> partial",      RELIC,  true,   1, 1, 2,   2,   1 },
+    { "relic 2+2 -> overflow",     RELIC,  true,   2, 2, 1,   3,   1 },
+    { "relic 3 full -> no-op",     RELIC,  true,   3, 1, 0,   3,   1 },
+    { "charm 4+1 -> complete",     CHARM,  true,   4, 1, 2,   5,   1 },
+    { "potion 30+20",              POTION, false, 30,20, 2,  50,  20 },
+    { "potion 80+20 -> cap",       POTION, false, 80,20, 2, 100,  20 },
+    { "potion 80+30 -> overflow",  POTION, false, 80,30, 1, 100,  10 },
+    { "potion 100 full -> no-op",  POTION, false,100, 5, 0, 100,   5 },
+  };
+
+  int fails = 0;
+
+  for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+  {
+    TQVaultItem t, h;
+
+    memset(&t, 0, sizeof(t));
+    memset(&h, 0, sizeof(h));
+    t.base_name = (char *)cases[i].path;
+    h.base_name = (char *)cases[i].path;
+
+    if(cases[i].is_relic)
+    {
+      t.var1 = (uint32_t)cases[i].tcur;
+      h.var1 = (uint32_t)cases[i].hcur;
+    }
+    else
+    {
+      t.stack_size = cases[i].tcur;
+      h.stack_size = cases[i].hcur;
+    }
+
+    int ret = stack_merge_onto(&t, &h);
+    int gt  = cases[i].is_relic ? (int)t.var1 : t.stack_size;
+    int gh  = cases[i].is_relic ? (int)h.var1 : h.stack_size;
+    bool ok = (ret == cases[i].exp_ret && gt == cases[i].exp_t && gh == cases[i].exp_h);
+
+    printf("[%s] %-26s ret=%d target=%d held=%d  (expect ret=%d target=%d held=%d)\n",
+           ok ? "PASS" : "FAIL", cases[i].name, ret, gt, gh,
+           cases[i].exp_ret, cases[i].exp_t, cases[i].exp_h);
+
+    if(!ok)
+      fails++;
+  }
+
+  printf("stack-merge-selftest: %s\n", fails ? "FAILURES" : "all passed");
+  return(fails ? 1 : 0);
+}
+
 // Loads a character and reports whether it can equip the given item, showing
 // the computed requirements, attributes, requirement reductions, and verdict.
 // Used to verify the equippability highlight without launching the GUI.
@@ -338,6 +410,7 @@ main(int argc, char **argv)
   const char *sq_pattern = NULL;
   const char *sq_haystack = NULL;
   bool thumbs_build_only = false;
+  bool stack_merge_selftest_only = false;
 
   for(int i = 1; i < argc; i++)
   {
@@ -388,6 +461,10 @@ main(int argc, char **argv)
     else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
     {
       thumbs_build_only = true;
+    }
+    else if(strcmp(argv[i], "--stack-merge-selftest") == 0)
+    {
+      stack_merge_selftest_only = true;
     }
     else
     {
@@ -536,6 +613,29 @@ main(int argc, char **argv)
     affix_table_init(NULL);
 
     int rc = db_browser_sort_selftest();
+
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(rc);
+  }
+
+  if(stack_merge_selftest_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --stack-merge-selftest: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+    affix_table_init(NULL);
+
+    int rc = stack_merge_selftest();
 
     item_stats_free();
     affix_table_free();

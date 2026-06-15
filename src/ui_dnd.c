@@ -83,6 +83,68 @@ items_stackable(const TQVaultItem *a, const TQVaultItem *b)
   return(true);
 }
 
+// Pour as much of `held` as fits onto the stackable `target` (same base type,
+// already vetted with items_stackable).  Relics/charms accumulate shards in
+// var1 up to relic_max_shards (3 for relics, 5 for charms -- a relic completes
+// when shard #3 lands, a charm when #5 does); potions/scrolls accumulate
+// stack_size up to STACK_MAX_DEFAULT.  Returns:
+//   2  held fully absorbed -- caller should free the held item;
+//   1  target filled to its cap, a remainder left on `held` (keep on cursor);
+//   0  target was already full -- nothing changed.
+// a, b counts default to 1 so a freshly built item with stack_size 0 still
+// counts as one piece.
+int
+stack_merge_onto(TQVaultItem *target, TQVaultItem *held)
+{
+  bool is_rc = item_is_relic_or_charm(target->base_name);
+  int  max   = is_rc ? relic_max_shards(target->base_name) : STACK_MAX_DEFAULT;
+
+  // Effective piece count.  Relics/charms store the shard count in var1, but a
+  // lone shard is saved on disk as var1 == 0 (a TQ quirk) and must read as 1 --
+  // matching TQVaultAE's Item.Var1 getter and our own Set Quantity dialog.
+  // Potions/scrolls use the literal stack_size.  Both floor at 1 so that two
+  // single pieces merge to 2 instead of collapsing to 0/1.
+  int cur = is_rc ? (int)target->var1 : target->stack_size;
+  int add = is_rc ? (int)held->var1   : held->stack_size;
+
+  if(cur < 1)
+    cur = 1;
+
+  if(add < 1)
+    add = 1;
+
+  int space = max - cur;
+
+  if(space <= 0)
+    return(0);                       // target already full -- can't add
+
+  if(add <= space)                   // it all fits
+  {
+    cur += add;
+
+    if(is_rc)
+      target->var1 = (uint32_t)cur;
+    else
+      target->stack_size = cur;
+
+    return(2);                       // fully absorbed
+  }
+
+  // Overflow: fill the target to its cap, leave the remainder on the held item.
+  if(is_rc)
+  {
+    target->var1 = (uint32_t)max;
+    held->var1   = (uint32_t)(add - space);
+  }
+  else
+  {
+    target->stack_size = max;
+    held->stack_size   = add - space;
+  }
+
+  return(1);
+}
+
 // Convert an equipment-panel item (TQItem) into a vault item (TQVaultItem).
 // vi: destination vault item (zeroed then populated)
 // eq: source equipment item
@@ -1031,31 +1093,20 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
       }
     }
 
-    // Stack merge: if held item and target are stackable-compatible, merge
+    // Stack merge: if held item and target are stackable-compatible, pour the
+    // held item onto the target's stack up to its per-type cap (relic/charm
+    // shards, or the 100 potion/scroll limit).  When the target fills up the
+    // overflow stays on the cursor; a target that is already full leaves the
+    // click a no-op (item kept on cursor) rather than swapping two like stacks.
     if(items_stackable(&hi->item, target))
     {
-      if(item_is_relic_or_charm(target->base_name))
-      {
-        int max_s = relic_max_shards(target->base_name);
-        int combined = (int)target->var1 + (int)hi->item.var1;
+      int merged = stack_merge_onto(target, &hi->item);
 
-        if(combined > max_s)
-        {
-          target->var1 = (uint32_t)max_s;
-          hi->item.var1 = (uint32_t)(combined - max_s);
-          // Keep remainder on cursor -- don't free
-        }
-        else
-        {
-          target->var1 = (uint32_t)combined;
-          free_held_item(widgets);
-        }
-      }
-      else
-      {
-        target->stack_size += hi->item.stack_size;
-        free_held_item(widgets);
-      }
+      if(merged == 0)
+        return;                  // target already full -- nothing changed
+
+      if(merged == 2)
+        free_held_item(widgets); // fully absorbed (merged == 1 keeps remainder)
 
       goto done;
     }
@@ -1161,15 +1212,16 @@ done:
   queue_redraw_all(widgets);
 }
 
-// Try to drop the held item into the first free spot in a sack that fits its
-// footprint (top-to-bottom, left-to-right scan).  Used when a bag selector icon
-// is clicked while holding an item: the item lands in that bag instead of just
-// switching the view to it.
+// Drop the held item into a sack when its bag selector icon is clicked: top up
+// any existing compatible stacks first (so a potion/relic merges onto a matching
+// pile with room instead of starting a new one), then drop whatever remains into
+// the first free spot that fits (top-to-bottom, left-to-right scan).
 // widgets: app context (must hold an item)
 // sack: destination sack
 // ctype: destination container type (for dirty flags)
 // cols, rows: destination grid dimensions
-// returns: true if placed (held item freed); false if no room (item kept on cursor)
+// returns: true if the held item was fully placed (held freed); false if a
+//          remainder is left on the cursor (caller switches the view to the bag)
 bool
 drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
                     ContainerType ctype, int cols, int rows)
@@ -1179,6 +1231,40 @@ drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
   if(!hi || !sack)
     return(false);
 
+  ContainerType held_source = hi->source;
+  bool topped_up = false;
+
+  // 1. Stackable held item: pour it onto existing compatible stacks with room,
+  //    in slot order, until it is used up.
+  if(item_is_stackable_type(&hi->item))
+  {
+    for(int i = 0; i < sack->num_items; i++)
+    {
+      TQVaultItem *it = &sack->items[i];
+
+      if(!it->base_name || !items_stackable(&hi->item, it))
+        continue;
+
+      int merged = stack_merge_onto(it, &hi->item);
+
+      if(merged == 0)
+        continue;                  // that stack was full -- try the next
+
+      topped_up = true;
+
+      if(merged == 2)              // held fully absorbed
+      {
+        free_held_item(widgets);
+        mark_place_dirty(widgets, ctype, held_source);
+        invalidate_tooltips(widgets);
+        queue_redraw_all(widgets);
+        return(true);
+      }
+      // merged == 1: that stack filled, remainder still held -- keep scanning.
+    }
+  }
+
+  // 2. Drop the (remaining) item into the first free spot that fits.
   bool *grid = build_occupancy_grid(widgets, sack, cols, rows, NULL);
 
   if(!grid)
@@ -1198,9 +1284,19 @@ drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
   free(grid);
 
   if(fx < 0)
-    return(false); // no room -- leave the item on the cursor
+  {
+    // No room for the remainder.  If we topped up at least one stack, persist
+    // that and refresh; the leftover stays on the cursor either way.
+    if(topped_up)
+    {
+      mark_place_dirty(widgets, ctype, held_source);
+      invalidate_tooltips(widgets);
+      queue_redraw_all(widgets);
+    }
 
-  ContainerType held_source = hi->source;
+    return(false); // remainder kept on cursor -- caller switches to this bag
+  }
+
   TQVaultItem place_copy;
 
   vault_item_deep_copy(&place_copy, &hi->item);

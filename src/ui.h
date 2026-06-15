@@ -660,6 +660,20 @@ sack_add_item(TQVaultSack *sack, const TQVaultItem *item);
 bool
 items_stackable(const TQVaultItem *a, const TQVaultItem *b);
 
+// Maximum stack for non-relic stackables (potions/scrolls).  Relics/charms cap
+// at their completedRelicLevel via relic_max_shards() instead.  Mirrors the Set
+// Quantity dialog's cap (ui_context_menu.c).
+#define STACK_MAX_DEFAULT 100
+
+// Pour as much of `held` as fits onto stackable `target` (must already be
+// items_stackable).  Caps relics/charms at relic_max_shards and potions/scrolls
+// at STACK_MAX_DEFAULT.  Returns 2 if held was fully absorbed (caller frees it),
+// 1 if target filled with a remainder left on held, 0 if target was already full.
+// target: destination stack (mutated).
+// held: source item (var1/stack_size reduced by the absorbed amount).
+int
+stack_merge_onto(TQVaultItem *target, TQVaultItem *held);
+
 // Convert an equipment item to a vault item.
 // vi: destination vault item.
 // eq: source equipment item.
