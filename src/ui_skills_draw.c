@@ -237,6 +237,57 @@ draw_counter(cairo_t *cr, const char *txt, double cx, double top_y,
   cairo_restore(cr);
 }
 
+// Draw "<a><b>" centered as one string (shared dark outline), with segment `a`
+// in colour (ar,ag,ab) and segment `b` in colour (br,bg,bb).  Used by the skill
+// nodes so the effective-total can go green (over the natural cap) while the
+// " / cap" suffix stays white.
+static void
+draw_counter_split(cairo_t *cr, const char *a, const char *b,
+                   double cx, double top_y,
+                   double ar, double ag, double ab,
+                   double br, double bg, double bb)
+{
+  cairo_save(cr);
+  cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+  cairo_set_font_size(cr, 12.0);
+
+  char full[32];
+
+  snprintf(full, sizeof(full), "%s%s", a, b);
+
+  cairo_text_extents_t te_full, te_a;
+
+  cairo_text_extents(cr, full, &te_full);
+  cairo_text_extents(cr, a, &te_a);
+
+  double tx = cx - te_full.width / 2.0 - te_full.x_bearing;
+  double ty = top_y + SK_COUNTER_DY;
+
+  // Shared outline for the whole string.
+  cairo_set_source_rgba(cr, 0, 0, 0, 0.85);
+
+  for(int dx = -1; dx <= 1; dx++)
+    for(int dy = -1; dy <= 1; dy++)
+    {
+      if(dx == 0 && dy == 0)
+        continue;
+
+      cairo_move_to(cr, tx + dx, ty + dy);
+      cairo_show_text(cr, full);
+    }
+
+  // Segment a, then segment b positioned right after a's advance.
+  cairo_set_source_rgb(cr, ar, ag, ab);
+  cairo_move_to(cr, tx, ty);
+  cairo_show_text(cr, a);
+
+  cairo_set_source_rgb(cr, br, bg, bb);
+  cairo_move_to(cr, tx + te_a.x_advance, ty);
+  cairo_show_text(cr, b);
+
+  cairo_restore(cr);
+}
+
 // Connector between a parent (lower) and a child (higher).  In-game, every
 // skill in a group shares a column and the link runs as a vertical trunk in
 // the gap just to the RIGHT of the column, tapped by a short horizontal stub
@@ -447,22 +498,28 @@ skill_canvas_draw_cb(GtkDrawingArea *da, cairo_t *cr, int width, int height, gpo
     if(pb)
       g_object_unref(pb);
 
-    // In-game style: show the skill's effective level as a single number
-    // (allocated points plus applicable equipment bonuses, applied only with a
-    // point spent and clamped to the ultimate cap).  Colour it green only when
-    // equipment pushed it above the skill's natural cap (skillMaxLevel);
-    // otherwise leave it plain.
+    // Show "total / cap": the skill's effective level (allocated points plus
+    // applicable equipment bonuses, applied only with a point spent and clamped
+    // to the ultimate cap) over its natural cap (skillMaxLevel).  Matches the
+    // mastery node's "cur / max" format.  Colour only the *total* green when
+    // equipment pushed it above the natural cap; the " / cap" suffix stays
+    // white.
     int raw_bonus = n->gear_all + n->gear_mastery + n->gear_skill;
     int eff = effective_level(n->cur_level, raw_bonus, n->ultimate_level);
     double counter_y = n->y + SK_ICON / 2.0;
-    char buf[16];
+    char xbuf[16], ybuf[16];
 
-    snprintf(buf, sizeof(buf), "%d", eff);
+    snprintf(xbuf, sizeof(xbuf), "%d", eff);
+    snprintf(ybuf, sizeof(ybuf), " / %d", n->max_level);
 
-    if(eff > n->max_level)
-      draw_counter(cr, buf, n->x, counter_y, 0.42, 0.95, 0.42);
-    else
-      draw_counter(cr, buf, n->x, counter_y, 0.92, 0.92, 0.92);
+    bool over_cap = eff > n->max_level;
+    double xr = over_cap ? 0.42 : 0.92;
+    double xg = over_cap ? 0.95 : 0.92;
+    double xb = over_cap ? 0.42 : 0.92;
+
+    draw_counter_split(cr, xbuf, ybuf, n->x, counter_y,
+                       xr, xg, xb,            // total: green only when over cap
+                       0.92, 0.92, 0.92);     // " / cap": always white
   }
 }
 

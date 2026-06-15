@@ -305,26 +305,28 @@ read_bitmap_field(TQArzRecordData *dbr, const char *field, char *out, size_t out
   free(v);
 }
 
-// Resolve a skill's up/down icon paths.  Buff/toggle and pet-modifier skills
-// store no bitmap on their own record -- the icon lives in the referenced
-// buffSkillName/petSkillName record (same place get_skill_dbr_info reads tier).
-void
-resolve_skill_bitmaps(const char *skill_path, char *up, size_t up_sz,
-                      char *down, size_t down_sz)
+// Walk a skill's buffSkillName/petSkillName chain looking for the record that
+// carries the icon bitmap.  Some skills are several hops deep (e.g. the Wolf
+// "Strength of the Pack" pet modifier: PetModifier -> petSkillName -> PetSkill
+// -> buffSkillName -> PetSkillBuff, where only the last record has a bitmap), so
+// follow the refs recursively with a depth guard against cycles.
+static bool
+resolve_bitmaps_rec(const char *skill_path, int depth,
+                    char *up, size_t up_sz, char *down, size_t down_sz)
 {
-  up[0] = '\0';
-  down[0] = '\0';
+  if(!skill_path || !skill_path[0] || depth > 8)
+    return(false);
 
   TQArzRecordData *dbr = asset_get_dbr(skill_path);
 
   if(!dbr)
-    return;
+    return(false);
 
   read_bitmap_field(dbr, "skillUpBitmapName", up, up_sz);
   read_bitmap_field(dbr, "skillDownBitmapName", down, down_sz);
 
   if(up[0])
-    return;
+    return(true);
 
   static const char *ref_fields[] = { "buffSkillName", "petSkillName", NULL };
 
@@ -335,19 +337,29 @@ resolve_skill_bitmaps(const char *skill_path, char *up, size_t up_sz,
     if(!ref)
       continue;
 
-    TQArzRecordData *rd = asset_get_dbr(ref);
+    bool got = resolve_bitmaps_rec(ref, depth + 1, up, up_sz, down, down_sz);
 
     free(ref);
 
-    if(rd)
-    {
-      read_bitmap_field(rd, "skillUpBitmapName", up, up_sz);
-      read_bitmap_field(rd, "skillDownBitmapName", down, down_sz);
-
-      if(up[0])
-        return;
-    }
+    if(got)
+      return(true);
   }
+
+  return(false);
+}
+
+// Resolve a skill's up/down icon paths.  Buff/toggle and pet-modifier skills
+// store no bitmap on their own record -- the icon lives in the referenced
+// buffSkillName/petSkillName record (same place get_skill_dbr_info reads tier),
+// which may itself only point at a deeper record, so the lookup recurses.
+void
+resolve_skill_bitmaps(const char *skill_path, char *up, size_t up_sz,
+                      char *down, size_t down_sz)
+{
+  up[0] = '\0';
+  down[0] = '\0';
+
+  resolve_bitmaps_rec(skill_path, 0, up, up_sz, down, down_sz);
 }
 
 // Resolve the record that actually carries a skill's description and stats.
