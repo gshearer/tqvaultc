@@ -1243,21 +1243,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 30321,
-          "baseName": "RECORDS\\ITEM\\EQUIPMENTHELM\\U_N_MEDECAP.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 2,
-          "pointY": 0
-        },
-        {
-          "stackSize": 1,
           "seed": 31839,
           "baseName": "RECORDS\\ITEM\\EQUIPMENTHELM\\U_N_HELOT'SRAGE.DBR",
           "prefixName": "",
@@ -2515,6 +2500,21 @@
           "var2": 2035248,
           "pointX": 8,
           "pointY": 18
+        },
+        {
+          "stackSize": 1,
+          "seed": 30321,
+          "baseName": "RECORDS\\ITEM\\EQUIPMENTHELM\\U_N_MEDECAP.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 2,
+          "pointY": 0
         }
       ]
     },
@@ -10213,21 +10213,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 3967,
-          "baseName": "records\\xpack4\\item\\equipmentarmor\\armband\\mi_l_nomadbandit_arms_01.dbr",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 0,
-          "pointX": 14,
-          "pointY": 16
-        },
-        {
-          "stackSize": 1,
           "seed": 18457,
           "baseName": "records\\xpack4\\item\\equipmentarmor\\armband\\mi_l_tigerman_arms_01.dbr",
           "prefixName": "",
@@ -10240,21 +10225,6 @@
           "var2": 0,
           "pointX": 16,
           "pointY": 16
-        },
-        {
-          "stackSize": 1,
-          "seed": 24171,
-          "baseName": "records\\xpack4\\item\\equipmentarmor\\armband\\mi_l_tigermanranged_arms_01.dbr",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 0,
-          "pointX": 16,
-          "pointY": 18
         },
         {
           "stackSize": 1,
@@ -10299,6 +10269,36 @@
           "relicBonus2": "",
           "var2": 0,
           "pointX": 10,
+          "pointY": 18
+        },
+        {
+          "stackSize": 1,
+          "seed": 24171,
+          "baseName": "records\\xpack4\\item\\equipmentarmor\\armband\\mi_l_tigermanranged_arms_01.dbr",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 0,
+          "pointX": 14,
+          "pointY": 16
+        },
+        {
+          "stackSize": 1,
+          "seed": 3967,
+          "baseName": "records\\xpack4\\item\\equipmentarmor\\armband\\mi_l_nomadbandit_arms_01.dbr",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 0,
+          "pointX": 16,
           "pointY": 18
         }
       ]
@@ -13758,21 +13758,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 22175,
-          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\GREAVES\\MI_E_POTAMOIMAGEMAGE.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 12,
-          "pointY": 8
-        },
-        {
-          "stackSize": 1,
           "seed": 5491,
           "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\GREAVES\\MI_N_POTAMOIMAGEMAGE.DBR",
           "prefixName": "",
@@ -14418,21 +14403,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 11613,
-          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\GREAVES\\MI_L_POTAMOIMAGEMAGE.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 14,
-          "pointY": 8
-        },
-        {
-          "stackSize": 1,
           "seed": 27549,
           "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\GREAVES\\MI_L_EMBALMEDPRIESTMELEE.DBR",
           "prefixName": "",
@@ -14490,6 +14460,36 @@
           "var2": 2035248,
           "pointX": 14,
           "pointY": 12
+        },
+        {
+          "stackSize": 1,
+          "seed": 11613,
+          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\GREAVES\\MI_L_POTAMOIMAGEMAGE.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 12,
+          "pointY": 8
+        },
+        {
+          "stackSize": 1,
+          "seed": 22175,
+          "baseName": "RECORDS\\XPACK3\\ITEMS\\EQUIPMENTARMOR\\GREAVES\\MI_E_POTAMOIMAGEMAGE.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 14,
+          "pointY": 8
         }
       ]
     }

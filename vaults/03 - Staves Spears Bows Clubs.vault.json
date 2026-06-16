@@ -4618,10 +4618,40 @@
         },
         {
           "stackSize": 1,
+          "seed": 2237,
+          "baseName": "records\\xpack4\\item\\equipmentweapon\\spear\\mi_l_ceremonial_spear_01.dbr",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 0,
+          "pointX": 9,
+          "pointY": 10
+        },
+        {
+          "stackSize": 1,
+          "seed": 7295,
+          "baseName": "records\\xpack4\\item\\equipmentweapon\\spear\\mi_l_atenite_spear_01.dbr",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 0,
+          "pointX": 10,
+          "pointY": 10
+        },
+        {
+          "stackSize": 1,
           "seed": 10814,
           "baseName": "records\\xpack3\\items\\equipmentweapon\\spear\\m_l_embalmedpriest.dbr",
-          "prefixName": "Records\\Item\\LootMagicalAffixes\\Prefix\\Default\\Rare_PierceBleed_05.dbr",
-          "suffixName": "records\\xpack3\\items\\lootmagicalaffixes\\suffix\\default\\rare_extrarelic_01.dbr",
+          "prefixName": "",
+          "suffixName": "",
           "relicName": "",
           "relicBonus": "",
           "var1": 0,
@@ -5748,21 +5778,6 @@
         },
         {
           "stackSize": 1,
-          "seed": 9780,
-          "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\BOW\\U_L_DIJUNSPRIDE.DBR",
-          "prefixName": "",
-          "suffixName": "",
-          "relicName": "",
-          "relicBonus": "",
-          "var1": 0,
-          "relicName2": "",
-          "relicBonus2": "",
-          "var2": 2035248,
-          "pointX": 3,
-          "pointY": 8
-        },
-        {
-          "stackSize": 1,
           "seed": 31824,
           "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\BOW\\U_L_BOWOFTHEDARKLADY.DBR",
           "prefixName": "",
@@ -5789,6 +5804,21 @@
           "relicBonus2": "",
           "var2": 2035248,
           "pointX": 0,
+          "pointY": 8
+        },
+        {
+          "stackSize": 1,
+          "seed": 9780,
+          "baseName": "RECORDS\\XPACK4\\ITEM\\EQUIPMENTWEAPON\\BOW\\U_L_DIJUNSPRIDE.DBR",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 2035248,
+          "pointX": 3,
           "pointY": 8
         }
       ]
@@ -6245,6 +6275,21 @@
           "var2": 2035248,
           "pointX": 16,
           "pointY": 0
+        },
+        {
+          "stackSize": 1,
+          "seed": 7295,
+          "baseName": "records\\xpack4\\item\\equipmentweapon\\bow\\mi_l_charioteers_bow_01.dbr",
+          "prefixName": "",
+          "suffixName": "",
+          "relicName": "",
+          "relicBonus": "",
+          "var1": 0,
+          "relicName2": "",
+          "relicBonus2": "",
+          "var2": 0,
+          "pointX": 17,
+          "pointY": 4
         }
       ]
     },
