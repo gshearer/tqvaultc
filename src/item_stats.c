@@ -852,6 +852,12 @@ get_item_color(const char *base_name, const char *prefix_name, const char *suffi
 
     if(strcasecmp(base_class, "Rare") == 0)
       return("#40FF40");
+
+    // A base item whose own classification is "Magical" (e.g. the fixed-magical
+    // set pieces like "Armament of Gaul") renders yellow in-game regardless of
+    // affixes -- it carries no prefix/suffix instance to drive the colour below.
+    if(strcasecmp(base_class, "Magical") == 0)
+      return("#FFF52B");
   }
 
   // 4. Prefix/suffix classification == RARE
