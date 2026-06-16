@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <gtk/gtk.h>
+#include "compat.h"  // portable strcasestr (mingw)
 #include "arc.h"
 #include "texture.h"
 

@@ -24,6 +24,7 @@
 #include <ctype.h>
 #include <math.h>
 #include <glib.h>
+#include "../compat.h"  // portable strcasestr (mingw)
 #include "../arz.h"
 #include "../arc.h"
 #include "../db_loot.h"
