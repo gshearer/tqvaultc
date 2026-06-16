@@ -112,23 +112,27 @@ skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level,
 
   const char *WHITE = "#E0E0E0";
   int raw_bonus = gear_all + gear_mastery + gear_skill;
+  int cur_eff   = effective_level(level, raw_bonus, ultimate_level);
 
   if(level > 0)
   {
-    int eff = effective_level(level, raw_bonus, ultimate_level);
-    int shown = eff - level;
+    int shown = cur_eff - level;
 
     if(shown > 0)
       buf_write(&bw, "<span color='#FFD200'>Current Level: %d "
                      "<span color='#5FE85F'>(+%d = %d)</span></span>\n",
-                level, shown, eff);
+                level, shown, cur_eff);
     else
       buf_write(&bw, "<span color='#FFD200'>Current Level: %d</span>\n", level);
 
-    add_stats_from_record(eff_path, w->translations, &bw, WHITE, eff - 1);
+    add_stats_from_record(eff_path, w->translations, &bw, WHITE, cur_eff - 1);
   }
 
-  if(level < max_level)
+  // "Next Level" only when another point can be invested AND it would actually
+  // raise the effective level. A skill whose effective level is already at the
+  // ultimate cap (e.g. maxed via gear, +4 over its base cap) shows no next
+  // level, since further points have no effect.
+  if(level < max_level && cur_eff < ultimate_level)
   {
     if(level > 0)
       buf_write(&bw, "\n");
@@ -486,7 +490,10 @@ skill_canvas_draw_cb(GtkDrawingArea *da, cairo_t *cr, int width, int height, gpo
   for(int i = 0; i < mp->num_nodes; i++)
   {
     SkillNode *n = &mp->nodes[i];
-    bool accessible = n->chr_skill_idx >= 0 && skill_is_accessible(mp, i);
+    // Accessibility (clickable) is purely tier/parent-based; a skill not yet in
+    // the save can still be invested (it is spliced in on apply). The unlit
+    // down_tex icon already conveys "no points spent".
+    bool accessible = skill_is_accessible(mp, i);
     bool on = n->cur_level > 0;
     GdkPixbuf *pb = skill_icon(w, on ? n->up_tex : n->down_tex);
 

@@ -85,6 +85,18 @@ compute_avail(SkillsState *st)
   for(int i = 0; i < st->num_chr_skills; i++)
     spent += (int)st->work_levels[i];
 
+  // Brand-new skills (not yet in the save: chr_skill_idx < 0) keep their pending
+  // level only on the node, not in work_levels, so add those points here. A
+  // skill belongs to a single mastery, so it appears in at most one pane.
+  for(int p = 0; p < 2; p++)
+  {
+    MasteryPane *mp = &st->panes[p];
+
+    for(int i = 0; i < mp->num_nodes; i++)
+      if(mp->nodes[i].chr_skill_idx < 0)
+        spent += mp->nodes[i].cur_level;
+  }
+
   return(st->total_skill_points - spent);
 }
 
@@ -103,6 +115,16 @@ has_changes(SkillsState *st)
   {
     if(st->work_levels[i] != chr->skills[i].skill_level)
       return(true);
+  }
+
+  // Any points allocated to a brand-new skill (not yet in the save) is a change.
+  for(int p = 0; p < 2; p++)
+  {
+    MasteryPane *mp = &st->panes[p];
+
+    for(int i = 0; i < mp->num_nodes; i++)
+      if(mp->nodes[i].chr_skill_idx < 0 && mp->nodes[i].cur_level > 0)
+        return(true);
   }
 
   return(false);
@@ -135,8 +157,6 @@ skill_inc(SkillsState *st, MasteryPane *mp, int idx)
 {
   SkillNode *n = &mp->nodes[idx];
 
-  if(n->chr_skill_idx < 0)
-    return(false);
   if(!skill_is_accessible(mp, idx))
     return(false);
   if(n->cur_level >= n->max_level)
@@ -145,7 +165,12 @@ skill_inc(SkillsState *st, MasteryPane *mp, int idx)
     return(false);
 
   n->cur_level++;
-  st->work_levels[n->chr_skill_idx] = (uint32_t)n->cur_level;
+
+  // Existing skills mirror their level into work_levels (saved in-place); new
+  // skills (chr_skill_idx < 0) keep it only on the node and are spliced into the
+  // save at apply time. Either way compute_avail() counts the point.
+  if(n->chr_skill_idx >= 0)
+    st->work_levels[n->chr_skill_idx] = (uint32_t)n->cur_level;
   return(true);
 }
 
@@ -154,11 +179,12 @@ skill_dec(SkillsState *st, MasteryPane *mp, int idx)
 {
   SkillNode *n = &mp->nodes[idx];
 
-  if(n->chr_skill_idx < 0 || n->cur_level <= 0)
+  if(n->cur_level <= 0)
     return;
 
   n->cur_level--;
-  st->work_levels[n->chr_skill_idx] = (uint32_t)n->cur_level;
+  if(n->chr_skill_idx >= 0)
+    st->work_levels[n->chr_skill_idx] = (uint32_t)n->cur_level;
 
   if(n->cur_level == 0)
   {
@@ -859,12 +885,93 @@ on_apply_clicked(GtkButton *btn, gpointer user_data)
 
   chr->skill_points = (uint32_t)compute_avail(st);
 
-  if(character_save_skills(chr) == 0)
-    update_ui(st->widgets, chr);
-  else
-    fprintf(stderr, "Skills: failed to save\n");
+  // Collect brand-new skills (not yet in the save) that got points; they are
+  // spliced into the skill list. Dedup by path defensively (a skill belongs to
+  // one mastery, so duplicates across panes shouldn't occur).
+  const char *new_paths[2 * MAX_SKILLS_PER_MASTERY];
+  uint32_t    new_levels[2 * MAX_SKILLS_PER_MASTERY];
+  int         n_new = 0;
 
-  st->widgets->char_dirty = true;
+  for(int p = 0; p < 2; p++)
+  {
+    MasteryPane *mp = &st->panes[p];
+
+    for(int i = 0; i < mp->num_nodes; i++)
+    {
+      SkillNode *n = &mp->nodes[i];
+
+      if(n->chr_skill_idx >= 0 || n->cur_level <= 0)
+        continue;
+
+      int dup = 0;
+
+      for(int k = 0; k < n_new; k++)
+        if(g_ascii_strcasecmp(new_paths[k], n->skill_path) == 0)
+        {
+          dup = 1;
+          break;
+        }
+
+      if(!dup && n_new < (int)G_N_ELEMENTS(new_paths))
+      {
+        new_paths[n_new]  = n->skill_path;
+        new_levels[n_new] = (uint32_t)n->cur_level;
+        n_new++;
+      }
+    }
+  }
+
+  // Adding skills splices bytes into the prefix and forces a reload below, which
+  // would otherwise discard unsaved inventory/equipment edits. Persist those
+  // first: character_save re-encodes them and refreshes raw_data while leaving
+  // the skill list (in the prefix) byte-identical, so the splice offsets hold.
+  if(n_new > 0 && st->widgets->char_dirty)
+  {
+    if(character_save(chr, chr->filepath) != 0)
+      fprintf(stderr, "Skills: failed to persist pending edits before add\n");
+  }
+
+  int rc = character_save_skills_ex(chr, new_paths, new_levels, n_new);
+
+  if(rc != 0)
+  {
+    fprintf(stderr, "Skills: failed to save\n");
+  }
+  else
+  {
+    bool state_valid = true;
+
+    if(n_new > 0)
+    {
+      // The splice shifted every offset past the skill list, so the in-memory
+      // character is stale; reload it from disk (update_ui frees the old one).
+      TQCharacter *fresh = character_load(chr->filepath);
+
+      if(fresh)
+      {
+        update_ui(st->widgets, fresh);
+      }
+      else
+      {
+        // Could not re-read what we just wrote (disk error). The skills are on
+        // disk, but chr's offsets are stale -- don't mark dirty, lest a full
+        // re-save splice at the wrong offsets.
+        fprintf(stderr, "Skills: reload after add failed\n");
+        update_ui(st->widgets, chr);
+        state_valid = false;
+      }
+    }
+    else
+    {
+      update_ui(st->widgets, chr);
+    }
+
+    // Skill edits leave the character dirty so the main-window Save button
+    // stays active (update_ui above cleared the flag).
+    if(state_valid)
+      st->widgets->char_dirty = true;
+  }
+
   update_save_button_sensitivity(st->widgets);
 
   gtk_window_close(GTK_WINDOW(st->dialog));
