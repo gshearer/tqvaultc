@@ -769,6 +769,51 @@ db_jump_select(DbBrowserState *st, int cat, DbBrowseItem *target)
   }
 }
 
+// A cross-reference jump deferred out of the activate-link signal handler.
+// Holds a ref on the dialog (which owns DbBrowserState, so st stays valid) and
+// on the target item, both released when the idle runs.
+typedef struct
+{
+  DbBrowserState *st;
+  GtkWidget      *dialog;   // ref held -> keeps st alive until the idle fires
+  int             cat;
+  DbBrowseItem   *target;   // ref held
+} DbJump;
+
+static gboolean
+db_jump_idle(gpointer data)
+{
+  DbJump *j = data;
+
+  // Only navigate if the browser is still open (the user could have closed it
+  // between scheduling and now); the held ref merely keeps st from being freed.
+  if(gtk_widget_get_visible(j->dialog))
+    db_jump_select(j->st, j->cat, j->target);
+
+  g_object_unref(j->target);
+  g_object_unref(j->dialog);
+  g_free(j);
+  return(G_SOURCE_REMOVE);
+}
+
+// Schedule a jump to run from the main-loop idle rather than synchronously.
+// db_jump_select rebuilds the detail GtkLabel's markup, which frees that
+// label's internal link array (and select_info).  Doing that from inside the
+// label's own activate-link emission frees the link GTK still touches after the
+// handler returns (link->visited, select_info->active_link) -> use-after-free,
+// an intermittent SIGSEGV.  Deferring lets the emission fully unwind first.
+static void
+db_schedule_jump(DbBrowserState *st, int cat, DbBrowseItem *target)
+{
+  DbJump *j = g_new(DbJump, 1);
+
+  j->st     = st;
+  j->dialog = g_object_ref(st->dialog);
+  j->cat    = cat;
+  j->target = g_object_ref(target);
+  g_idle_add(db_jump_idle, j);
+}
+
 // GtkLabel::activate-link handler for the detail pane.  Routes the private URI
 // schemes above; always returns TRUE so the URI is never handed to
 // gtk_show_uri() (which would try to open it as an external link).
@@ -789,7 +834,7 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
 
     if(t)
     {
-      db_jump_select(st, cat, t);
+      db_schedule_jump(st, cat, t);
       g_object_unref(t);
     }
   }
@@ -799,7 +844,7 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
 
     if(t)
     {
-      db_jump_select(st, CAT_CREATURE, t);
+      db_schedule_jump(st, CAT_CREATURE, t);
       g_object_unref(t);
     }
   }
@@ -809,7 +854,7 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
 
     if(t)
     {
-      db_jump_select(st, CAT_QUEST, t);
+      db_schedule_jump(st, CAT_QUEST, t);
       g_object_unref(t);
     }
   }
