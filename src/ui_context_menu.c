@@ -497,11 +497,19 @@ show_item_context_menu(AppWidgets *widgets, GtkWidget *drawing_area,
     g_menu_append(model, label, "app.item-remove-relic2");
   }
 
-  // Affix modification dialog for eligible items
+  // Affix modification dialog for eligible items.  Beyond the cheap
+  // classification/type gate, require that the item actually has applicable
+  // affix tables: some fixed-magical reward/set pieces (e.g. the "Garb of the
+  // Great Merchant" set) classify as Magical equipment yet no loot table grants
+  // them affixes, so the dialog would open empty -> silently do nothing.
+  // affix_table_get is cached, and this runs only on right-click (cold path),
+  // so consulting it here keeps the menu in lockstep with the dialog without a
+  // hot-path cost.
   const char *base = equip_item ? equip_item->base_name
                                 : (item ? item->base_name : NULL);
 
-  if(base && item_can_modify_affixes(base))
+  if(base && item_can_modify_affixes(base) &&
+     affix_table_get(base, widgets->translations))
     g_menu_append(model, "Modify Affixes\u2026", "app.modify-affixes");
 
   if(base && item_can_forge_affixes(base))

@@ -133,6 +133,16 @@ dump_dbr(const char *record_path)
   free(bmp0);
   free(bmp1);
 
+  // Affix-manager eligibility: the context menu shows "Modify Affixes" only when
+  // the item passes the classification/type gate AND has applicable affix tables
+  // (affix_available); fixed-magical reward/set items pass the former but not the
+  // latter, so the menu item is correctly hidden for them.
+  bool affix_moddable  = item_can_modify_affixes(record_path);
+  bool affix_available = affix_table_get(record_path, tr) != NULL;
+
+  printf("affix_moddable=%d affix_available=%d modify_affixes_menu=%d\n",
+         affix_moddable, affix_available, affix_moddable && affix_available);
+
   // Aggregate requirements (level/str/dex/int) computed the same way the
   // equippability highlight does, for quick verification.
   int req[4];
