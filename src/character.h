@@ -78,6 +78,14 @@ typedef struct {
     TQCharSkill *skills;
     int num_skills;
 
+    // Skill-list boundaries for inserting brand-new skill records (0 = unknown).
+    // Each skill is its own begin_block..end_block. off_skill_max is the byte
+    // offset of the `max` (skill-count) value preceding the list;
+    // skill_list_end_off is the offset just past the last skill's end_block
+    // (i.e. where a new begin_block..end_block skill record is spliced in).
+    size_t off_skill_max;
+    size_t skill_list_end_off;
+
     TQItem *equipment[12]; // Head, Neck, Chest, Legs, Arms, Ring1, Ring2, Wep1, Shld1, Wep2, Shld2, Artifact
     uint32_t equip_slot_var2[12]; // per-slot var2, even for empty slots
     int equip_attached[12];       // per-slot itemAttached flag
@@ -136,5 +144,18 @@ character_save_stats(TQCharacter *character);
 // Returns: 0 on success, -1 on error.
 int
 character_save_skills(TQCharacter *character);
+
+// Like character_save_skills, but also splices `n_new` brand-new skill records
+// (parallel arrays of DBR paths and levels) into the skill list before saving,
+// bumping the list's `max` count. Existing skill levels and skillPoints are
+// written in-place first (their offsets are unaffected by the end-of-list
+// splice). After this returns the in-memory offsets past the skill list are
+// stale, so the caller MUST reload the character. new_paths/new_levels may be
+// NULL when n_new == 0 (then this behaves exactly like character_save_skills).
+// Returns: 0 on success, -1 on error.
+int
+character_save_skills_ex(TQCharacter *character,
+                         const char *const *new_paths,
+                         const uint32_t *new_levels, int n_new);
 
 #endif

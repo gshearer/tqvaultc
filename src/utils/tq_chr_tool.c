@@ -2068,6 +2068,77 @@ cmd_roundtrip(const char *path)
   return(cmp_ret);
 }
 
+// cmd_add_skill -- splice a brand-new skill record into the save via
+// character_save_skills_ex(), then reload and verify it parses back.
+// WARNING: writes to the .chr in place (a .bak is made on first save). Use a
+// copy. This exercises the same code path the skill manager uses to enable a
+// never-learned skill.
+// path: the .chr to modify. skill_path: the skill DBR path. level: skill level.
+// returns 0 on success, 1 on error.
+static int
+cmd_add_skill(const char *path, const char *skill_path, uint32_t level)
+{
+  TQCharacter *chr = character_load(path);
+
+  if(!chr)
+  {
+    fprintf(stderr, "error: character_load() failed\n");
+    return(1);
+  }
+
+  printf("Before: num_skills=%d  off_skill_max=%zu  skill_list_end_off=%zu\n",
+         chr->num_skills, chr->off_skill_max, chr->skill_list_end_off);
+
+  const char *paths[1]  = { skill_path };
+  uint32_t    levels[1] = { level };
+  int         ret       = character_save_skills_ex(chr, paths, levels, 1);
+
+  character_free(chr);
+
+  if(ret != 0)
+  {
+    fprintf(stderr, "error: character_save_skills_ex() returned %d\n", ret);
+    return(1);
+  }
+
+  printf("Added '%s' level %u, wrote %s\n\n", skill_path, level, path);
+
+  // Reload and confirm the new record round-trips.
+  TQCharacter *chr2 = character_load(path);
+
+  if(!chr2)
+  {
+    fprintf(stderr, "error: reload failed (corrupt write?)\n");
+    return(1);
+  }
+
+  printf("After reload: num_skills=%d\n", chr2->num_skills);
+
+  int found = 0;
+
+  for(int i = 0; i < chr2->num_skills; i++)
+  {
+    if(chr2->skills[i].skill_name &&
+       strcasecmp(chr2->skills[i].skill_name, skill_path) == 0)
+    {
+      found = 1;
+      printf("  verified: skills[%d] = \"%s\" level %u\n",
+             i, chr2->skills[i].skill_name, chr2->skills[i].skill_level);
+    }
+  }
+
+  character_free(chr2);
+
+  if(!found)
+  {
+    fprintf(stderr, "FAIL: new skill not present after reload\n");
+    return(1);
+  }
+
+  printf("OK\n");
+  return(0);
+}
+
 // ═══════════════════════════════════════════════════════════════════════════
 //  MAIN
 // ═══════════════════════════════════════════════════════════════════════════
@@ -2095,6 +2166,8 @@ usage(const char *prog)
     "                                       suffix; or numeric offset)\n"
     "  roundtrip <chr>                      Load/save via character_load(),\n"
     "                                       compare output to input\n"
+    "  add-skill <chr> <skillDBR> <level>   Splice a new skill record in,\n"
+    "                                       reload, verify (writes in place!)\n"
     "\n"
     "Examples:\n"
     "  %s dump testdata/Player.chr | head -50\n"
@@ -2196,6 +2269,16 @@ main(int argc, char **argv)
       return(1);
     }
     return(cmd_roundtrip(argv[2]));
+  }
+
+  if(strcmp(cmd, "add-skill") == 0)
+  {
+    if(argc < 5)
+    {
+      fprintf(stderr, "Usage: %s add-skill <chr> <skillDBR> <level>\n", argv[0]);
+      return(1);
+    }
+    return(cmd_add_skill(argv[2], argv[3], (uint32_t)strtoul(argv[4], NULL, 10)));
   }
 
   fprintf(stderr, "error: unknown command '%s'\n\n", cmd);

@@ -420,6 +420,14 @@ typedef struct
   int inv_items_read;      // items fully parsed in current sack
   TQVaultItem *cur_inv_item;
   char *pending_skill_name;  // tracks skillName for next skillLevel
+
+  // Skill-list boundary tracking (for inserting new skills later). Each skill is
+  // its own begin_block..end_block; new skills are spliced after the last one.
+  size_t last_max_val_off;     // value offset of the most recent `max` key
+  int    saw_first_skill;      // set once the first skillName is parsed
+  size_t skill_list_max_off;   // `max` value offset that precedes the skill list
+  int    in_skill_run;         // currently walking the skill block run
+  size_t skill_list_insert_off;// offset just past the last skill's end_block
 } ParseState;
 
 // Parse a "begin_block" key during character loading.
@@ -1022,6 +1030,15 @@ parse_skills(ParseState *ps, const char *key)
 
   if(strcmp(key, "skillName") == 0)
   {
+    // The first skillName marks the start of the skill list; the `max` we just
+    // passed is its skill-count header (needed when splicing in new skills).
+    if(!ps->saw_first_skill)
+    {
+      ps->saw_first_skill = 1;
+      ps->in_skill_run = 1;
+      ps->skill_list_max_off = ps->last_max_val_off;
+    }
+
     char *skill = read_string(ps->data, *ps->offset, ps->offset);
 
     // Case-insensitive: some masteries store lowercase "mastery.dbr"
@@ -1216,6 +1233,14 @@ character_load(const char *filepath)
 
         ps.pre_key_offset = pre_key_offset;
 
+        // End the skill block run at the first non-skill key (e.g.
+        // masteriesAllowed). skill_list_insert_off then holds the offset just
+        // past the last skill's end_block — the splice point for new skills.
+        if(ps.in_skill_run &&
+           strcmp(key, "begin_block") != 0 && strcmp(key, "end_block") != 0 &&
+           strncmp(key, "skill", 5) != 0)
+          ps.in_skill_run = 0;
+
         // ── Section triggers ──────────────────────────────────
         if(strcmp(key, "itemPositionsSavedAsGridCoords") == 0)
         {
@@ -1231,6 +1256,13 @@ character_load(const char *filepath)
           ps.cur_equip_slot = 0;
         }
 
+        // Track the `max` skill-count header that precedes the skill list.
+        else if(strcmp(key, "max") == 0)
+        {
+          ps.last_max_val_off = offset;
+          offset += 4;
+        }
+
         // ── Block start/end ─────────────────────────────────
         else if(strcmp(key, "begin_block") == 0)
         {
@@ -1240,6 +1272,12 @@ character_load(const char *filepath)
         else if(strcmp(key, "end_block") == 0)
         {
           parse_end_block(&ps);
+
+          // While walking the skill block run, the offset just past each skill's
+          // end_block is a candidate splice point; the last one (before the run
+          // ends) is where new skill blocks are inserted.
+          if(ps.in_skill_run)
+            ps.skill_list_insert_off = offset;
         }
 
         // ── Delegated sub-parsers ───────────────────────────
@@ -1289,6 +1327,11 @@ character_load(const char *filepath)
   }
 
   free(ps.pending_skill_name);
+
+  // Record skill-list boundaries (0 = not found, e.g. no skills present).
+  character->off_skill_max = ps.saw_first_skill ? ps.skill_list_max_off : 0;
+  character->skill_list_end_off =
+    ps.skill_list_insert_off ? ps.skill_list_insert_off : 0;
 
   if(!character->character_name)
     character->character_name = strdup("Unknown");
@@ -1514,12 +1557,13 @@ character_save_stats(TQCharacter *character)
   return(0);
 }
 
-// Save modified skill levels by writing in-place at recorded offsets
-// and flushing to disk.
-// character: the character whose skills to persist.
-// Returns: 0 on success, -1 on error.
+// Save modified skill levels by writing in-place at recorded offsets, optionally
+// splicing in brand-new skill records, and flushing to disk. See the header for
+// the full contract (notably: the caller must reload after a non-zero n_new).
 int
-character_save_skills(TQCharacter *character)
+character_save_skills_ex(TQCharacter *character,
+                         const char *const *new_paths,
+                         const uint32_t *new_levels, int n_new)
 {
   if(!character || !character->raw_data)
     return(-1);
@@ -1527,6 +1571,15 @@ character_save_skills(TQCharacter *character)
   if(!character->off_skill_points)
   {
     fprintf(stderr, "character_save_skills: missing skillPoints offset\n");
+    return(-1);
+  }
+
+  // Inserting new skills needs the list boundaries located at load time.
+  if(n_new > 0 &&
+     (!character->off_skill_max || !character->skill_list_end_off))
+  {
+    fprintf(stderr, "character_save_skills: skill-list boundaries unknown; "
+                    "cannot add %d new skill(s)\n", n_new);
     return(-1);
   }
 
@@ -1546,7 +1599,8 @@ character_save_skills(TQCharacter *character)
     }
   }
 
-  // In-place writes: skill levels at recorded offsets
+  // In-place writes: existing skill levels at recorded offsets.  Every skill in
+  // the list precedes the end-of-list splice point, so these offsets stay valid.
   for(int i = 0; i < character->num_skills; i++)
   {
     if(character->skills[i].off_skill_level)
@@ -1555,8 +1609,57 @@ character_save_skills(TQCharacter *character)
                    character->skills[i].skill_level);
   }
 
+  // skillPoints lives after the skill list; write it now while its recorded
+  // offset is still valid (a splice below would shift everything after it).
   write_u32_at(character->raw_data, character->off_skill_points,
                character->skill_points);
+
+  // Splice brand-new skill blocks in just before the list's closing end_block,
+  // and bump the `max` skill-count header (whose offset precedes the splice).
+  if(n_new > 0)
+  {
+    ByteBuf nb;
+
+    bb_init(&nb, 256);
+
+    for(int i = 0; i < n_new; i++)
+    {
+      // Each skill is its own begin_block..end_block (matching the game layout).
+      bb_write_key_u32(&nb, "begin_block",     TQ_BEGIN_BLOCK);
+      bb_write_key_str(&nb, "skillName",       new_paths[i]);
+      bb_write_key_u32(&nb, "skillLevel",      new_levels[i]);
+      bb_write_key_u32(&nb, "skillEnabled",    1);
+      bb_write_key_u32(&nb, "skillSubLevel",   0);
+      bb_write_key_u32(&nb, "skillActive",     0);
+      bb_write_key_u32(&nb, "skillTransition", 0);
+      bb_write_key_u32(&nb, "end_block",       TQ_END_BLOCK);
+    }
+
+    size_t   at      = character->skill_list_end_off;
+    size_t   newsize = character->data_size + nb.size;
+    uint8_t *buf     = malloc(newsize);
+
+    if(!buf)
+    {
+      free(nb.data);
+      return(-1);
+    }
+
+    memcpy(buf, character->raw_data, at);
+    memcpy(buf + at, nb.data, nb.size);
+    memcpy(buf + at + nb.size, character->raw_data + at,
+           character->data_size - at);
+
+    free(nb.data);
+    free(character->raw_data);
+    character->raw_data  = buf;
+    character->data_size = newsize;
+
+    uint32_t newmax = read_u32(character->raw_data, character->off_skill_max)
+                      + (uint32_t)n_new;
+
+    write_u32_at(character->raw_data, character->off_skill_max, newmax);
+  }
 
   FILE *file = fopen(character->filepath, "wb");
 
@@ -1575,6 +1678,15 @@ character_save_skills(TQCharacter *character)
            character->data_size, character->filepath);
 
   return(0);
+}
+
+// Save modified skill levels in-place (no new skills). Thin wrapper.
+// character: the character whose skills to persist.
+// Returns: 0 on success, -1 on error.
+int
+character_save_skills(TQCharacter *character)
+{
+  return(character_save_skills_ex(character, NULL, NULL, 0));
 }
 
 // Save a character to disk using splice encoding: prefix + new inventory
