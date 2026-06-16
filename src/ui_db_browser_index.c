@@ -321,7 +321,10 @@ build_set_index(DbBrowserState *st)
     it->name      = g_strdup(set_name);
     it->name_lc   = g_ascii_strdown(it->name, -1);
     it->icon_path = g_strdup(icon_member);
-    it->color     = "#40FF40";  // set green, matching the in-item tooltip
+    // Color by the members' actual rarity (Epic blue / Legendary purple) rather
+    // than set-bonus green: every set member shares a classification, so the
+    // representative icon member's color stands for the whole set.
+    it->color     = get_item_color(icon_member, NULL, NULL);  // static string; do not free
     it->var1      = 0;
     it->is_set    = true;
 

@@ -23,7 +23,7 @@
 // Bump on ANY change to the on-disk layout below OR to the game content it
 // encodes (categorization rules, loot resolution, name resolution): a stale
 // cache from an older binary must not be trusted.
-#define DB_CACHE_VERSION 2
+#define DB_CACHE_VERSION 3
 
 // True iff a cache file exists whose header (magic + version + database.arz
 // size/mtime) matches the current install — i.e. a load would succeed without
