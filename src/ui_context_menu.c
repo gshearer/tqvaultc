@@ -32,6 +32,9 @@ mark_context_dirty(AppWidgets *widgets)
     widgets->relic_vault->dirty = true;
   else
     widgets->char_dirty = true;
+
+  // Reflect the new dirty state on the Save button (covers stash edits too).
+  update_save_button_sensitivity(widgets);
 }
 
 // ── Relic type label ────────────────────────────────────────────────────

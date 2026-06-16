@@ -319,13 +319,29 @@ save_vault_if_dirty(AppWidgets *widgets)
   }
 }
 
-// Update the Save Character button's sensitivity based on char_dirty.
+// True if there are any unsaved modifications: character data, or any of the
+// caravan stash tabs (transfer / player storage / relic vault).  The stashes
+// are saved to separate files but, from the user's point of view, are part of
+// "the character", so edits to them must drive the Save button and the
+// close/switch confirmation the same way character edits do.
+//   widgets - app state
+bool
+has_unsaved_changes(AppWidgets *widgets)
+{
+  return(widgets->char_dirty ||
+         (widgets->transfer_stash && widgets->transfer_stash->dirty) ||
+         (widgets->player_stash   && widgets->player_stash->dirty) ||
+         (widgets->relic_vault    && widgets->relic_vault->dirty));
+}
+
+// Update the Save Character button's sensitivity to reflect unsaved changes
+// (character data or any stash tab).
 //   widgets - app state
 void
 update_save_button_sensitivity(AppWidgets *widgets)
 {
   if(widgets->save_char_btn)
-    gtk_widget_set_sensitive(widgets->save_char_btn, widgets->char_dirty);
+    gtk_widget_set_sensitive(widgets->save_char_btn, has_unsaved_changes(widgets));
 }
 
 // Save the current character to disk if it has been modified.
@@ -858,10 +874,43 @@ set_context_from_cursor(AppWidgets *widgets)
     return(true);
   }
 
+  // ── Caravan stash tabs (transfer / player / relic) ──
+  // Each tab is a single sack whose grid dimensions and cell size come from the
+  // stash itself; mirrors the click handlers in ui_dnd.c so keyboard shortcuts
+  // behave the same as the right-click context menu over these panes.
+  {
+    struct { GtkWidget *da; TQStash *stash; ContainerType src; } tabs[] = {
+      { widgets->stash_transfer_da, widgets->transfer_stash, CONTAINER_TRANSFER },
+      { widgets->stash_player_da,   widgets->player_stash,   CONTAINER_PLAYER_STASH },
+      { widgets->stash_relic_da,    widgets->relic_vault,    CONTAINER_RELIC_VAULT },
+    };
+
+    for(int t = 0; t < (int)(sizeof tabs / sizeof tabs[0]); t++)
+    {
+      if(cw != tabs[t].da || !tabs[t].stash)
+        continue;
+
+      TQStash *stash = tabs[t].stash;
+      double c = stash_cell_size(stash, tabs[t].da);
+      TQVaultItem *hit = find_item_at_cell(widgets, &stash->sack,
+                                           stash->sack_width, stash->sack_height,
+                                           c, px, py, NULL);
+
+      if(!hit)
+        return(false);
+
+      widgets->context_item     = hit;
+      widgets->context_source   = tabs[t].src;
+      widgets->context_sack_idx = 0;
+      return(true);
+    }
+  }
+
   return(false);
 }
 
-// Handle keyboard shortcuts: d = duplicate, c = copy, D (Shift+d) = delete.
+// Handle keyboard shortcuts: s = open Skill Manager, d = duplicate, c = copy,
+// D (Shift+d) = delete.
 //   ctrl      - key event controller (unused)
 //   keyval    - the key that was pressed
 //   keycode   - hardware keycode (unused)
@@ -886,6 +935,16 @@ on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
   // Ignore when a modifier other than Shift is held
   if(state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
     return(FALSE);
+
+  // 's' opens the Skill Manager (when a character is loaded and we're not
+  // mid-drag).  A focused text entry consumes the keystroke first, so this
+  // never fires while typing in a search box.
+  if(keyval == GDK_KEY_s && !widgets->held_item &&
+     widgets->skills_btn && gtk_widget_get_sensitive(widgets->skills_btn))
+  {
+    show_skills_dialog(widgets);
+    return(TRUE);
+  }
 
   bool is_dup    = (keyval == GDK_KEY_d);
   bool is_copy   = (keyval == GDK_KEY_c);
@@ -937,17 +996,22 @@ on_close_request(GtkWindow *window, gpointer user_data)
 
   cancel_held_item(widgets);
   save_vault_if_dirty(widgets);
-  save_stashes_if_dirty(widgets);
 
-  if(widgets->char_dirty)
+  // Character data and the stash tabs share one Save/Discard/Cancel prompt so
+  // stash edits are no longer saved silently behind the user's back: on Save we
+  // persist both; on Discard both are dropped.
+  if(has_unsaved_changes(widgets))
   {
     int choice = confirm_unsaved_character(widgets);
 
     if(choice == 0)
+    {
       save_character_if_dirty(widgets);
+      save_stashes_if_dirty(widgets);
+    }
     else if(choice == 2)
       return(TRUE);  // Cancel -- block close
-    // Discard: don't save, allow close
+    // Discard: don't save character or stashes, allow close
   }
 
   // Free stash data
@@ -1253,6 +1317,7 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->checklist_btn);
 
   widgets->skills_btn = gtk_button_new_with_label("Skills");
+  gtk_widget_set_tooltip_text(widgets->skills_btn, "Skill Manager (s)");
   g_signal_connect(widgets->skills_btn, "clicked", G_CALLBACK(on_skills_btn_clicked), widgets);
   gtk_widget_set_sensitive(widgets->skills_btn, FALSE);
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->skills_btn);

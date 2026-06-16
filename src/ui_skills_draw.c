@@ -56,6 +56,133 @@ str_replace_all(const char *s, const char *from, const char *to)
   return(g_string_free(g, FALSE));
 }
 
+// Skill_SpawnPet "ward" skills (e.g. Spirit's Circle of Power) are a thin shell:
+// the skill record itself carries no offensive/defensive stats -- those bonuses
+// live on the buff/aura skills granted by the ward it spawns.  Surface every
+// such granted buff so the tooltip lists all of the skill's abilities, scaled to
+// `lvl`.  A no-op for skills that spawn nothing (the common case) or whose ward
+// grants only passive/utility skills (e.g. resist_undead).
+//   w          - app (translates granted-skill names)
+//   skill_path - the (effective) skill record to inspect
+//   self_name  - the main skill's display name (suppresses a redundant heading)
+//   bw         - tooltip buffer to append to
+//   color      - stat colour
+//   lvl        - skill level the stats should reflect (1-based)
+static void
+append_spawned_skill_stats(AppWidgets *w, const char *skill_path,
+                           const char *self_name, BufWriter *bw,
+                           const char *color, int lvl)
+{
+  TQArzRecordData *dbr = asset_get_dbr(skill_path);
+
+  if(!dbr)
+    return;
+
+  // First spawned ward object.  Each ward in the list grants the same skill
+  // set; the per-level values come from the granted buff's own arrays (indexed
+  // below), so the level-1 ward is enough to enumerate the abilities.
+  char *ward_path = arz_record_get_string(dbr, "spawnObjects", NULL);
+
+  if(!ward_path || !ward_path[0])
+  {
+    free(ward_path);
+    return;
+  }
+
+  TQArzRecordData *ward = asset_get_dbr(ward_path);
+
+  free(ward_path);
+
+  if(!ward)
+    return;
+
+  int shard = lvl > 0 ? lvl - 1 : 0;
+
+  // Walk the ward's granted skills (initialSkillName + skillName0..N), deduped
+  // by path.  Only aura skills -- those that apply a buffSkillName to allies --
+  // carry per-ally bonuses worth listing; attack/passive utility skills (no
+  // buffSkillName) are skipped.
+  char seen[24][256];
+  int nseen = 0;
+
+  for(int idx = -1; idx <= 20 && nseen < (int)G_N_ELEMENTS(seen); idx++)
+  {
+    char key[24];
+
+    if(idx < 0)
+      snprintf(key, sizeof(key), "initialSkillName");
+    else
+      snprintf(key, sizeof(key), "skillName%d", idx);
+
+    char *gp = arz_record_get_string(ward, key, NULL);
+
+    if(!gp || !gp[0])
+    {
+      free(gp);
+      continue;
+    }
+
+    bool dup = false;
+
+    for(int j = 0; j < nseen; j++)
+      if(strcasecmp(seen[j], gp) == 0)
+      {
+        dup = true;
+        break;
+      }
+
+    if(dup)
+    {
+      free(gp);
+      continue;
+    }
+
+    snprintf(seen[nseen], sizeof(seen[nseen]), "%s", gp);
+    nseen++;
+
+    TQArzRecordData *gd = asset_get_dbr(gp);
+
+    if(!gd)
+    {
+      free(gp);
+      continue;
+    }
+
+    char *buff = arz_record_get_string(gd, "buffSkillName", NULL);
+    bool is_aura = buff && buff[0];
+
+    free(buff);
+
+    if(!is_aura)
+    {
+      free(gp);
+      continue;
+    }
+
+    char eff[256];
+
+    resolve_effective_skill_path(gp, eff, sizeof(eff));
+
+    // Heading only when the granted buff differs from the skill itself, so the
+    // common single-aura case (Circle of Power -> Circle of Power) stays clean.
+    char gname[128];
+
+    resolve_skill_name(w, gp, gname, sizeof(gname));
+
+    if(self_name && gname[0] && strcasecmp(self_name, gname) != 0)
+    {
+      char *eg = escape_markup(gname);
+
+      buf_write(bw, "<span color='%s'>%s:</span>\n", color, eg ? eg : gname);
+      free(eg);
+    }
+
+    add_stats_from_record(eff, w->translations, bw, color, shard);
+
+    free(gp);
+  }
+}
+
 // Build in-game-style Pango markup for a skill (or the mastery) at `level`.
 // The gear_* arguments carry the character's equipment +skill bonuses for this
 // skill (0 for the mastery node); when present, the level lines show the
@@ -116,16 +243,22 @@ skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level,
 
   if(level > 0)
   {
-    int shown = cur_eff - level;
+    int gear = cur_eff - level;
 
-    if(shown > 0)
-      buf_write(&bw, "<span color='#FFD200'>Current Level: %d "
-                     "<span color='#5FE85F'>(+%d = %d)</span></span>\n",
-                level, shown, cur_eff);
+    // Headline the effective (final) level -- the value the game treats as the
+    // skill's level -- with an "(invested + gear)" breakdown when gear adds to
+    // it.  Matches in-game semantics where equipment-boosted levels are shown
+    // green.
+    if(gear > 0)
+      buf_write(&bw, "<span color='#FFD200'>Current Level: "
+                     "<span color='#5FE85F'>%d</span> "
+                     "<span color='#AAAAAA'>(%d invested + %d gear)</span></span>\n",
+                cur_eff, level, gear);
     else
       buf_write(&bw, "<span color='#FFD200'>Current Level: %d</span>\n", level);
 
     add_stats_from_record(eff_path, w->translations, &bw, WHITE, cur_eff - 1);
+    append_spawned_skill_stats(w, eff_path, name, &bw, WHITE, cur_eff);
   }
 
   // "Next Level" only when another point can be invested AND it would actually
@@ -139,16 +272,18 @@ skill_tooltip_markup(AppWidgets *w, const char *skill_path, int level,
 
     int nxt = level + 1;
     int eff = effective_level(nxt, raw_bonus, ultimate_level);
-    int shown = eff - nxt;
+    int gear = eff - nxt;
 
-    if(shown > 0)
-      buf_write(&bw, "<span color='#FFD200'>Next Level: %d "
-                     "<span color='#5FE85F'>(+%d = %d)</span></span>\n",
-                nxt, shown, eff);
+    if(gear > 0)
+      buf_write(&bw, "<span color='#FFD200'>Next Level: "
+                     "<span color='#5FE85F'>%d</span> "
+                     "<span color='#AAAAAA'>(%d invested + %d gear)</span></span>\n",
+                eff, nxt, gear);
     else
       buf_write(&bw, "<span color='#FFD200'>Next Level: %d</span>\n", nxt);
 
     add_stats_from_record(eff_path, w->translations, &bw, WHITE, eff - 1);
+    append_spawned_skill_stats(w, eff_path, name, &bw, WHITE, eff);
   }
 
   // Equipment +skill bonus breakdown (which gear sources feed this skill, and a

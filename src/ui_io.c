@@ -98,9 +98,21 @@ confirm_unsaved_character(AppWidgets *widgets)
   gtk_widget_set_margin_end(vbox, 20);
   gtk_window_set_child(GTK_WINDOW(dialog), vbox);
 
+  // Tailor the prompt to what is actually unsaved: character data, the storage
+  // vaults (transfer / player / relic stash tabs), or both.
+  bool stash_dirty = (widgets->transfer_stash && widgets->transfer_stash->dirty) ||
+                     (widgets->player_stash   && widgets->player_stash->dirty) ||
+                     (widgets->relic_vault    && widgets->relic_vault->dirty);
+
   char msg[512];
 
-  snprintf(msg, sizeof(msg), "Save changes to %s?", char_name);
+  if(widgets->char_dirty && stash_dirty)
+    snprintf(msg, sizeof(msg), "Save changes to %s and the storage vaults?", char_name);
+  else if(stash_dirty)
+    snprintf(msg, sizeof(msg), "Save changes to the storage vaults?");
+  else
+    snprintf(msg, sizeof(msg), "Save changes to %s?", char_name);
+
   GtkWidget *label = gtk_label_new(msg);
 
   gtk_box_append(GTK_BOX(vbox), label);
@@ -706,6 +718,8 @@ on_save_char_clicked(GtkButton *btn, gpointer user_data)
   AppWidgets *widgets = (AppWidgets *)user_data;
 
   save_character_if_dirty(widgets);
+  save_stashes_if_dirty(widgets);
+  update_save_button_sensitivity(widgets);
 }
 
 // Action: open the curated tq-db-style Database Browser.
@@ -825,6 +839,7 @@ on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_data)
     if(choice == 0)
     {
       save_character_if_dirty(widgets);
+      save_stashes_if_dirty(widgets);
     }
     else if(choice == 2)
     {

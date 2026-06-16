@@ -303,6 +303,12 @@ save_character_if_dirty(AppWidgets *widgets);
 void
 save_stashes_if_dirty(AppWidgets *widgets);
 
+// True if any unsaved modifications exist: character data or any stash tab
+// (transfer / player storage / relic vault).
+// widgets: the application widget state.
+bool
+has_unsaved_changes(AppWidgets *widgets);
+
 // Update the save button sensitivity based on dirty state.
 // widgets: the application widget state.
 void
@@ -769,6 +775,11 @@ TQVaultItem *
 find_item_at_cell(AppWidgets *widgets, TQVaultSack *sack,
                   int cols, int rows, double cell,
                   double px, double py, int *out_idx);
+
+// Compute the cell size (in pixels) for a stash drawing area, given the stash's
+// grid dimensions.  Minimum 32.0.
+double
+stash_cell_size(TQStash *stash, GtkWidget *da);
 
 // Click handler for the vault drawing area.
 void

@@ -997,10 +997,7 @@ mark_place_dirty(AppWidgets *widgets, ContainerType ctype,
   if(ctype == CONTAINER_INV || ctype == CONTAINER_BAG ||
      held_source == CONTAINER_INV || held_source == CONTAINER_BAG ||
      held_source == CONTAINER_EQUIP)
-  {
     widgets->char_dirty = true;
-    update_save_button_sensitivity(widgets);
-  }
 
   // Mark stash dirty if source or destination is a stash
   if(ctype == CONTAINER_TRANSFER || held_source == CONTAINER_TRANSFER)
@@ -1014,6 +1011,9 @@ mark_place_dirty(AppWidgets *widgets, ContainerType ctype,
   if(ctype == CONTAINER_RELIC_VAULT || held_source == CONTAINER_RELIC_VAULT)
     if(widgets->relic_vault)
       widgets->relic_vault->dirty = true;
+
+  // Reflect the new dirty state on the Save button (covers stash edits too).
+  update_save_button_sensitivity(widgets);
 }
 
 // Place the currently held item into a sack at the given pixel position,
@@ -1790,7 +1790,7 @@ on_equip_click(GtkGestureClick *gesture, int n_press, double x, double y, gpoint
 // stash: stash to query dimensions from
 // da: drawing area widget
 // returns: cell size in pixels (minimum 32.0)
-static double
+double
 stash_cell_size(TQStash *stash, GtkWidget *da)
 {
   if(!stash)
