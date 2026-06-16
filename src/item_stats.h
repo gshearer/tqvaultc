@@ -51,6 +51,20 @@ void
 vault_item_format_stats_ex(TQVaultItem *item, TQTranslation *tr,
                           const ItemReqReduction *reduction, char *buffer, size_t size);
 
+// Rendering flags for vault_item_format_stats_flags().  The default (0) matches
+// the entry points above: plain set text, item seed shown.
+#define ITEM_FMT_DEFAULT    0u
+#define ITEM_FMT_SET_LINKS  (1u << 0)  // set name + members as DB-browser 'i:' cross-ref links
+#define ITEM_FMT_HIDE_SEED  (1u << 1)  // omit the itemSeed line (no real instance, e.g. DB browser)
+
+// As vault_item_format_stats_ex, plus ITEM_FMT_* rendering flags.  Used by the
+// Database Browser to make the in-stats set name/members clickable and to drop
+// the always-zero seed shown for never-spawned reference items.
+void
+vault_item_format_stats_flags(TQVaultItem *item, TQTranslation *tr,
+                              const ItemReqReduction *reduction,
+                              unsigned flags, char *buffer, size_t size);
+
 // Returns total resistance (summed across all item components) for the given
 // DBR attribute name, e.g. attr_name = "defensiveFire".
 // item: the equipment item.

@@ -607,7 +607,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
     const char *suffix_name, const char *relic_name, const char *relic_bonus,
     uint32_t var1, const char *relic_name2, const char *relic_bonus2,
     uint32_t var2, TQTranslation *tr, const ItemReqReduction *reduction,
-    char *buffer, size_t size)
+    unsigned flags, char *buffer, size_t size)
 {
   BufWriter w;
 
@@ -1037,10 +1037,15 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   // Relic/Charm slot 2
   add_relic_section(relic_name2, relic_bonus2, var2, tr, &w);
 
-  // Item seed with hex and percentage
-  float seed_pct = ((float)seed / 65536.0f) * 100.0f;
+  // Item seed with hex and percentage.  Suppressed for reference views (DB
+  // browser) where the item is never spawned, so the seed is always zero and
+  // meaningless.
+  if(!(flags & ITEM_FMT_HIDE_SEED))
+  {
+    float seed_pct = ((float)seed / 65536.0f) * 100.0f;
 
-  buf_write(&w, "\nitemSeed: %u (0x%08X) (%.3f %%)\n", seed, seed, seed_pct);
+    buf_write(&w, "\nitemSeed: %u (0x%08X) (%.3f %%)\n", seed, seed, seed_pct);
+  }
 
   // Expansion indicator based on item path
   {
@@ -1071,6 +1076,10 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
 
     if(set_dbr && set_dbr[0])
     {
+      // In the Database Browser the set name and members are clickable 'i:'
+      // cross-refs (set entries are stored under their set DBR path); plain
+      // text everywhere else.
+      bool link = (flags & ITEM_FMT_SET_LINKS) != 0;
       TQArzRecordData *set_data = asset_get_dbr(set_dbr);
       const char *set_tag = set_data ? record_get_string_fast(set_data, INT_setName) : NULL;
       const char *set_name = set_tag ? translation_get(tr, set_tag) : NULL;
@@ -1079,7 +1088,17 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
       {
         char *e_set = escape_markup(set_name);
 
-        buf_write(&w, "\n<span color='#40FF40'>%s</span>\n", e_set);
+        if(link)
+        {
+          char *e_href = escape_markup(set_dbr);
+
+          buf_write(&w, "\n<a href='i:%s'><span color='#40FF40'>%s</span></a>\n",
+                    e_href ? e_href : "", e_set ? e_set : "");
+          free(e_href);
+        }
+        else
+          buf_write(&w, "\n<span color='#40FF40'>%s</span>\n", e_set);
+
         free(e_set);
       }
 
@@ -1107,7 +1126,21 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
           {
             char *e_member = escape_markup(member_name);
 
-            buf_write(&w, "<span color='#FFF52B'>    %s</span>\n", e_member);
+            if(link)
+            {
+              // Real rarity colour (matching the set's own detail page) and a
+              // jump link to the member item.
+              const char *mc = get_item_color(member_path, NULL, NULL);
+              char *e_href = escape_markup(member_path);
+
+              buf_write(&w, "    <a href='i:%s'><span color='%s'>%s</span></a>\n",
+                        e_href ? e_href : "", mc ? mc : "white",
+                        e_member ? e_member : "");
+              free(e_href);
+            }
+            else
+              buf_write(&w, "<span color='#FFF52B'>    %s</span>\n", e_member);
+
             free(e_member);
           }
         }
@@ -1515,7 +1548,8 @@ item_format_stats_ex(TQItem *item, TQTranslation *tr,
 
   format_stats_common(item->seed, item->base_name, item->prefix_name, item->suffix_name,
       item->relic_name, item->relic_bonus, item->var1,
-      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction, buffer, size);
+      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction,
+      ITEM_FMT_DEFAULT, buffer, size);
 }
 
 // Format stats for a vault item into buffer.
@@ -1539,5 +1573,21 @@ vault_item_format_stats_ex(TQVaultItem *item, TQTranslation *tr,
 
   format_stats_common(item->seed, item->base_name, item->prefix_name, item->suffix_name,
       item->relic_name, item->relic_bonus, item->var1,
-      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction, buffer, size);
+      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction,
+      ITEM_FMT_DEFAULT, buffer, size);
+}
+
+// As vault_item_format_stats_ex, with ITEM_FMT_* rendering flags.
+void
+vault_item_format_stats_flags(TQVaultItem *item, TQTranslation *tr,
+                              const ItemReqReduction *reduction,
+                              unsigned flags, char *buffer, size_t size)
+{
+  if(!item)
+    return;
+
+  format_stats_common(item->seed, item->base_name, item->prefix_name, item->suffix_name,
+      item->relic_name, item->relic_bonus, item->var1,
+      item->relic_name2, item->relic_bonus2, item->var2, tr, reduction,
+      flags, buffer, size);
 }

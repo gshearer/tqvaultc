@@ -1390,10 +1390,11 @@ db_append_reward_from(DbBrowserState *st, const char *item_path, BufWriter *w)
 }
 
 // Build the regular-item detail markup (text only): the full formatted tooltip
-// (built from a synthetic vault item, the same path the in-app tooltips use)
-// plus browser-only tq-db-style sections for relics/charms/artifacts/scrolls
-// (shard progression, completion bonuses, formula reagents) and the "Dropped
-// by" / "Quest reward from" cross-references.
+// (built from a synthetic vault item, the same path the in-app tooltips use,
+// here with the set name/members rendered as cross-ref links) plus browser-only
+// tq-db-style sections for relics/charms/artifacts/scrolls (shard progression,
+// completion bonuses, formula reagents) and the "Dropped by" / "Quest reward
+// from" cross-references.
 static void
 build_item_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
@@ -1405,7 +1406,11 @@ build_item_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
   vi.var1       = bi->var1;
   vi.stack_size = 1;
 
-  vault_item_format_stats(&vi, st->tr, out, outsz);
+  // Browser view: make the in-stats set name/members clickable, and drop the
+  // always-zero seed line (these reference items are never spawned).
+  vault_item_format_stats_flags(&vi, st->tr, NULL,
+                                ITEM_FMT_SET_LINKS | ITEM_FMT_HIDE_SEED,
+                                out, outsz);
 
   size_t len = strlen(out);
   BufWriter w;
@@ -1417,7 +1422,8 @@ build_item_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
      db_is_scroll(bi->path))
     db_append_consumable_detail(st, bi->path, &w);
 
-  // Cross-references: which creatures drop it and which quests grant it.
+  // Cross-references: which creatures drop it and which quests grant it.  (The
+  // set back-link is rendered inline within the stats above, as links.)
   db_append_dropped_by(st, bi->path, &w);
   db_append_reward_from(st, bi->path, &w);
 }
