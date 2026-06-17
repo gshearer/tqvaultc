@@ -448,25 +448,32 @@ creature_thumbs_cache_valid(const char *game_folder)
 void
 creature_thumbs_cache_prepare(const char *game_folder)
 {
-  // Thumbnails render lazily on demand now (creature_thumbs_load), so there is
-  // no eager batch build to invalidate the on-disk cache on a renderer-version
-  // bump or a game update.  Do that invalidation here -- cheaply, with NO
-  // rendering: if the marker is missing or stale, wipe any cached PNGs and
-  // stamp a fresh marker.  After this the cache validates, and every subsequent
-  // on-demand render is for the current renderer version + game install.  Call
-  // once at startup, before browsing.
-  if(creature_thumbs_cache_valid(game_folder))
-    return;
+  // The version marker now means "the full creature thumbnail set has been
+  // rendered" -- it is written ONLY by creature_thumbs_jobs_finish (the one-time
+  // build the DB browser runs behind a progress popup the first time a creature
+  // category is opened).  So a *missing* marker means "not built yet" and the
+  // browser will run that build; we must NOT stamp it here.
+  //
+  // The only job left for this startup hook is invalidating a STALE cache: if a
+  // marker exists but no longer matches the renderer version / game install,
+  // wipe the old PNGs and drop the marker so the next creature view rebuilds.
+  // A missing marker is left alone (any lazily-rendered PNGs are kept).
+  char *marker = thumb_marker_new();
 
-  char *dir = thumb_dir_new();   // also creates it
-
-  if(dir)
+  if(g_file_test(marker, G_FILE_TEST_EXISTS) &&
+     !creature_thumbs_cache_valid(game_folder))
   {
-    thumb_clear_dir(dir);
-    g_free(dir);
+    char *dir = thumb_dir_new();   // also creates it
+
+    if(dir)
+    {
+      thumb_clear_dir(dir);
+      g_free(dir);
+    }
+    g_unlink(marker);
   }
 
-  thumb_marker_write(game_folder);
+  g_free(marker);
 }
 
 // Deduplicated render work list (one entry per distinct mesh+texture+anm).
@@ -569,26 +576,31 @@ creature_thumbs_jobs_render(CreatureThumbJobs *jobs, int i)
 }
 
 void
+creature_thumbs_jobs_free(CreatureThumbJobs *jobs)
+{
+  if(!jobs)
+    return;
+
+  for(int i = 0; i < jobs->count; i++)
+  {
+    g_free(jobs->mesh[i]);
+    g_free(jobs->tex[i]);
+    g_free(jobs->anm[i]);
+    g_free(jobs->png[i]);
+  }
+  g_free(jobs->mesh);
+  g_free(jobs->tex);
+  g_free(jobs->anm);
+  g_free(jobs->png);
+  g_free(jobs);
+}
+
+void
 creature_thumbs_jobs_finish(CreatureThumbJobs *jobs, const char *game_folder)
 {
   // Write the version marker last so an interrupted build stays invalid.
   thumb_marker_write(game_folder);
-
-  if(jobs)
-  {
-    for(int i = 0; i < jobs->count; i++)
-    {
-      g_free(jobs->mesh[i]);
-      g_free(jobs->tex[i]);
-      g_free(jobs->anm[i]);
-      g_free(jobs->png[i]);
-    }
-    g_free(jobs->mesh);
-    g_free(jobs->tex);
-    g_free(jobs->anm);
-    g_free(jobs->png);
-    g_free(jobs);
-  }
+  creature_thumbs_jobs_free(jobs);
 }
 
 bool
@@ -601,6 +613,15 @@ creature_thumbs_build(DbCreatureIndex *idx, const char *game_folder,
   for(int i = 0; i < total; i++)
   {
     creature_thumbs_jobs_render(jobs, i);
+
+    // Each render resolves its creature DBR through the global decompressed-DBR
+    // cache, which would otherwise grow across the whole bestiary (~900 MB by
+    // the end).  Drop it periodically and return the heap to the OS so the peak
+    // working set stays bounded -- critical on low-RAM Windows.  Safe here: no
+    // asset_get_dbr() record pointer is held across renders.
+    if(i > 0 && (i % 16) == 0)
+      asset_dbr_cache_clear_and_trim();
+
     if(cb)
       cb(i + 1, total, user);
   }

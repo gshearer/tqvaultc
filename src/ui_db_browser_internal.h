@@ -95,6 +95,14 @@ typedef struct {
   int  search_total_matches;          // # hits across all categories (search on)
   int  search_match_cats;             // # categories with >=1 hit (search on)
 
+  // First time a creature category is opened we render+cache the whole bestiary
+  // behind a progress popup (db_start_thumb_build_if_needed), since rendering on
+  // the synchronous grid-bind path freezes the UI.  building_thumbs guards
+  // against re-entry while it runs; thumbs_build_skipped is set if the user
+  // cancels, so we don't re-prompt this session (cells then render lazily).
+  bool building_thumbs;
+  bool thumbs_build_skipped;
+
   // Sidebar + search, retained so detail-pane cross-reference links can switch
   // category, clear the filter and select the jump target (Phase 7).
   GtkWidget *sidebar;                  // GtkListBox of categories

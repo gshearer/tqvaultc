@@ -589,10 +589,192 @@ grid_factory_unbind(GtkSignalListItemFactory *factory, GtkListItem *li,
 // is kept (highlight-in-place): its sidebar markers persist and the new
 // category's matching cells are re-highlighted, so clicking a lit category jumps
 // straight to its hits.
+// ── First-view creature thumbnail build ────────────────────────────────────
+// Rendering a creature model is ~40ms+ and happens synchronously on the grid
+// bind path (grid_creature_thumb -> creature_thumbs_load), so the first time a
+// creature category is shown, binding a screenful of never-rendered cells
+// freezes the UI for several seconds.  Instead, the first time a creature
+// category is opened we render the whole (deduplicated) bestiary ONCE behind a
+// progress popup, driven across idle ticks so the bar animates and the app
+// stays responsive.  The result is cached to disk (creature_thumbs_jobs_finish
+// stamps the version marker), so every later view -- this session or future
+// launches -- just decodes the cached PNGs.
+
+typedef struct {
+  DbBrowserState    *st;
+  GtkWidget         *win;
+  GtkWidget         *bar;
+  GtkWidget         *status;
+  CreatureThumbJobs *jobs;
+  int                total;
+  int                i;
+  int                target_cat;   // category to (re)show once the build ends
+  bool               cancelled;
+} ThumbBuild;
+
+static void show_category(DbBrowserState *st, int cat);
+
+// One render per idle tick: keeps the main loop alive (bar animates, no "not
+// responding") between renders.  When every job is done -- or the user cancels
+// -- tear down and re-enter show_category to populate the grid.
+static gboolean
+thumb_build_step(gpointer data)
+{
+  ThumbBuild     *tb = data;
+  DbBrowserState *st = tb->st;
+
+  if(tb->cancelled || tb->i >= tb->total)
+  {
+    if(tb->cancelled)
+    {
+      // Leave the cache "not built" (no marker) so an interrupted build resumes
+      // next time -- already-rendered PNGs are kept (jobs_render skips them) --
+      // but don't re-prompt this session; cells then render lazily on demand.
+      creature_thumbs_jobs_free(tb->jobs);
+      st->thumbs_build_skipped = true;
+    }
+    else
+    {
+      creature_thumbs_jobs_finish(tb->jobs, global_config.game_folder);
+    }
+
+    int        cat = tb->target_cat;
+    GtkWidget *win = tb->win;
+
+    st->building_thumbs = false;
+    g_free(tb);
+    gtk_window_destroy(GTK_WINDOW(win));
+    show_category(st, cat);
+    return(G_SOURCE_REMOVE);
+  }
+
+  creature_thumbs_jobs_render(tb->jobs, tb->i);
+  tb->i++;
+
+  // Keep the working set bounded so a full bestiary render can't recreate the
+  // low-RAM Windows first-run spike.  Each render resolves its creature DBR
+  // through the global decompressed-DBR cache; drop it periodically and return
+  // the freed heap to the OS.  Safe: no record pointer is held across ticks.
+  if((tb->i % 16) == 0)
+    asset_dbr_cache_clear_and_trim();
+
+  gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(tb->bar),
+                                (double)tb->i / (double)tb->total);
+
+  char buf[64];
+
+  snprintf(buf, sizeof(buf), "Rendering creature art… %d / %d", tb->i, tb->total);
+  gtk_label_set_text(GTK_LABEL(tb->status), buf);
+  return(G_SOURCE_CONTINUE);
+}
+
+static void
+on_thumb_build_cancel(GtkButton *btn, gpointer data)
+{
+  (void)btn;
+  ((ThumbBuild *)data)->cancelled = true;
+}
+
+// If `cat` is the creature category and its thumbnails haven't been built yet,
+// start the one-time build popup and return TRUE (the caller must defer
+// populating the grid -- thumb_build_step re-enters show_category when done).
+// Returns FALSE when there's nothing to do (not the creature category, already
+// built, user opted out, headless, or no creatures) -- caller populates normally.
+static gboolean
+db_start_thumb_build_if_needed(DbBrowserState *st, int cat)
+{
+  if(cat != CAT_CREATURE)
+    return(FALSE);
+  if(st->building_thumbs || st->thumbs_build_skipped || !st->widgets)
+    return(FALSE);
+
+  const char *gf = global_config.game_folder;
+
+  if(!gf || !st->creatures || creature_thumbs_cache_valid(gf))
+    return(FALSE);
+
+  CreatureThumbJobs *jobs = creature_thumbs_jobs_new(st->creatures);
+  int total = creature_thumbs_jobs_total(jobs);
+
+  if(total <= 0)
+  {
+    // Nothing renderable: stamp the marker so we stop checking, populate normally.
+    creature_thumbs_jobs_finish(jobs, gf);
+    return(FALSE);
+  }
+
+  st->building_thumbs = true;
+
+  ThumbBuild *tb = g_new0(ThumbBuild, 1);
+
+  tb->st = st;
+  tb->jobs = jobs;
+  tb->total = total;
+  tb->target_cat = cat;
+
+  GtkWidget *win = gtk_window_new();
+
+  tb->win = win;
+  gtk_window_set_title(GTK_WINDOW(win), "TQVaultC");
+  gtk_window_set_default_size(GTK_WINDOW(win), 420, -1);
+  gtk_window_set_resizable(GTK_WINDOW(win), FALSE);
+  gtk_window_set_deletable(GTK_WINDOW(win), FALSE);
+  gtk_window_set_modal(GTK_WINDOW(win), TRUE);
+  if(st->dialog)
+    gtk_window_set_transient_for(GTK_WINDOW(win), GTK_WINDOW(st->dialog));
+
+  GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
+
+  gtk_widget_set_margin_start(box, 18);
+  gtk_widget_set_margin_end(box, 18);
+  gtk_widget_set_margin_top(box, 16);
+  gtk_widget_set_margin_bottom(box, 16);
+  gtk_window_set_child(GTK_WINDOW(win), box);
+
+  GtkWidget *title = gtk_label_new(NULL);
+
+  gtk_label_set_markup(GTK_LABEL(title), "<b>Preparing creature art…</b>");
+  gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
+  gtk_box_append(GTK_BOX(box), title);
+
+  GtkWidget *sub = gtk_label_new(
+    "Rendering and caching monster thumbnails — this happens once.");
+
+  gtk_label_set_xalign(GTK_LABEL(sub), 0.0f);
+  gtk_label_set_wrap(GTK_LABEL(sub), TRUE);
+  gtk_widget_add_css_class(sub, "dim-label");
+  gtk_box_append(GTK_BOX(box), sub);
+
+  tb->status = gtk_label_new("Preparing…");
+  gtk_label_set_xalign(GTK_LABEL(tb->status), 0.0f);
+  gtk_widget_add_css_class(tb->status, "dim-label");
+  gtk_box_append(GTK_BOX(box), tb->status);
+
+  tb->bar = gtk_progress_bar_new();
+  gtk_box_append(GTK_BOX(box), tb->bar);
+
+  GtkWidget *cancel = gtk_button_new_with_label("Cancel");
+
+  gtk_widget_set_halign(cancel, GTK_ALIGN_END);
+  gtk_widget_set_margin_top(cancel, 6);
+  g_signal_connect(cancel, "clicked", G_CALLBACK(on_thumb_build_cancel), tb);
+  gtk_box_append(GTK_BOX(box), cancel);
+
+  gtk_window_present(GTK_WINDOW(win));
+  g_idle_add(thumb_build_step, tb);
+  return(TRUE);
+}
+
 static void
 show_category(DbBrowserState *st, int cat)
 {
   if(cat < 0 || cat >= CAT_COUNT)
+    return;
+
+  // First creature view: render+cache the bestiary behind a progress popup
+  // rather than freezing on the synchronous grid-bind render path.  When this
+  // starts a build it returns true and re-enters show_category once finished.
+  if(db_start_thumb_build_if_needed(st, cat))
     return;
 
   st->current_cat = cat;

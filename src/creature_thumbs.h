@@ -63,6 +63,11 @@ int  creature_thumbs_jobs_total(const CreatureThumbJobs *jobs);
 void creature_thumbs_jobs_render(CreatureThumbJobs *jobs, int i);
 void creature_thumbs_jobs_finish(CreatureThumbJobs *jobs, const char *game_folder);
 
+// Free a job list WITHOUT writing the version marker -- the cancel path for an
+// interrupted incremental build, so the cache stays "not built" and the build
+// re-runs next time (already-rendered PNGs are kept; jobs_render skips them).
+void creature_thumbs_jobs_free(CreatureThumbJobs *jobs);
+
 // Load the cached thumbnail for a creature given its DBR record path, or NULL
 // if the creature has no mesh / the render is missing.  Caller unrefs.
 GdkPixbuf *creature_thumbs_load(const char *creature_dbr_path);
