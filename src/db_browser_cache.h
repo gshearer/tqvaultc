@@ -22,13 +22,14 @@
 
 // Bump on ANY change to the on-disk layout below OR to the game content it
 // encodes (categorization rules, loot resolution, name resolution): a stale
-// cache from an older binary must not be trusted.
-#define DB_CACHE_VERSION 5
+// cache from an older binary must not be trusted.  (v6 added the game_folder
+// to the header so a path correction rebuilds instead of reusing a stale cache.)
+#define DB_CACHE_VERSION 6
 
 // True iff a cache file exists whose header (magic + version + database.arz
-// size/mtime) matches the current install — i.e. a load would succeed without
-// a rebuild.  Used by the startup path to decide whether to show the "Setting
-// up…" popup.
+// size/mtime + game_folder) matches the current install — i.e. a load would
+// succeed without a rebuild.  Used by the startup path to decide whether to
+// show the "Setting up…" popup.
 bool db_browser_cache_valid(const char *game_folder);
 
 // Serialize a fully-built browser state (all cat_stores + st->creatures +

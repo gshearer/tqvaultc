@@ -49,6 +49,19 @@ db_loot_ctx_free(DbLootCtx *ctx)
   g_free(ctx);
 }
 
+// Drop the context's cached records, reclaiming their heap.  LootRandomizer
+// records are large (~594 vars each), so resolving every creature's loot can
+// accumulate hundreds of MB here -- a separate balloon from the global DBR
+// cache.  Safe to call BETWEEN top-level resolves (a caller must hold no
+// borrowed ctx_read() pointer across it); the shared subtables simply re-inflate
+// on the next resolve.  Lets the first-run creature pass stay bounded.
+void
+db_loot_ctx_clear_cache(DbLootCtx *ctx)
+{
+  if(ctx && ctx->cache)
+    g_hash_table_remove_all(ctx->cache);
+}
+
 // Read a record through the context cache.  Returns a BORROWED pointer (owned
 // by the cache); do not free.  Records inflate once per resolve session.
 static TQArzRecordData *

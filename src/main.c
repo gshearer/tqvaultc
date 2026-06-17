@@ -16,6 +16,9 @@
 #include "db_browser_cache.h"
 #include "db_creatures.h"
 #include "creature_thumbs.h"
+#ifndef _WIN32
+#include <sys/resource.h>   // getrusage() for --first-run-build peak-RSS report
+#endif
 
 static int g_saved_argc;
 static char **g_saved_argv;
@@ -420,6 +423,7 @@ main(int argc, char **argv)
   const char *sq_pattern = NULL;
   const char *sq_haystack = NULL;
   bool thumbs_build_only = false;
+  bool first_run_build_only = false;
   bool stack_merge_selftest_only = false;
 
   for(int i = 1; i < argc; i++)
@@ -471,6 +475,10 @@ main(int argc, char **argv)
     else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
     {
       thumbs_build_only = true;
+    }
+    else if(strcmp(argv[i], "--first-run-build") == 0)
+    {
+      first_run_build_only = true;
     }
     else if(strcmp(argv[i], "--stack-merge-selftest") == 0)
     {
@@ -730,6 +738,43 @@ main(int argc, char **argv)
     asset_manager_free();
     config_free();
     return(rc);
+  }
+
+  if(first_run_build_only)
+  {
+    // Headless mirror of the first-run "Setting up TQVaultC…" build: runs the
+    // exact index/blob/save sequence in one process and reports peak RSS, so we
+    // can measure the first-run memory footprint without launching the GUI (the
+    // low-RAM Windows lock-up this guards against is a memory problem).
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --first-run-build: game_folder not configured\n");
+      return(1);
+    }
+
+    gint64 t0 = g_get_monotonic_time();
+
+    ui_startup_build_headless();   // initialises the asset subsystem and builds
+
+    double secs = (g_get_monotonic_time() - t0) / 1e6;
+
+#ifndef _WIN32
+    struct rusage ru;
+
+    getrusage(RUSAGE_SELF, &ru);
+    printf("first-run build done in %.1fs, peak RSS %.1f MB\n",
+           secs, ru.ru_maxrss / 1024.0);   // ru_maxrss is in KB on Linux
+#else
+    printf("first-run build done in %.1fs (peak RSS unavailable on this platform)\n",
+           secs);
+#endif
+
+    item_stats_free();
+    affix_table_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(0);
   }
 
   // Strip our custom flags so GTK doesn't see them

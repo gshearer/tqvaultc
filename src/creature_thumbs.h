@@ -28,9 +28,16 @@
 #define CREATURE_THUMB_SIZE 256
 
 // True iff the thumbnail cache marker matches the current binary + game install
-// (a build would be a no-op).  Used by the startup path alongside the browser
-// cache check to decide whether the setup popup is needed.
+// (a build would be a no-op).
 bool creature_thumbs_cache_valid(const char *game_folder);
+
+// Ensure the on-demand thumbnail cache directory matches the current renderer
+// version + game install, WITHOUT rendering anything: if the marker is missing
+// or stale, wipe any cached PNGs and stamp a fresh marker.  Call once at startup
+// so lazily-rendered thumbnails (creature_thumbs_load) are always current --
+// this replaces the eager batch build's version invalidation now that
+// thumbnails render on demand.  Cheap (a stat + maybe a dir wipe).
+void creature_thumbs_cache_prepare(const char *game_folder);
 
 // Render a thumbnail for every distinct mesh+texture among idx's creatures into
 // the cache, skipping any already present.  Requires the asset manager to be

@@ -136,6 +136,29 @@ arz_stat(const char *game_folder, guint64 *size, gint64 *mtime)
   return(true);
 }
 
+// Stamp the version marker (renderer version + database.arz size/mtime) so the
+// cache validates against the current binary + game install.
+static void
+thumb_marker_write(const char *game_folder)
+{
+  guint64 size = 0;
+  gint64 mtime = 0;
+
+  if(!arz_stat(game_folder, &size, &mtime))
+    return;
+
+  char *marker = thumb_marker_new();
+  // Line 1: version + db.arz size/mtime.  Line 2: the game folder, so a path
+  // correction (e.g. in Settings) invalidates a marker built for the old one.
+  char *text = g_strdup_printf("%u %" G_GUINT64_FORMAT " %" G_GINT64_FORMAT "\n%s\n",
+                               CREATURE_THUMB_VERSION, size, mtime,
+                               game_folder ? game_folder : "");
+
+  g_file_set_contents(marker, text, -1, NULL);
+  g_free(text);
+  g_free(marker);
+}
+
 // -- Rendering --------------------------------------------------------------
 
 // Resolve a game asset path to its arc + in-arc entry index.  The asset index
@@ -398,15 +421,52 @@ creature_thumbs_cache_valid(const char *game_folder)
   if(!ok)
     return(false);
 
+  // Line 1: "<version> <size> <mtime>".  Line 2: the game folder it was built
+  // for (paths may contain spaces, so it gets its own line).
   unsigned ver = 0;
   guint64 m_size = 0;
   gint64 m_mtime = 0;
   int n = sscanf(contents, "%u %" G_GUINT64_FORMAT " %" G_GINT64_FORMAT,
                  &ver, &m_size, &m_mtime);
 
+  bool dir_ok = false;
+  const char *nl = strchr(contents, '\n');
+
+  if(nl)
+  {
+    char *line2 = g_strdup(nl + 1);
+    g_strchomp(line2);   // drop the trailing newline/whitespace
+    dir_ok = (g_strcmp0(line2, game_folder ? game_folder : "") == 0);
+    g_free(line2);
+  }
+
   g_free(contents);
   return(n == 3 && ver == CREATURE_THUMB_VERSION &&
-         m_size == size && m_mtime == mtime);
+         m_size == size && m_mtime == mtime && dir_ok);
+}
+
+void
+creature_thumbs_cache_prepare(const char *game_folder)
+{
+  // Thumbnails render lazily on demand now (creature_thumbs_load), so there is
+  // no eager batch build to invalidate the on-disk cache on a renderer-version
+  // bump or a game update.  Do that invalidation here -- cheaply, with NO
+  // rendering: if the marker is missing or stale, wipe any cached PNGs and
+  // stamp a fresh marker.  After this the cache validates, and every subsequent
+  // on-demand render is for the current renderer version + game install.  Call
+  // once at startup, before browsing.
+  if(creature_thumbs_cache_valid(game_folder))
+    return;
+
+  char *dir = thumb_dir_new();   // also creates it
+
+  if(dir)
+  {
+    thumb_clear_dir(dir);
+    g_free(dir);
+  }
+
+  thumb_marker_write(game_folder);
 }
 
 // Deduplicated render work list (one entry per distinct mesh+texture+anm).
@@ -512,19 +572,7 @@ void
 creature_thumbs_jobs_finish(CreatureThumbJobs *jobs, const char *game_folder)
 {
   // Write the version marker last so an interrupted build stays invalid.
-  guint64 size = 0;
-  gint64 mtime = 0;
-
-  if(arz_stat(game_folder, &size, &mtime))
-  {
-    char *marker = thumb_marker_new();
-    char *text = g_strdup_printf("%u %" G_GUINT64_FORMAT " %" G_GINT64_FORMAT "\n",
-                                 CREATURE_THUMB_VERSION, size, mtime);
-
-    g_file_set_contents(marker, text, -1, NULL);
-    g_free(text);
-    g_free(marker);
-  }
+  thumb_marker_write(game_folder);
 
   if(jobs)
   {

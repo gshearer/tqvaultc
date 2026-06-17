@@ -1460,6 +1460,16 @@ build_search_blobs(DbBrowserState *st)
   char markup[32768];
   char plain[32768];
 
+  // Rendering every card decompresses most of the database into the record
+  // cache.  Release whatever the earlier index phases accumulated, then keep
+  // the cache bounded as we go, so the first-run build's working set never
+  // holds the whole decompressed database at once (the low-RAM Windows
+  // commit-charge lock-up).  Records repopulate lazily; build_detail_markup
+  // holds no record pointer across the per-item boundary.
+  asset_dbr_cache_clear();
+
+  unsigned long processed = 0;
+
   for(int c = 0; c < CAT_COUNT; c++)
   {
     GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
@@ -1467,6 +1477,10 @@ build_search_blobs(DbBrowserState *st)
 
     for(guint i = 0; i < n; i++)
     {
+      if(processed > 0 && (processed & 0x00FF) == 0)
+        asset_dbr_cache_clear();
+      processed++;
+
       DbBrowseItem *bi = g_list_model_get_item(m, i);  // owns a ref
 
       markup[0] = '\0';

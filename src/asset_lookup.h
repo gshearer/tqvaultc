@@ -5,6 +5,7 @@
 #include "arz.h"
 #include "arc.h"
 #include <stddef.h>
+#include <stdbool.h>
 
 // asset_lookup - find an asset by its path
 // path: normalized game path to look up
@@ -47,6 +48,16 @@ int asset_get_num_files(void);
 // key: malloc'd normalized path (ownership transferred to cache)
 // data: record data (ownership transferred to cache)
 void asset_cache_insert(char *key, TQArzRecordData *data);
+
+// asset_dbr_cache_clear - drop all decompressed DBR records (repopulate lazily);
+// reclaims heap to keep the first-run build's working set bounded.  Callers must
+// hold no TQArzRecordData pointer across the call.
+void asset_dbr_cache_clear(void);
+
+// asset_manager_probe_ok - true iff the last asset_manager_init() resolved its
+// probe asset.  False => wrong/empty game folder (data won't resolve); the
+// startup path uses this to fall back to the folder picker.
+bool asset_manager_probe_ok(void);
 
 // asset_manager_free - free all cached resources
 void asset_manager_free(void);

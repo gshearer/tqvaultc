@@ -141,6 +141,16 @@ build_category_index(DbBrowserState *st)
 
   for(uint32_t i = 0; i < arz->num_records; i++)
   {
+    // Cap memory during the first-run build: db_categorize() reads the Class
+    // field of EVERY record, so the decompressed-record cache would otherwise
+    // grow to hold the whole database (the low-RAM Windows commit-charge
+    // lock-up).  Drop it periodically -- records repopulate lazily and no
+    // record pointer is held across iterations.  Cheap re-decompress, bounded
+    // resident set.  (1024-record window: the records are large, so a wider
+    // window dominates the first-run peak.)
+    if(i > 0 && (i & 0x03FF) == 0)
+      asset_dbr_cache_clear();
+
     const char *path = arz->records[i].path;
     int cat = db_categorize(path);
 
@@ -282,6 +292,8 @@ build_set_index(DbBrowserState *st)
 
   if(!arz)
     return;
+
+  asset_dbr_cache_clear();   // release the prior phase's cached records
 
   for(uint32_t i = 0; i < arz->num_records; i++)
   {
@@ -667,12 +679,20 @@ build_affix_index(DbBrowserState *st)
   if(!arz)
     return;
 
+  asset_dbr_cache_clear();   // release the prior phase's cached records
+
   // "P|<tag>" / "S|<tag>" (tag-less records keyed by "<kind>|@<path>") -> agg
   GHashTable *affixes = g_hash_table_new_full(g_str_hash, g_str_equal,
                                               g_free, db_affix_agg_free);
 
   for(uint32_t i = 0; i < arz->num_records; i++)
   {
+    // Like build_category_index: this scans every record and caches the large
+    // LootRandomizer affix tables, so bound the record cache as we go (no
+    // record pointer is held across iterations).
+    if(i > 0 && (i & 0x03FF) == 0)
+      asset_dbr_cache_clear();
+
     const char *path = arz->records[i].path;
 
     if(!path)
@@ -1065,6 +1085,8 @@ db_add_skill_item(DbBrowserState *st, int cat, const char *skill_path,
 void
 build_skill_index(DbBrowserState *st)
 {
+  asset_dbr_cache_clear();   // release the prior phase's cached records
+
   for(int m = 0; m < DB_NUM_MASTERY; m++)
   {
     int cat = CAT_SKILL_DEFENSE + m;
@@ -1178,6 +1200,8 @@ db_creature_display_name(DbBrowserState *st, DbCreature *c)
 void
 build_creature_index_grid(DbBrowserState *st)
 {
+  asset_dbr_cache_clear();   // release the prior phase's cached records
+
   st->creatures = db_creature_index_build(st->arz);
 
   if(!st->creatures)
@@ -1212,6 +1236,8 @@ build_quest_index_grid(DbBrowserState *st)
 {
   if(!global_config.game_folder)
     return;
+
+  asset_dbr_cache_clear();   // release the prior phase's cached records
 
   // Candidate Quests.arc archives under <game>/Resources.
   static const char *REL[] = {

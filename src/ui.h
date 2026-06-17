@@ -994,6 +994,14 @@ show_db_browser_dialog(AppWidgets *widgets);
 void
 ui_startup_init_and_activate(GtkApplication *app);
 
+// Headless mirror of the first-run setup build (no GTK): runs the same index
+// build + cache save as the "Setting up TQVaultC…" popup, for measuring the
+// first-run peak RSS via `tqvaultc --first-run-build`.  Requires
+// global_config.game_folder set and the asset subsystem UNinitialised on entry
+// (it initialises and leaves it up; the caller frees it).
+void
+ui_startup_build_headless(void);
+
 // ── Entry points in ui_checklist_dialog.c ─────────────────────────────────
 
 // Show the quest checklist dialog.

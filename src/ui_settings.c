@@ -4,6 +4,9 @@
 #include "config.h"
 #include "translation.h"
 #include "item_stats.h"
+#include "asset_lookup.h"
+#include "affix_table.h"
+#include "creature_thumbs.h"
 #include "version.h"
 #include "build_number.h"
 #include <stdio.h>
@@ -155,7 +158,70 @@ typedef struct {
   AppWidgets *app_widgets;
 } SettingsWidgets;
 
-// Save settings, close the dialog, and reload translations/combos.
+// Load translations for the current game folder into widgets->translations,
+// freeing any previous table first.
+static void
+reload_translations(AppWidgets *widgets)
+{
+  if(!widgets)
+    return;
+
+  if(widgets->translations)
+    translation_free(widgets->translations);
+  widgets->translations = NULL;
+
+  if(!global_config.game_folder)
+    return;
+
+  widgets->translations = translation_init();
+  if(widgets->translations)
+  {
+    char trans_path[1024];
+
+    snprintf(trans_path, sizeof(trans_path), "%s/Text/Text_EN.arc",
+             global_config.game_folder);
+    translation_load_from_arc(widgets->translations, trans_path);
+  }
+}
+
+// Re-initialise everything that depends on the game folder after it changes in
+// Settings.  Without this a path correction never took effect: the stale
+// resource index / browser cache survived and the app kept showing blank,
+// unresolvable items until the user deleted the cache folder by hand.
+//
+// We re-point the asset manager (which now rebuilds the resource index because
+// it's keyed to the path), refresh the affix tables + translations (both come
+// from the new folder), and invalidate the thumbnail cache.  The Database
+// Browser disk cache is keyed to the path too, so it rebuilds on its next open
+// via the in-browser loader -- we don't re-show the startup popup here (the main
+// window already exists).  Returns true if the new folder's data resolves.
+//
+// NOTE: callable only with no game-data dialog (Database Browser) open, since
+// those hold handles into the asset manager we tear down.  Settings is modal
+// over the main window, so that holds in practice.
+static bool
+apply_game_folder_change(AppWidgets *widgets)
+{
+  asset_manager_free();
+  asset_manager_init(global_config.game_folder);
+  // item_stats is NOT re-inited: its tables are built from static name lists
+  // interned via arz_intern (which we keep alive across the change), so they
+  // stay valid -- and item_stats_init() isn't idempotent (it would leak).
+  affix_table_free();
+  affix_table_init(NULL);     // affix tables resolve from the new folder's DBRs
+  creature_thumbs_cache_prepare(global_config.game_folder);
+
+  reload_translations(widgets);
+
+  if(widgets)
+    queue_redraw_all(widgets);
+
+  return(asset_manager_probe_ok());
+}
+
+// Save settings, close the dialog, and reload translations/combos.  When the
+// game folder changed, rebuild the asset manager + caches so the change takes
+// effect immediately (see apply_game_folder_change).
 //
 // btn: the Save & Close button (unused)
 // user_data: SettingsWidgets pointer
@@ -179,25 +245,37 @@ on_settings_close(GtkButton *btn, gpointer user_data)
     return;  // keep settings open
   }
 
+  // Capture the previous game folder before config overwrites it.
+  char *old_game = g_strdup(global_config.game_folder ? global_config.game_folder : "");
+  bool game_changed = (g_strcmp0(old_game, game) != 0);
+
+  g_free(old_game);
+
   config_set_save_folder(save);
   config_set_game_folder(game);
   config_save();
 
-  gtk_window_destroy(GTK_WINDOW(window));
-
-  // Reload translations and repopulate combos after settings change
   AppWidgets *widgets = sw->app_widgets;
+
+  gtk_window_destroy(GTK_WINDOW(window));
 
   if(widgets)
   {
-    if(global_config.game_folder && !widgets->translations)
+    if(game_changed)
     {
-      widgets->translations = translation_init();
-      char trans_path[1024];
+      bool ok = apply_game_folder_change(widgets);
 
-      snprintf(trans_path, sizeof(trans_path), "%s/Text/Text_EN.arc",
-               global_config.game_folder);
-      translation_load_from_arc(widgets->translations, trans_path);
+      if(!ok)
+        show_error(GTK_WINDOW(widgets->main_window),
+                   "The game files in the selected folder could not be read.\n"
+                   "Item names and icons may not appear.  Please re-check the "
+                   "Game Installation Folder in Settings.");
+    }
+    else if(global_config.game_folder && !widgets->translations)
+    {
+      // Folder unchanged but translations weren't loaded yet (app came up
+      // without a game folder, now one is set).
+      reload_translations(widgets);
     }
 
     if(global_config.save_folder)

@@ -314,6 +314,10 @@ db_creature_index_build(TQArzFile *arz)
   // creature so the many shared loot subtables inflate only once.
   DbLootCtx *ctx = db_loot_ctx_new(arz);
 
+  // Count of creatures actually resolved (not raw record index), used to bound
+  // the context cache periodically below.
+  unsigned resolved = 0;
+
   for(uint32_t r = 0; r < arz->num_records; r++)
   {
     const char *path = arz->records[r].path;
@@ -479,6 +483,14 @@ db_creature_index_build(TQArzFile *arz)
 
     g_ptr_array_sort(c->drops, item_chance_cmp);
     g_hash_table_destroy(agg);
+
+    // Bound the resolve cache during the first-run build: the LootRandomizer
+    // records it holds are large, so resolving all ~950 looted creatures would
+    // otherwise balloon to hundreds of MB.  Drop it every so often (the shared
+    // subtables re-inflate cheaply on the next creature) -- safe here, no
+    // borrowed ctx_read() pointer is live between creatures.
+    if((++resolved & 0x000F) == 0)
+      db_loot_ctx_clear_cache(ctx);
   }
 
   db_loot_ctx_free(ctx);

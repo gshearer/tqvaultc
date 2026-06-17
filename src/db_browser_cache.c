@@ -218,20 +218,24 @@ db_arz_stat(const char *game_folder, uint64_t *size, int64_t *mtime)
 }
 
 static bool
-wr_header(FILE *f, uint64_t size, int64_t mtime)
+wr_header(FILE *f, uint64_t size, int64_t mtime, const char *game_folder)
 {
   return(wr(f, DB_CACHE_MAGIC, 4) && wr_u32(f, DB_CACHE_VERSION) &&
-         wr_u64(f, size) && wr_i64(f, mtime));
+         wr_u64(f, size) && wr_i64(f, mtime) &&
+         wr_str(f, game_folder ? game_folder : ""));
 }
 
-// Validate the header against (size, mtime).  Returns true on a full match.
+// Validate the header against (size, mtime, game_folder).  Returns true on a
+// full match.  game_folder is part of the key so correcting the game path
+// (e.g. in Settings) invalidates a cache built for the old folder.
 static bool
-rd_header_ok(FILE *f, uint64_t size, int64_t mtime)
+rd_header_ok(FILE *f, uint64_t size, int64_t mtime, const char *game_folder)
 {
   char magic[4];
   uint32_t ver;
   uint64_t csize;
   int64_t cmtime;
+  char *cdir = NULL;
 
   if(!rd(f, magic, 4) || memcmp(magic, DB_CACHE_MAGIC, 4) != 0)
     return(false);
@@ -241,7 +245,13 @@ rd_header_ok(FILE *f, uint64_t size, int64_t mtime)
     return(false);
   if(!rd_i64(f, &cmtime) || cmtime != mtime)
     return(false);
-  return(true);
+  if(!rd_str(f, &cdir))
+    return(false);
+
+  bool match = (g_strcmp0(cdir, game_folder ? game_folder : "") == 0);
+
+  g_free(cdir);
+  return(match);
 }
 
 // -- Categories (DbBrowseItem lists) ----------------------------------------
@@ -616,7 +626,7 @@ db_browser_cache_valid(const char *game_folder)
   if(!f)
     return(false);
 
-  bool ok = rd_header_ok(f, size, mtime);
+  bool ok = rd_header_ok(f, size, mtime, game_folder);
 
   fclose(f);
   return(ok);
@@ -643,7 +653,7 @@ db_browser_cache_save(const DbBrowserState *st, const char *game_folder)
     return(false);
   }
 
-  bool ok = wr_header(f, size, mtime) &&
+  bool ok = wr_header(f, size, mtime, game_folder) &&
             wr_categories(f, st) &&
             wr_creatures(f, st->creatures) &&
             wr_quests(f, st->quests);
@@ -678,7 +688,7 @@ db_browser_cache_load(DbBrowserState *st, const char *game_folder)
   if(!f)
     return(false);
 
-  bool ok = rd_header_ok(f, size, mtime) &&
+  bool ok = rd_header_ok(f, size, mtime, game_folder) &&
             rd_categories(f, st) &&
             rd_creatures(f, &st->creatures) &&
             rd_quests(f, &st->quests);

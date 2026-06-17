@@ -1242,12 +1242,6 @@ typedef struct
   TQTranslation  *tr;        // throwaway translations (freed after save)
   int             phase;     // next phase to run
   gboolean        announced; // current phase's label has been shown
-  // Creature-thumbnail render stage (runs after the index phases, in batches so
-  // the bar animates; see startup_build_step).
-  CreatureThumbJobs *jobs;   // NULL until built; freed in jobs_finish
-  int             job_total;
-  int             job_i;     // next job index to render
-  gboolean        thumbs_done;
   gboolean        saved;
 } StartupLoader;
 
@@ -1304,6 +1298,11 @@ static void startup_step_blobs(StartupLoader *sl)     { build_search_blobs(sl->s
 static void
 startup_step_save(StartupLoader *sl)
 {
+  // Release the records the blob pass left cached (its last window); none are
+  // needed for the save (the GListStores hold the extracted strings).  Keeps
+  // the post-build live app from inheriting the whole decompressed database.
+  asset_dbr_cache_clear();
+
   if(!db_browser_cache_save(sl->st, global_config.game_folder))
     g_warning("startup: failed to save Database Browser cache");
 
@@ -1317,11 +1316,13 @@ startup_step_save(StartupLoader *sl)
 }
 
 // Phase table: label shown while the step runs + the bar position to settle on
-// once it finishes.  Step A is the resource-index build (the "fake" 0→5%), the
-// rest of the index phases animate up to ~33%.  After this table the creature
-// thumbnails render (33→97%, in batches) and the cache is saved (→100%) -- both
-// handled directly in startup_build_step since they don't fit the one-shot
-// phase shape (save must run after thumbnails, which need st->creatures).
+// once it finishes.  Step A is the resource-index build (the "fake" 0→8%), the
+// rest of the index phases animate up to ~90%; the cache is then saved (→100%)
+// in startup_build_step (it must run after the phases that build st->creatures
+// etc.).  Creature thumbnails are NOT rendered here -- they render lazily on
+// demand (creature_thumbs_load) as the user browses, which keeps the first-run
+// memory footprint low (rendering the whole bestiary up front held ~1 GB and
+// locked up low-RAM machines).
 static const struct
 {
   const char *label;
@@ -1330,28 +1331,26 @@ static const struct
 }
 STARTUP_PHASES[] =
 {
-  { "Preparing game database…",   startup_step_init,      0.05 },
-  { "Indexing equipment…",        startup_step_categories,0.12 },
-  { "Indexing item sets…",        startup_step_sets,      0.16 },
-  { "Indexing affixes…",          startup_step_affixes,   0.22 },
-  { "Indexing skills…",           startup_step_skills,    0.27 },
-  { "Indexing creatures…",        startup_step_creatures, 0.31 },
-  { "Indexing quest rewards…",    startup_step_quests,    0.32 },
-  { "Indexing search text…",      startup_step_blobs,     0.33 },
+  { "Preparing game database…",   startup_step_init,      0.08 },
+  { "Indexing equipment…",        startup_step_categories,0.30 },
+  { "Indexing item sets…",        startup_step_sets,      0.40 },
+  { "Indexing affixes…",          startup_step_affixes,   0.55 },
+  { "Indexing skills…",           startup_step_skills,    0.62 },
+  { "Indexing creatures…",        startup_step_creatures, 0.80 },
+  { "Indexing quest rewards…",    startup_step_quests,    0.85 },
+  { "Indexing search text…",      startup_step_blobs,     0.90 },
 };
 
 #define STARTUP_NPHASES ((int)G_N_ELEMENTS(STARTUP_PHASES))
 
-// Creature thumbnails rendered per idle tick: small enough that the window
-// repaints (~quarter second of work per tick), large enough to finish promptly.
-#define STARTUP_THUMB_BATCH 8
+static void startup_show_game_folder_error(void);
 
 static gboolean
 startup_build_step(gpointer data)
 {
   StartupLoader *sl = data;
 
-  // -- Index phases (init … quest rewards) --------------------------------
+  // -- Index phases (init … search text) ----------------------------------
   if(sl->phase < STARTUP_NPHASES)
   {
     // First pass: show this phase's label, then yield so the bar repaints
@@ -1368,37 +1367,28 @@ startup_build_step(gpointer data)
                                   STARTUP_PHASES[sl->phase].frac);
     sl->phase++;
     sl->announced = FALSE;
-    return(G_SOURCE_CONTINUE);
-  }
 
-  // -- Creature thumbnails (batched so the bar animates) ------------------
-  if(!sl->thumbs_done)
-  {
-    if(!sl->jobs)
+    // Graceful failure: right after init (phase 0), bail if the game files
+    // don't resolve — building an index over a wrong/empty folder just yields
+    // blank data.  Drop the throwaway build state, close the popup, warn, and
+    // reopen the folder picker.
+    if(sl->phase == 1 && !asset_manager_probe_ok())
     {
-      gtk_label_set_text(GTK_LABEL(sl->status), "Rendering creature models…");
-      sl->jobs = creature_thumbs_jobs_new(sl->st->creatures);
-      sl->job_total = creature_thumbs_jobs_total(sl->jobs);
-      sl->job_i = 0;
-      return(G_SOURCE_CONTINUE);    // yield so the label paints first
+      GtkApplication *app = sl->app;
+      GtkWidget      *win = sl->win;
+
+      if(sl->st)
+        db_browser_state_free(sl->st);
+      if(sl->tr)
+        translation_free(sl->tr);
+      g_free(sl);
+
+      startup_show_game_folder_error();
+      ui_first_run_setup(app);
+      gtk_window_destroy(GTK_WINDOW(win));
+      return(G_SOURCE_REMOVE);
     }
 
-    if(sl->job_i < sl->job_total)
-    {
-      int end = MIN(sl->job_i + STARTUP_THUMB_BATCH, sl->job_total);
-
-      for(; sl->job_i < end; sl->job_i++)
-        creature_thumbs_jobs_render(sl->jobs, sl->job_i);
-
-      double frac = 0.33 + 0.64 * ((double)sl->job_i / (double)sl->job_total);
-
-      gtk_progress_bar_set_fraction(GTK_PROGRESS_BAR(sl->bar), frac);
-      return(G_SOURCE_CONTINUE);
-    }
-
-    creature_thumbs_jobs_finish(sl->jobs, global_config.game_folder);
-    sl->jobs = NULL;
-    sl->thumbs_done = TRUE;
     return(G_SOURCE_CONTINUE);
   }
 
@@ -1471,6 +1461,20 @@ startup_build_show(GtkApplication *app)
   g_idle_add(startup_build_step, sl);
 }
 
+// Tell the user their game folder couldn't be read before we reopen the picker.
+// Parent-less alert: at startup the only window is the picker we're about to
+// create, so a transient parent isn't available yet.
+static void
+startup_show_game_folder_error(void)
+{
+  GtkAlertDialog *dlg = gtk_alert_dialog_new(
+    "The configured Titan Quest game folder could not be read.\n"
+    "Please choose your game installation folder.");
+
+  gtk_alert_dialog_show(dlg, NULL);
+  g_object_unref(dlg);
+}
+
 void
 ui_startup_init_and_activate(GtkApplication *app)
 {
@@ -1481,22 +1485,65 @@ ui_startup_init_and_activate(GtkApplication *app)
     return;
   }
 
-  // Fast path: valid browser cache AND creature thumbnails mean init is cheap
-  // (just loads the existing resource index) and the browser opens instantly —
-  // no popup.  Both caches are validated against the live database.arz.
-  if(db_browser_cache_valid(global_config.game_folder) &&
-     creature_thumbs_cache_valid(global_config.game_folder))
+  // Creature thumbnails render lazily on demand now; just make sure the cache
+  // dir is current for this renderer version + game install (cheap, no
+  // rendering).  Done on both paths so a game update / version bump invalidates
+  // stale PNGs without an eager batch build.
+  creature_thumbs_cache_prepare(global_config.game_folder);
+
+  // Fast path: a valid browser cache means init is cheap (just loads the
+  // existing resource index) and the browser opens instantly — no popup.  The
+  // cache is validated against the live database.arz.
+  if(db_browser_cache_valid(global_config.game_folder))
   {
     asset_manager_init(global_config.game_folder);
     arz_intern_init();
     item_stats_init();
     affix_table_init(NULL);
+
+    // Graceful failure: if the game files don't actually resolve (corrupt
+    // index / hand-edited config), recover to the folder picker instead of
+    // running with blank, unresolvable data.
+    if(!asset_manager_probe_ok())
+    {
+      g_warning("startup: game files unreadable at '%s'; reopening folder picker",
+                global_config.game_folder);
+      startup_show_game_folder_error();
+      ui_first_run_setup(app);
+      return;
+    }
+
     ui_app_activate(app, NULL);
     return;
   }
 
   // Slow path (first run / game updated / format bumped): build the resource
-  // index, the browser cache and the creature thumbnails behind a one-time
-  // progress popup.
+  // index and the browser cache behind a one-time progress popup.  (Thumbnails
+  // are no longer part of this build — they fill in lazily as the user
+  // browses, which keeps the first-run memory footprint low.)
   startup_build_show(app);
+}
+
+// Headless mirror of the first-run setup build (no GTK widgets).  Runs the EXACT
+// startup_step_* index sequence and the cache save in one process, so
+// `tqvaultc --first-run-build` can measure the real first-run peak RSS without
+// launching the GUI.  Kept in lock-step with startup_build_step: it must do the
+// same work (minus the progress-bar plumbing), so a change to one is a change to
+// both.  Thumbnails render lazily on demand (see creature_thumbs_load), the same
+// as the GUI path -- so they are NOT rendered here.
+void
+ui_startup_build_headless(void)
+{
+  StartupLoader *sl = g_new0(StartupLoader, 1);
+
+  startup_step_init(sl);
+  startup_step_categories(sl);
+  startup_step_sets(sl);
+  startup_step_affixes(sl);
+  startup_step_skills(sl);
+  startup_step_creatures(sl);
+  startup_step_quests(sl);
+  startup_step_blobs(sl);
+  startup_step_save(sl);   // frees the throwaway state + translations
+  g_free(sl);
 }

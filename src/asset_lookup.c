@@ -7,6 +7,9 @@
 #include <errno.h>
 #include <zlib.h>
 #include <glib.h>
+#ifdef __GLIBC__
+#include <malloc.h>   // malloc_trim() in asset_dbr_cache_clear()
+#endif
 
 static char *g_game_path = NULL;
 static TQArzFile **g_arz_cache = NULL;
@@ -20,6 +23,7 @@ static size_t g_index_size = 0;
 static TQIndexHeader *g_index_header = NULL;
 static TQAssetEntry *g_index_entries = NULL;
 static const char **g_game_files = NULL;
+static bool g_probe_ok = false;   // last asset_manager_init found its probe asset
 
 // calculate_hash - compute a CRC32 hash of a normalized game path
 // path: asset path to hash (backslash-normalized, lowercased)
@@ -487,14 +491,18 @@ asset_index_build(const char *game_path, const char *index_path)
 
   TQIndexHeader header;
 
+  memset(&header, 0, sizeof(header));
   memcpy(header.magic, "TQVI", 4);
-  header.version = 1;
+  header.version = TQ_INDEX_VERSION;
   header.num_files = b.num_files;
   header.num_entries = b.num_entries;
   header.entries_offset = sizeof(TQIndexHeader);
   header.string_table_offset = header.entries_offset + (b.num_entries * sizeof(TQAssetEntry));
   header.reserved[0] = 0;
   header.reserved[1] = 0;
+  // Stamp the folder this index is for, so a later path correction rebuilds it.
+  g_strlcpy(header.game_folder, game_path ? game_path : "",
+            sizeof(header.game_folder));
 
   fwrite(&header, sizeof(header), 1, fp);
   fwrite(b.entries, sizeof(TQAssetEntry), b.num_entries, fp);
@@ -524,10 +532,30 @@ asset_index_load(const char *index_path)
 
   g_index_header = (TQIndexHeader *)g_index_mmap;
 
-  if(memcmp(g_index_header->magic, "TQVI", 4) != 0 || g_index_header->version != 1)
+  if(memcmp(g_index_header->magic, "TQVI", 4) != 0 ||
+     g_index_header->version != TQ_INDEX_VERSION)
   {
     platform_munmap(g_index_mmap, g_index_size);
     g_index_mmap = NULL;
+    g_index_header = NULL;
+    return(false);
+  }
+
+  // Reject an index built for a different game folder: the path was corrected
+  // (e.g. in Settings), so this index is stale and must be rebuilt rather than
+  // silently reused (which left the app showing blank, unresolvable items).
+  // The stored field is NUL-terminated within its fixed size by the writer.
+  if(g_game_path &&
+     strncmp(g_index_header->game_folder, g_game_path,
+             sizeof(g_index_header->game_folder)) != 0)
+  {
+    fprintf(stderr,
+            "asset_index_load: index built for a different game folder "
+            "(\"%.256s\" != \"%.256s\"); rebuilding\n",
+            g_index_header->game_folder, g_game_path);
+    platform_munmap(g_index_mmap, g_index_size);
+    g_index_mmap = NULL;
+    g_index_header = NULL;
     return(false);
   }
 
@@ -578,8 +606,12 @@ asset_manager_init(const char *game_path)
           g_index_header ? g_index_header->num_entries : 0);
 
   // Sanity-check the index with a known asset that ships with every TQ install.
+  // The result is remembered (asset_manager_probe_ok) so the startup path can
+  // route to the folder picker instead of running with blank, unresolvable data
+  // when the game folder is wrong / its files are missing.
   const char *probe = "Items\\AnimalRelics\\AnimalPart07B_L.tex";
   const TQAssetEntry *e = asset_lookup(probe);
+  g_probe_ok = (e != NULL);
   fprintf(stderr, "asset_manager_init: probe '%s' -> %s\n",
           probe, e ? "FOUND" : "NOT FOUND (game folder may be wrong)");
 
@@ -729,6 +761,34 @@ asset_get_dbr(const char *record_path)
   return(NULL);
 }
 
+// asset_dbr_cache_clear - drop every decompressed DBR record from the in-memory
+// cache, reclaiming the heap it holds.  The cache repopulates lazily on the next
+// asset_get_dbr(), so this is safe to call between bulk passes (or periodically
+// within one) to keep the working set bounded -- e.g. the first-run index build,
+// which would otherwise hold most of the decompressed database resident at once
+// and blow past a low-RAM machine's commit-charge ceiling.  The ARZ mmaps and
+// the resource index are left intact.  Callers MUST NOT hold any TQArzRecordData
+// pointer returned by asset_get_dbr() across this call (it frees them).
+void
+asset_dbr_cache_clear(void)
+{
+  if(!g_dbr_cache)
+    return;
+
+  g_mutex_lock(&g_dbr_mutex);
+  g_hash_table_remove_all(g_dbr_cache);
+  g_mutex_unlock(&g_dbr_mutex);
+
+#ifdef __GLIBC__
+  // The records we just freed are many small chunks; glibc keeps them in its
+  // arena rather than returning them to the OS, so RSS (and the Windows commit
+  // charge this whole effort targets) would stay inflated even though live
+  // memory is now bounded.  Trim the top of the heap back to the OS so the
+  // first-run build's working set actually shrinks between passes.
+  malloc_trim(0);
+#endif
+}
+
 // asset_cache_insert - insert a pre-built record into the DBR cache
 // key: malloc'd normalized path (ownership transferred to cache)
 // data: record data (ownership transferred to cache)
@@ -743,17 +803,24 @@ asset_cache_insert(char *key, TQArzRecordData *data)
   g_mutex_unlock(&g_dbr_mutex);
 }
 
-// asset_manager_free - free all cached resources and the asset manager state
+// asset_manager_free - free all cached resources and the asset manager state.
+// Every freed global is also reset to NULL/0 so the manager can be safely
+// re-initialised in the same process (asset_manager_init -> asset_index_load
+// frees g_game_files again if non-NULL, etc.).  This supports re-pointing the
+// game folder live, e.g. after the Settings dialog corrects the path.
 void
 asset_manager_free(void)
 {
-  for(int i = 0; i < g_num_files; i++)
+  if(g_arz_cache || g_arc_cache)
   {
-    if(g_arz_cache[i])
-      arz_free(g_arz_cache[i]);
+    for(int i = 0; i < g_num_files; i++)
+    {
+      if(g_arz_cache && g_arz_cache[i])
+        arz_free(g_arz_cache[i]);
 
-    if(g_arc_cache[i])
-      arc_free(g_arc_cache[i]);
+      if(g_arc_cache && g_arc_cache[i])
+        arc_free(g_arc_cache[i]);
+    }
   }
 
   if(g_dbr_cache)
@@ -768,6 +835,17 @@ asset_manager_free(void)
 
   if(g_index_mmap)
     platform_munmap(g_index_mmap, g_index_size);
+
+  g_arz_cache    = NULL;
+  g_arc_cache    = NULL;
+  g_dbr_cache    = NULL;
+  g_game_path    = NULL;
+  g_game_files   = NULL;
+  g_index_mmap   = NULL;
+  g_index_size   = 0;
+  g_index_header = NULL;
+  g_index_entries = NULL;
+  g_num_files    = 0;
 }
 
 // asset_lookup - find an asset entry by its path using binary search
@@ -811,6 +889,15 @@ int
 asset_get_num_files(void)
 {
   return(g_num_files);
+}
+
+// asset_manager_probe_ok - did the last asset_manager_init() resolve its probe
+// asset?  False means the game folder is wrong or its files are missing, so the
+// index is effectively empty and items/textures won't resolve.
+bool
+asset_manager_probe_ok(void)
+{
+  return(g_probe_ok);
 }
 
 // asset_get_file_path - get the relative file path for a file_id

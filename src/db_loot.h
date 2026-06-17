@@ -33,6 +33,11 @@ typedef struct DbLootCtx DbLootCtx;
 DbLootCtx *db_loot_ctx_new(TQArzFile *arz);
 void db_loot_ctx_free(DbLootCtx *ctx);
 
+// db_loot_ctx_clear_cache -- drop the context's cached records (they re-inflate
+// lazily).  Call only between top-level resolves: no borrowed ctx_read() pointer
+// may be live across it.  Bounds memory during the first-run creature-loot pass.
+void db_loot_ctx_clear_cache(DbLootCtx *ctx);
+
 // db_loot_resolve_ctx -- like db_loot_resolve but reusing a context's cache.
 GHashTable *db_loot_resolve_ctx(DbLootCtx *ctx, const char *table_path, int level);
 
