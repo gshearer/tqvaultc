@@ -98,6 +98,42 @@ load_from_file(const char *path)
   json_object_put(parsed_json);
 }
 
+// config_default_game_folder - see config.h. Static per-platform default; no
+// existence check (callers gate on g_file_test when they need a real dir).
+char *
+config_default_game_folder(void)
+{
+#ifdef _WIN32
+  return(g_build_filename("C:\\Program Files (x86)", "Steam", "steamapps",
+                          "common", "Titan Quest Anniversary Edition", NULL));
+#else
+  const char *home = g_get_home_dir();
+
+  if(!home)
+    return(NULL);
+  return(g_build_filename(home, ".local", "share", "Steam", "steamapps",
+                          "common", "Titan Quest Anniversary Edition", NULL));
+#endif
+}
+
+// config_default_save_folder - see config.h. Windows has a static default;
+// Linux saves live under a Proton compatdata prefix that must be scanned, so
+// there is no static default there (returns NULL).
+char *
+config_default_save_folder(void)
+{
+#ifdef _WIN32
+  const char *home = g_get_home_dir();
+
+  if(!home)
+    return(NULL);
+  return(g_build_filename(home, "Documents", "My Games",
+                          "Titan Quest - Immortal Throne", NULL));
+#else
+  return(NULL);
+#endif
+}
+
 // config_init - load configuration from the search paths or override path
 // override_path: if non-NULL, load from this path instead of default locations
 void
@@ -124,7 +160,9 @@ config_init(const char *override_path)
       return;
   }
 
-  // try user config dir (XDG_CONFIG_HOME on Linux, %APPDATA% on Windows)
+  // try user config dir (XDG_CONFIG_HOME on Linux; on Windows GLib maps
+  // g_get_user_config_dir() to %LOCALAPPDATA% -- the SAME base tqvc_cache_dir_new
+  // uses, so the config file and the cache share %LOCALAPPDATA%\tqvaultc)
   char *path = g_build_filename(g_get_user_config_dir(), "tqvaultc", CONFIG_FILENAME, NULL);
 
   if(g_file_test(path, G_FILE_TEST_EXISTS))
@@ -148,11 +186,9 @@ config_init(const char *override_path)
   // set default game folder if not loaded (Windows Steam path)
   if(!global_config.game_folder)
   {
-    char *default_game_path = g_build_filename(
-        "C:\\Program Files (x86)", "Steam", "steamapps", "common",
-        "Titan Quest Anniversary Edition", NULL);
+    char *default_game_path = config_default_game_folder();
 
-    if(g_file_test(default_game_path, G_FILE_TEST_IS_DIR))
+    if(default_game_path && g_file_test(default_game_path, G_FILE_TEST_IS_DIR))
       global_config.game_folder = default_game_path;
     else
       g_free(default_game_path);
@@ -161,34 +197,17 @@ config_init(const char *override_path)
   // set default save folder if not loaded (Windows save path)
   if(!global_config.save_folder)
   {
-    const char *userprofile = g_get_home_dir();
+    char *save_path = config_default_save_folder();
 
-    if(userprofile)
-    {
-      char *save_path = g_build_filename(userprofile, "Documents",
-          "My Games", "Titan Quest - Immortal Throne", NULL);
-
-      if(g_file_test(save_path, G_FILE_TEST_IS_DIR))
-        global_config.save_folder = save_path;
-      else
-        g_free(save_path);
-    }
+    if(save_path && g_file_test(save_path, G_FILE_TEST_IS_DIR))
+      global_config.save_folder = save_path;
+    else
+      g_free(save_path);
   }
 #else
   // set default game folder if not loaded (Linux Steam path)
   if(!global_config.game_folder)
-  {
-    const char *home = g_get_home_dir();
-
-    if(home)
-    {
-      char *default_game_path = g_build_filename(home,
-          ".local", "share", "Steam", "steamapps", "common",
-          "Titan Quest Anniversary Edition", NULL);
-
-      global_config.game_folder = default_game_path;
-    }
-  }
+    global_config.game_folder = config_default_game_folder();
 
   // set default save folder if not loaded -- scan compatdata for the TQ save dir
   if(!global_config.save_folder)

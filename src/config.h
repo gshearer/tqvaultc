@@ -34,6 +34,19 @@ void config_set_save_folder(const char *path);
 // path: new game folder path
 void config_set_game_folder(const char *path);
 
+// config_default_game_folder - newly-allocated canonical default game install
+// path for this platform (no existence check), or NULL if there is no static
+// default. Used both to seed config_init's auto-detect and to pre-fill the
+// first-run wizard so the common-case user can just click Save & Continue.
+// Caller frees with g_free().
+char *config_default_game_folder(void);
+
+// config_default_save_folder - newly-allocated canonical default save folder
+// path for this platform (no existence check), or NULL when the default can
+// only be found by scanning (e.g. the Linux ProG compatdata search).
+// Caller frees with g_free().
+char *config_default_save_folder(void);
+
 // config_set_vault_folder - update the vault data folder path in config.
 // Pass NULL or "" to clear it (fall back to {save_folder}/TQVaultData).
 void config_set_vault_folder(const char *path);

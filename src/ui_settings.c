@@ -678,8 +678,16 @@ ui_first_run_setup(GtkApplication *app)
   fr->save_folder_entry = GTK_ENTRY(gtk_entry_new());
   gtk_widget_set_hexpand(GTK_WIDGET(fr->save_folder_entry), TRUE);
 
-  if(global_config.save_folder)
-    gtk_editable_set_text(GTK_EDITABLE(fr->save_folder_entry), global_config.save_folder);
+  // Pre-fill with the configured folder, else the platform default suggestion,
+  // so a user on a standard install can just click Save & Continue (the path is
+  // still validated on save). A NULL default (e.g. Linux save dir) leaves the
+  // field empty for the user to browse.
+  char *save_default = config_default_save_folder();
+  const char *save_seed = global_config.save_folder ? global_config.save_folder : save_default;
+
+  if(save_seed)
+    gtk_editable_set_text(GTK_EDITABLE(fr->save_folder_entry), save_seed);
+  g_free(save_default);
 
   gtk_box_append(GTK_BOX(hbox1), GTK_WIDGET(fr->save_folder_entry));
 
@@ -696,8 +704,14 @@ ui_first_run_setup(GtkApplication *app)
   fr->game_folder_entry = GTK_ENTRY(gtk_entry_new());
   gtk_widget_set_hexpand(GTK_WIDGET(fr->game_folder_entry), TRUE);
 
-  if(global_config.game_folder)
-    gtk_editable_set_text(GTK_EDITABLE(fr->game_folder_entry), global_config.game_folder);
+  // Same as above: seed with the configured game folder, else the canonical
+  // default install path so the common-case user just clicks Save & Continue.
+  char *game_default = config_default_game_folder();
+  const char *game_seed = global_config.game_folder ? global_config.game_folder : game_default;
+
+  if(game_seed)
+    gtk_editable_set_text(GTK_EDITABLE(fr->game_folder_entry), game_seed);
+  g_free(game_default);
 
   gtk_box_append(GTK_BOX(hbox2), GTK_WIDGET(fr->game_folder_entry));
 
