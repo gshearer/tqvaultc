@@ -9,6 +9,24 @@
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
+#if defined(__GLIBC__) || defined(_WIN32)
+#include <malloc.h>   // malloc_trim (glibc) / _heapmin (Windows) for tq_heap_trim
+#endif
+
+// Return free heap pages to the OS after a bulk free.  glibc keeps freed small
+// chunks in its arena and Windows keeps them committed, so without this an
+// index-build clear drops *live* memory but not RSS / Windows commit charge —
+// which is exactly what locked up low-RAM Windows on first run.  No-op on
+// targets that expose neither call.
+static inline void
+tq_heap_trim(void)
+{
+#if defined(__GLIBC__)
+  malloc_trim(0);
+#elif defined(_WIN32)
+  _heapmin();
+#endif
+}
 
 // strcasestr is a GNU extension — provide a portable fallback for mingw
 // and other non-glibc targets.

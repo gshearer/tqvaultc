@@ -5,6 +5,12 @@
 #include <string.h>
 #include <errno.h>
 #include <glib.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <psapi.h>          // GetProcessMemoryInfo for tq_proc_peak_mem_mb
+#else
+#include <sys/resource.h>   // getrusage for tq_proc_peak_mem_mb
+#endif
 
 #define CONFIG_FILENAME "tqvc-config.json"
 
@@ -406,4 +412,40 @@ config_free(void)
   free(global_config.last_character_path);
   free(global_config.last_vault_name);
   free(global_config.config_path);
+}
+
+// tq_proc_peak_mem_mb - peak working set + peak commit charge, in MiB.
+void
+tq_proc_peak_mem_mb(double *working_set_mb, double *commit_mb)
+{
+#ifdef _WIN32
+  // PeakWorkingSetSize = peak physical RAM; PeakPagefileUsage = peak commit
+  // charge (private committed bytes) — the figure that exhausts Windows.
+  PROCESS_MEMORY_COUNTERS pmc;
+
+  memset(&pmc, 0, sizeof(pmc));
+  pmc.cb = sizeof(pmc);
+  if(GetProcessMemoryInfo(GetCurrentProcess(), &pmc, sizeof(pmc)))
+  {
+    if(working_set_mb)
+      *working_set_mb = (double)pmc.PeakWorkingSetSize / (1024.0 * 1024.0);
+    if(commit_mb)
+      *commit_mb = (double)pmc.PeakPagefileUsage / (1024.0 * 1024.0);
+  }
+  else
+  {
+    if(working_set_mb)
+      *working_set_mb = -1.0;
+    if(commit_mb)
+      *commit_mb = -1.0;
+  }
+#else
+  struct rusage ru;
+
+  getrusage(RUSAGE_SELF, &ru);
+  if(working_set_mb)
+    *working_set_mb = (double)ru.ru_maxrss / 1024.0;   // ru_maxrss is KiB on Linux
+  if(commit_mb)
+    *commit_mb = -1.0;                                  // not tracked here on POSIX
+#endif
 }

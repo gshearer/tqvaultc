@@ -16,6 +16,13 @@ json_dep = dependency('json-c', include_type: 'system')
 zlib_dep = dependency('zlib', include_type: 'system')
 m_dep = meson.get_compiler('c').find_library('m', required : false)
 
+# Windows-only: psapi provides GetProcessMemoryInfo (config.c's peak-memory
+# reporting for --first-run-build).  Added to every target that links config.c.
+win_extra_deps = []
+if host_machine.system() == 'windows'
+  win_extra_deps += meson.get_compiler('c').find_library('psapi')
+endif
+
 # 2. Version info
 version_conf = configuration_data()
 version_conf.set_quoted('TQVAULTC_VERSION', meson.project_version())
@@ -95,7 +102,7 @@ app_sources = [
 # the CLI tools below stay on the console subsystem so --help etc. work.
 executable('tqvaultc',
   app_sources + platform_sources + [version_h, build_number, app_resources],
-  dependencies: [gtk_dep, json_dep, zlib_dep, m_dep],
+  dependencies: [gtk_dep, json_dep, zlib_dep, m_dep] + win_extra_deps,
   # On Windows, link as a GUI subsystem binary so launching the .exe
   # doesn't spawn a console window.
   win_subsystem: 'windows',
@@ -113,7 +120,7 @@ executable('tq-dbr-tool',
    'src/db_loot.c', 'src/db_creatures.c', 'src/db_quests.c',
    'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/config.c',
    'src/mesh.c', 'src/mesh_render.c', 'src/mesh_skin.c', 'src/anm.c'] + platform_sources,
-  dependencies: [gtk_dep, json_dep, zlib_dep, m_dep],
+  dependencies: [gtk_dep, json_dep, zlib_dep, m_dep] + win_extra_deps,
   install: true)
 
 # 8. Build the Player.chr Debugging Tool
@@ -131,5 +138,5 @@ executable('tq-quest-tool',
 # 10. Build the Texture Extractor
 executable('extract-textures',
   ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c'] + platform_sources,
-  dependencies: [gtk_dep, json_dep, zlib_dep],
+  dependencies: [gtk_dep, json_dep, zlib_dep] + win_extra_deps,
   install: true)

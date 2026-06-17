@@ -7,9 +7,7 @@
 #include <errno.h>
 #include <zlib.h>
 #include <glib.h>
-#ifdef __GLIBC__
-#include <malloc.h>   // malloc_trim() in asset_dbr_cache_clear()
-#endif
+#include "compat.h"   // tq_heap_trim() in asset_dbr_cache_clear()
 
 static char *g_game_path = NULL;
 static TQArzFile **g_arz_cache = NULL;
@@ -779,14 +777,12 @@ asset_dbr_cache_clear(void)
   g_hash_table_remove_all(g_dbr_cache);
   g_mutex_unlock(&g_dbr_mutex);
 
-#ifdef __GLIBC__
-  // The records we just freed are many small chunks; glibc keeps them in its
-  // arena rather than returning them to the OS, so RSS (and the Windows commit
-  // charge this whole effort targets) would stay inflated even though live
-  // memory is now bounded.  Trim the top of the heap back to the OS so the
-  // first-run build's working set actually shrinks between passes.
-  malloc_trim(0);
-#endif
+  // The records we just freed are many small chunks; the allocator keeps them
+  // (glibc arena / Windows committed heap) rather than returning them to the
+  // OS, so RSS — and the Windows commit charge this whole effort targets —
+  // would stay inflated even though live memory is now bounded.  Return the
+  // freed pages so the first-run build's footprint actually shrinks.
+  tq_heap_trim();
 }
 
 // asset_cache_insert - insert a pre-built record into the DBR cache

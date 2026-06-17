@@ -16,9 +16,6 @@
 #include "db_browser_cache.h"
 #include "db_creatures.h"
 #include "creature_thumbs.h"
-#ifndef _WIN32
-#include <sys/resource.h>   // getrusage() for --first-run-build peak-RSS report
-#endif
 
 static int g_saved_argc;
 static char **g_saved_argv;
@@ -757,17 +754,14 @@ main(int argc, char **argv)
     ui_startup_build_headless();   // initialises the asset subsystem and builds
 
     double secs = (g_get_monotonic_time() - t0) / 1e6;
+    double ws_mb = -1.0, commit_mb = -1.0;
 
-#ifndef _WIN32
-    struct rusage ru;
-
-    getrusage(RUSAGE_SELF, &ru);
-    printf("first-run build done in %.1fs, peak RSS %.1f MB\n",
-           secs, ru.ru_maxrss / 1024.0);   // ru_maxrss is in KB on Linux
-#else
-    printf("first-run build done in %.1fs (peak RSS unavailable on this platform)\n",
-           secs);
-#endif
+    tq_proc_peak_mem_mb(&ws_mb, &commit_mb);
+    if(commit_mb >= 0.0)
+      printf("first-run build done in %.1fs, peak working set %.1f MB, "
+             "peak commit %.1f MB\n", secs, ws_mb, commit_mb);
+    else
+      printf("first-run build done in %.1fs, peak RSS %.1f MB\n", secs, ws_mb);
 
     item_stats_free();
     affix_table_free();

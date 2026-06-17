@@ -1531,19 +1531,36 @@ ui_startup_init_and_activate(GtkApplication *app)
 // same work (minus the progress-bar plumbing), so a change to one is a change to
 // both.  Thumbnails render lazily on demand (see creature_thumbs_load), the same
 // as the GUI path -- so they are NOT rendered here.
+// Log the running peak memory after a build phase (stderr -> the Windows
+// logfile).  Lets a `--first-run-build` run pinpoint which phase blows up even
+// if the process is then OOM-killed (each line is flushed as we go).
+static void
+fr_phase_log(const char *phase)
+{
+  double ws = -1.0, commit = -1.0;
+
+  tq_proc_peak_mem_mb(&ws, &commit);
+  if(commit >= 0.0)
+    fprintf(stderr, "[first-run] %-12s peak working set %.1f MB, peak commit %.1f MB\n",
+            phase, ws, commit);
+  else
+    fprintf(stderr, "[first-run] %-12s peak RSS %.1f MB\n", phase, ws);
+  fflush(stderr);
+}
+
 void
 ui_startup_build_headless(void)
 {
   StartupLoader *sl = g_new0(StartupLoader, 1);
 
-  startup_step_init(sl);
-  startup_step_categories(sl);
-  startup_step_sets(sl);
-  startup_step_affixes(sl);
-  startup_step_skills(sl);
-  startup_step_creatures(sl);
-  startup_step_quests(sl);
-  startup_step_blobs(sl);
-  startup_step_save(sl);   // frees the throwaway state + translations
+  startup_step_init(sl);       fr_phase_log("init");
+  startup_step_categories(sl); fr_phase_log("categories");
+  startup_step_sets(sl);       fr_phase_log("sets");
+  startup_step_affixes(sl);    fr_phase_log("affixes");
+  startup_step_skills(sl);     fr_phase_log("skills");
+  startup_step_creatures(sl);  fr_phase_log("creatures");
+  startup_step_quests(sl);     fr_phase_log("quests");
+  startup_step_blobs(sl);      fr_phase_log("blobs");
+  startup_step_save(sl);       fr_phase_log("save");
   g_free(sl);
 }

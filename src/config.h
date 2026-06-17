@@ -81,4 +81,12 @@ void config_free(void);
 // Caller frees with g_free(). The directory is created if missing.
 char *tqvc_cache_dir_new(void);
 
+// tq_proc_peak_mem_mb - report this process's PEAK memory use, in MiB.
+//   working_set_mb: peak resident/working set (physical RAM high-water).
+//   commit_mb:      peak commit charge (private committed bytes) — the figure
+//                   that locks up low-RAM Windows; -1 where unavailable (Linux).
+// Either pointer may be NULL.  Used by `tqvaultc --first-run-build` to measure
+// the first-run footprint on both platforms.
+void tq_proc_peak_mem_mb(double *working_set_mb, double *commit_mb);
+
 #endif

@@ -14,6 +14,7 @@
 // children parse to tables) without needing per-class child handling.
 
 #include "db_loot.h"
+#include "compat.h"   // tq_heap_trim()
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -59,7 +60,10 @@ void
 db_loot_ctx_clear_cache(DbLootCtx *ctx)
 {
   if(ctx && ctx->cache)
+  {
     g_hash_table_remove_all(ctx->cache);
+    tq_heap_trim();   // return the freed (large) records to the OS, not just the allocator
+  }
 }
 
 // Read a record through the context cache.  Returns a BORROWED pointer (owned
