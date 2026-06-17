@@ -293,7 +293,7 @@ build_set_index(DbBrowserState *st)
   if(!arz)
     return;
 
-  asset_dbr_cache_clear();   // release the prior phase's cached records
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
 
   for(uint32_t i = 0; i < arz->num_records; i++)
   {
@@ -679,7 +679,7 @@ build_affix_index(DbBrowserState *st)
   if(!arz)
     return;
 
-  asset_dbr_cache_clear();   // release the prior phase's cached records
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
 
   // "P|<tag>" / "S|<tag>" (tag-less records keyed by "<kind>|@<path>") -> agg
   GHashTable *affixes = g_hash_table_new_full(g_str_hash, g_str_equal,
@@ -1085,7 +1085,7 @@ db_add_skill_item(DbBrowserState *st, int cat, const char *skill_path,
 void
 build_skill_index(DbBrowserState *st)
 {
-  asset_dbr_cache_clear();   // release the prior phase's cached records
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
 
   for(int m = 0; m < DB_NUM_MASTERY; m++)
   {
@@ -1200,7 +1200,7 @@ db_creature_display_name(DbBrowserState *st, DbCreature *c)
 void
 build_creature_index_grid(DbBrowserState *st)
 {
-  asset_dbr_cache_clear();   // release the prior phase's cached records
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
 
   st->creatures = db_creature_index_build(st->arz);
 
@@ -1237,7 +1237,7 @@ build_quest_index_grid(DbBrowserState *st)
   if(!global_config.game_folder)
     return;
 
-  asset_dbr_cache_clear();   // release the prior phase's cached records
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
 
   // Candidate Quests.arc archives under <game>/Resources.
   static const char *REL[] = {

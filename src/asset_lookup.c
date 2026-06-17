@@ -776,12 +776,23 @@ asset_dbr_cache_clear(void)
   g_mutex_lock(&g_dbr_mutex);
   g_hash_table_remove_all(g_dbr_cache);
   g_mutex_unlock(&g_dbr_mutex);
+  // NOTE: deliberately does NOT trim the heap back to the OS — that walk is slow
+  // (esp. on Windows) and this is called frequently inside the build loops.  It
+  // still bounds *live* memory; the allocator reuses the freed chunks until the
+  // next asset_dbr_cache_clear_and_trim() at a phase boundary returns the
+  // surplus to the OS.
+}
 
-  // The records we just freed are many small chunks; the allocator keeps them
-  // (glibc arena / Windows committed heap) rather than returning them to the
-  // OS, so RSS — and the Windows commit charge this whole effort targets —
-  // would stay inflated even though live memory is now bounded.  Return the
-  // freed pages so the first-run build's footprint actually shrinks.
+// asset_dbr_cache_clear_and_trim - clear the cache AND return the freed pages to
+// the OS (tq_heap_trim).  The freed records are many small chunks the allocator
+// would otherwise keep (glibc arena / Windows committed heap), so without this
+// the Windows commit charge — the thing that locked up first run — never drops.
+// The trim walks the whole heap, so call it only at phase boundaries (a handful
+// of times), not in the tight per-record/per-item loops.
+void
+asset_dbr_cache_clear_and_trim(void)
+{
+  asset_dbr_cache_clear();
   tq_heap_trim();
 }
 

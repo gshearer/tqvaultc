@@ -14,7 +14,6 @@
 // children parse to tables) without needing per-class child handling.
 
 #include "db_loot.h"
-#include "compat.h"   // tq_heap_trim()
 #include <stdlib.h>
 #include <string.h>
 #include <ctype.h>
@@ -59,11 +58,12 @@ db_loot_ctx_free(DbLootCtx *ctx)
 void
 db_loot_ctx_clear_cache(DbLootCtx *ctx)
 {
+  // Bounds live memory only (no heap trim) — this is called every few creatures,
+  // and the trim's whole-heap walk is too slow to do that often.  The freed
+  // chunks are reused within the creature phase; the surplus is returned to the
+  // OS at the next phase boundary (build_quest_index_grid's clear-and-trim).
   if(ctx && ctx->cache)
-  {
     g_hash_table_remove_all(ctx->cache);
-    tq_heap_trim();   // return the freed (large) records to the OS, not just the allocator
-  }
 }
 
 // Read a record through the context cache.  Returns a BORROWED pointer (owned

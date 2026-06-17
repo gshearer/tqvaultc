@@ -49,10 +49,16 @@ int asset_get_num_files(void);
 // data: record data (ownership transferred to cache)
 void asset_cache_insert(char *key, TQArzRecordData *data);
 
-// asset_dbr_cache_clear - drop all decompressed DBR records (repopulate lazily);
-// reclaims heap to keep the first-run build's working set bounded.  Callers must
-// hold no TQArzRecordData pointer across the call.
+// asset_dbr_cache_clear - drop all decompressed DBR records (repopulate lazily),
+// bounding LIVE memory.  Does NOT return freed pages to the OS (cheap; for the
+// frequent in-loop clears).  Callers must hold no TQArzRecordData pointer across
+// the call.
 void asset_dbr_cache_clear(void);
+
+// asset_dbr_cache_clear_and_trim - asset_dbr_cache_clear() plus tq_heap_trim()
+// to hand the freed pages back to the OS (drops RSS / Windows commit charge).
+// The trim is slow (whole-heap walk), so use this only at phase boundaries.
+void asset_dbr_cache_clear_and_trim(void);
 
 // asset_manager_probe_ok - true iff the last asset_manager_init() resolved its
 // probe asset.  False => wrong/empty game folder (data won't resolve); the

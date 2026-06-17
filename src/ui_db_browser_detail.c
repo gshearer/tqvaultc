@@ -1466,7 +1466,7 @@ build_search_blobs(DbBrowserState *st)
   // holds the whole decompressed database at once (the low-RAM Windows
   // commit-charge lock-up).  Records repopulate lazily; build_detail_markup
   // holds no record pointer across the per-item boundary.
-  asset_dbr_cache_clear();
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release prior phases + return to OS
 
   unsigned long processed = 0;
 
@@ -1477,8 +1477,16 @@ build_search_blobs(DbBrowserState *st)
 
     for(guint i = 0; i < n; i++)
     {
+      // Clear often (cheap) to bound live memory; trim back to the OS only
+      // every 2048 items (the trim's heap walk is slow, esp. on Windows) so the
+      // blob phase's committed footprint stays capped without the per-item cost.
       if(processed > 0 && (processed & 0x00FF) == 0)
-        asset_dbr_cache_clear();
+      {
+        if((processed & 0x07FF) == 0)
+          asset_dbr_cache_clear_and_trim();
+        else
+          asset_dbr_cache_clear();
+      }
       processed++;
 
       DbBrowseItem *bi = g_list_model_get_item(m, i);  // owns a ref

@@ -1301,7 +1301,8 @@ startup_step_save(StartupLoader *sl)
   // Release the records the blob pass left cached (its last window); none are
   // needed for the save (the GListStores hold the extracted strings).  Keeps
   // the post-build live app from inheriting the whole decompressed database.
-  asset_dbr_cache_clear();
+  // Final phase boundary: return the freed pages to the OS too.
+  asset_dbr_cache_clear_and_trim();
 
   if(!db_browser_cache_save(sl->st, global_config.game_folder))
     g_warning("startup: failed to save Database Browser cache");
