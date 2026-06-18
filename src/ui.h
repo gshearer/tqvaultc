@@ -41,6 +41,13 @@ enum {
   GEAR_ALL_ARMOR   = (1 << 0) | (1 << 1) | (1 << 2) | (1 << 3),
   GEAR_ALL_WEAPONS = (1 << 7) | (1 << 8) | (1 << 9) | (1 << 10)
                    | (1 << 11) | (1 << 12) | (1 << 13),
+
+  // Non-gear comparison groups (Ctrl+click compare).  These live above the
+  // GEAR_* bits so item_compare_group() can return one value space covering both
+  // wearable gear (compared by gear sub-type) and consumable/socketable items
+  // (relics, charms, artifacts) that item_gear_type() does not classify.
+  CMP_RELIC_CHARM  = 1 << 20,
+  CMP_ARTIFACT     = 1 << 21,
 };
 
 // ── Held item (click-to-move) ─────────────────────────────────────────────
@@ -371,6 +378,14 @@ copy_equip_to_cursor(AppWidgets *widgets, TQItem *eq, bool is_copy);
 // Returns: GEAR_* flag for the item's class, or 0 if unknown.
 uint32_t
 item_gear_type(const char *base_name);
+
+// Classify an item for the Ctrl+click compare feature: wearable gear returns its
+// GEAR_* sub-type (so like compares with like), while relics/charms and
+// artifacts return CMP_* groups that item_gear_type() does not cover.
+// base_name: DBR path of the item.
+// Returns: a non-zero comparison group, or 0 if the item is not comparable.
+uint32_t
+item_compare_group(const char *base_name);
 
 // Clear the compare item state and hide the compare popover.
 // widgets: the application widget state.

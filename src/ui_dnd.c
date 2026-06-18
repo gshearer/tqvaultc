@@ -789,6 +789,28 @@ item_gear_type(const char *base_name)
   return(0);
 }
 
+// Classify an item for Ctrl+click comparison.  Wearable gear keeps its GEAR_*
+// sub-type so a sword only compares with a sword; relics/charms and artifacts --
+// which item_gear_type() does not recognise -- get their own CMP_* groups so the
+// compare feature works for them too (this is what was broken: a Ctrl+click on a
+// charm or artifact fell through to a pickup).
+uint32_t
+item_compare_group(const char *base_name)
+{
+  uint32_t gt = item_gear_type(base_name);
+
+  if(gt)
+    return(gt);
+
+  if(item_is_relic_or_charm(base_name))
+    return(CMP_RELIC_CHARM);
+
+  if(item_is_artifact(base_name))
+    return(CMP_ARTIFACT);
+
+  return(0);
+}
+
 // Return the first available relic socket slot (1 or 2) for a sack/inventory
 // item, or 0 if the item cannot accept a relic/charm.
 // it: target item to socket into
@@ -1370,7 +1392,8 @@ handle_sack_click(AppWidgets *widgets, GtkWidget *drawing_area,
 // x, y: click coordinates
 // user_data: AppWidgets pointer
 // Helper: handle Ctrl+click to mark an item for comparison.
-// Returns true if the click was consumed (Ctrl+left on a gear item).
+// Returns true if the click was consumed (Ctrl+left on a comparable item:
+// wearable gear, a relic/charm, or an artifact).
 static bool
 try_compare_mark(AppWidgets *widgets, GtkGestureClick *gesture,
                  TQVaultSack *sack, ContainerType ctype, int sack_idx,
@@ -1392,7 +1415,7 @@ try_compare_mark(AppWidgets *widgets, GtkGestureClick *gesture,
   if(!hit || !hit->base_name)
     return(false);
 
-  uint32_t gt = item_gear_type(hit->base_name);
+  uint32_t gt = item_compare_group(hit->base_name);
 
   if(!gt)
     return(false);
@@ -1607,7 +1630,7 @@ on_equip_click(GtkGestureClick *gesture, int n_press, double x, double y, gpoint
 
       if(eq && eq->base_name)
       {
-        uint32_t gt = item_gear_type(eq->base_name);
+        uint32_t gt = item_compare_group(eq->base_name);
 
         if(gt)
         {

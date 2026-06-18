@@ -38,9 +38,10 @@ tooltip_set_position(GtkWidget *popover, GtkWidget *parent,
 }
 
 // Show or hide the compare column inside the tooltip popover.
-// When the hovered item is a compatible gear type, the compare_scroll and
-// compare_separator are made visible so both tooltips appear side-by-side
-// in a single popover.
+// When the hovered item is in the same comparison group as the marked item
+// (same gear sub-type, or both relics/charms, or both artifacts), the
+// compare_scroll and compare_separator are made visible so both tooltips appear
+// side-by-side in a single popover.
 //
 // widgets:      application state
 // hovered_item: the item currently being hovered
@@ -66,9 +67,10 @@ show_compare_tooltip(AppWidgets *widgets, const TQVaultItem *hovered_item)
     return;
   }
 
-  // Type compatibility check: both must be gear and same type
-  uint32_t hover_gt = item_gear_type(hovered_item->base_name);
-  uint32_t cmp_gt = item_gear_type(widgets->compare_item.base_name);
+  // Type compatibility check: both must be the same comparison group (e.g. sword
+  // vs sword, charm/relic vs charm/relic, artifact vs artifact).
+  uint32_t hover_gt = item_compare_group(hovered_item->base_name);
+  uint32_t cmp_gt = item_compare_group(widgets->compare_item.base_name);
 
   if(!hover_gt || !cmp_gt || hover_gt != cmp_gt)
   {
