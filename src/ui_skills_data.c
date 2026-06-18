@@ -481,6 +481,52 @@ load_skill_tree(const char *tree_dbr_path, TreeEntry *entries, int max_entries)
     count++;
   }
 
+  // Authoritative parent links: the game's explicit skillDependancy prerequisite
+  // (note the in-game misspelling).  The basename-prefix and Class heuristics
+  // above miss links where the parent's name is unrelated -- e.g. Neidan's
+  // "Echoes of the Ancestors" (deathbomb) requires "Shen Pao", and "Spreading
+  // Rot" requires "Consequences".  skillDependancy is the field the game itself
+  // uses to draw the tree's prerequisite arrows, so prefer it whenever it
+  // resolves to another skill in this same tree.  Run as a second pass so a
+  // dependency that points forward (parent listed after the child) still binds.
+  for(int i = 0; i < count; i++)
+  {
+    TQArzRecordData *sdbr = asset_get_dbr(entries[i].path);
+
+    if(!sdbr)
+      continue;
+
+    char *dep = arz_record_get_string(sdbr, "skillDependancy", NULL);
+
+    if(dep && dep[0])
+    {
+      char depnorm[256];
+
+      normalize_path(dep, depnorm, sizeof(depnorm));
+
+      for(int j = 0; j < count; j++)
+      {
+        if(j == i || strcmp(entries[j].path, depnorm) != 0)
+          continue;
+
+        // Guard against a dependency cycle, which would spin the layout and
+        // accessibility recursion: only accept the link if j is not already a
+        // descendant of i.
+        int a = entries[j].parent_idx, steps = 0;
+
+        while(a >= 0 && a != i && steps++ < count)
+          a = entries[a].parent_idx;
+
+        if(a != i)
+          entries[i].parent_idx = j;
+
+        break;
+      }
+    }
+
+    free(dep);
+  }
+
   return(count);
 }
 
