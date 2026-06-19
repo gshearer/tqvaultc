@@ -586,6 +586,274 @@ add_requirements(const char *record_path, const ItemReqReduction *reduction,
   }
 }
 
+// A granted skill of class Skill_SpawnPet[Monster] (e.g. the Summoner's Trinket)
+// conjures a combat pet.  Surface what the pet does so the tooltip conveys the
+// item's value: the pet's attributes (life time, health, energy, physical
+// damage) followed by its active abilities (named non-passive skills, resolving
+// buffSkillName for the display name + its effects).  Mirrors -- and extends, to
+// the Skill_SpawnPetMonster class -- TQVaultAE's ConvertPetStats.
+//   skill_data  - the resolved granted-skill record (carries spawnObjects)
+//   skill_index - per-level array index (itemSkillLevel - 1)
+// A no-op unless spawnObjects resolves to a Class=="Pet" record.  Aura wards
+// (also Pet-class) naturally show fewer lines -- they have no hand-hit damage
+// and their granted auras are listed as abilities.
+static void
+append_pet_summon_stats(TQArzRecordData *skill_data, TQTranslation *tr,
+                        BufWriter *w, const char *color, int skill_index)
+{
+  if(!skill_data)
+    return;
+
+  const char *pet_path = record_get_string_fast(skill_data, INT_spawnObjects);
+
+  if(!pet_path || !pet_path[0])
+    return;
+
+  // spawnObjects may list several variants (comma-separated); the first is
+  // enough to describe the summon.
+  char first_pet[512];
+
+  snprintf(first_pet, sizeof(first_pet), "%s", pet_path);
+
+  char *comma = strchr(first_pet, ',');
+
+  if(comma)
+    *comma = '\0';
+
+  TQArzRecordData *pet = asset_get_dbr(first_pet);
+
+  if(!pet)
+    return;
+
+  // A summoned object is a creature worth describing if it carries the
+  // characterLife trait.  This accepts every class the game uses for item
+  // summons -- Pet, Monster, Guard, DynamicBarrier -- whereas gating on
+  // Class=="Pet" alone missed combat pets defined as monsters (e.g. Medusa's
+  // Anguish -> Gorgon Guard, Class "Monster"); non-creature spawn objects
+  // (projectiles/effects) have no characterLife and are skipped.
+  if(!arz_record_get_var(pet, INT_characterLife))
+    return;
+
+  const char *pet_tag = record_get_string_fast(pet, INT_description);
+  const char *pet_name = pet_tag ? translation_get(tr, pet_tag) : NULL;
+
+  if(!pet_name || !pet_name[0])
+    pet_name = "Pet";
+
+  char *e_name = escape_markup(pet_name);
+
+  // Summon limit (only worth noting when more than one can be active).
+  int limit = arz_record_get_int(skill_data, "petLimit", 0, NULL);
+
+  if(limit > 1)
+    buf_write(w, "<span color='%s'>%d Summon Limit</span>\n", color, limit);
+
+  buf_write(w, "\n<span color='%s'>%s Attributes:</span>\n", color, e_name);
+
+  // Time to live (a property of the spawning skill, not the pet).  Absent for
+  // permanent summons.
+  float ttl = dbr_get_float_fast(skill_data, INT_spawnObjectsTimeToLive, skill_index);
+
+  if(ttl > 0)
+    buf_write(w, "<span color='%s'>Life Time %.1f Seconds</span>\n", color, ttl);
+
+  float life = dbr_get_float_fast(pet, INT_characterLife, 0);
+
+  if(life != 0)
+    buf_write(w, "<span color='%s'>%.0f Health</span>\n", color, life);
+
+  float mana = dbr_get_float_fast(pet, INT_characterMana, 0);
+
+  if(mana != 0)
+    buf_write(w, "<span color='%s'>%.0f Energy</span>\n", color, mana);
+
+  // Build the abilities into a scratch buffer so the "Abilities:" header (and
+  // its leading blank line) can be skipped entirely when the pet has none --
+  // e.g. self-drop/wall "pets" with no combat damage or skills.
+  char ab_buf[16384];
+  BufWriter ab;
+
+  buf_init(&ab, ab_buf, sizeof(ab_buf));
+
+  // Physical (hand-to-hand) damage.
+  float dmin = dbr_get_float_fast(pet, INT_handHitDamageMin, 0);
+  float dmax = dbr_get_float_fast(pet, INT_handHitDamageMax, 0);
+
+  if(dmin > 1.0f || dmax > 2.0f)
+  {
+    if(dmax == 0 || dmin == dmax)
+      buf_write(&ab, "<span color='%s'>%.0f Damage</span>\n", color, dmin);
+    else
+      buf_write(&ab, "<span color='%s'>%.0f - %.0f Damage</span>\n", color, dmin, dmax);
+  }
+
+  // Whether the damage line was written, so the first named ability below can be
+  // separated from it by a blank line (only when both are present).
+  bool had_damage = ab.pos > 0;
+  bool first_named = true;
+
+  // Named active abilities (skillName0..N), deduped by display name.  Passives
+  // are inherent, not "abilities", so they are skipped (matching the game).
+  char seen[24][128];
+  int nseen = 0;
+
+  for(int i = 0; i <= 31; i++)
+  {
+    char key[24];
+
+    snprintf(key, sizeof(key), "skillName%d", i);
+
+    char *sp = arz_record_get_string(pet, key, NULL);
+
+    if(!sp || !sp[0] || strncasecmp(sp, "records", 7) != 0)
+    {
+      free(sp);
+      continue;
+    }
+
+    TQArzRecordData *sd = asset_get_dbr(sp);
+
+    if(!sd)
+    {
+      free(sp);
+      continue;
+    }
+
+    const char *scls = record_get_string_fast(sd, INT_Class);
+
+    if(scls && strcasecmp(scls, "Skill_Passive") == 0)
+    {
+      free(sp);
+      continue;
+    }
+
+    // The name (and effect stats) live on the granted buff when present.
+    const char *buff = record_get_string_fast(sd, INT_buffSkillName);
+    const char *eff_path = (buff && buff[0]) ? buff : sp;
+    TQArzRecordData *ed = (buff && buff[0]) ? asset_get_dbr(buff) : sd;
+
+    const char *ntag = ed ? record_get_string_fast(ed, INT_skillDisplayName) : NULL;
+
+    if(!ntag)
+      ntag = record_get_string_fast(sd, INT_skillDisplayName);
+
+    const char *nm = ntag ? translation_get(tr, ntag) : NULL;
+
+    // Skip unnamed utility skills (no display name) -- they are internal and
+    // add only noise.
+    if(!nm || !nm[0])
+    {
+      free(sp);
+      continue;
+    }
+
+    bool dup = false;
+
+    for(int j = 0; j < nseen; j++)
+      if(strcasecmp(seen[j], nm) == 0)
+      {
+        dup = true;
+        break;
+      }
+
+    if(dup)
+    {
+      free(sp);
+      continue;
+    }
+
+    snprintf(seen[nseen], sizeof(seen[nseen]), "%s", nm);
+
+    if(nseen < (int)G_N_ELEMENTS(seen) - 1)
+      nseen++;
+
+    // The pet's level for this ability (per-difficulty arrays collapse to the
+    // first value); the effect stats are read at that level - 1.
+    char lkey[24];
+
+    snprintf(lkey, sizeof(lkey), "skillLevel%d", i);
+
+    int lvl = arz_record_get_int(pet, lkey, 1, NULL);
+
+    if(lvl < 1)
+      lvl = 1;
+
+    // Separate the named abilities from the damage line above with a blank line.
+    if(first_named && had_damage)
+      buf_write(&ab, "\n");
+
+    first_named = false;
+
+    char *enm = escape_markup(nm);
+
+    buf_write(&ab, "<span color='%s'><b>%s</b></span>\n", color, enm ? enm : nm);
+    free(enm);
+
+    // Render the ability's effects into a scratch buffer, then re-emit each
+    // line indented a little under its (bold) name.
+    char eff_buf[4096];
+    BufWriter ew;
+
+    buf_init(&ew, eff_buf, sizeof(eff_buf));
+    add_stats_from_record(eff_path, tr, &ew, color, lvl - 1);
+
+    for(char *line = eff_buf; *line; )
+    {
+      char *nl = strchr(line, '\n');
+      int len = nl ? (int)(nl - line) : (int)strlen(line);
+
+      if(len > 0)
+        buf_write(&ab, "    %.*s\n", len, line);
+      else
+        buf_write(&ab, "\n");   // preserve blank separator lines
+
+      if(!nl)
+        break;
+
+      line = nl + 1;
+    }
+
+    free(sp);
+  }
+
+  // Only show the "Abilities:" header (and its blank-line separator) when the
+  // pet actually has some -- otherwise it is dead screen space.
+  if(ab.pos > 0)
+  {
+    buf_write(w, "\n<span color='%s'>%s Abilities:</span>\n", color, e_name);
+    buf_write(w, "%s", ab_buf);
+  }
+
+  free(e_name);
+}
+
+// Emit one source record's "Bonus to All Pets" block (header + the petBonus
+// sub-record's stats) if it carries a `petBonusName`.  Called at the end of the
+// card for base/prefix/suffix so every pet bonus is grouped after the wearer's
+// own benefits (the inline emission in add_stats_from_record is deferred while
+// those sections render -- see g_item_stats_defer_pet_bonus).  Returns true if
+// anything was written.
+static bool
+append_pet_bonus_block(TQArzRecordData *src, TQTranslation *tr, BufWriter *w,
+                       const char *color, int shard_index)
+{
+  if(!src)
+    return(false);
+
+  char *pet_bonus = arz_record_get_string(src, "petBonusName", NULL);
+
+  if(!pet_bonus || !pet_bonus[0])
+  {
+    free(pet_bonus);
+    return(false);
+  }
+
+  buf_write(w, "\n<span color='%s'>Bonus to All Pets:</span>\n", color);
+  add_stats_from_record(pet_bonus, tr, w, color, shard_index);
+  free(pet_bonus);
+  return(true);
+}
+
 // main tooltip formatter
 
 // Format item stats into a markup string, shared by both character and vault items.
@@ -754,6 +1022,9 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
 
     size_t pos_after_header = w.pos;
 
+    // Affix pet bonuses render inline, as the last items under the affix (the
+    // in-record reorder already puts the "Bonus to All Pets" block after the
+    // affix's own stats/skill augments).
     add_stats_from_record(prefix_name, tr, &w, "#00A3FF", 0);
 
     if(w.pos == pos_after_header)
@@ -851,8 +1122,10 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
       }
     }
 
+    g_item_stats_defer_pet_bonus = true;   // grouped at the end of the card
     add_stats_from_record(base_name, tr, &w,
         standalone_relic_charm ? "#C1A472" : "#00FFFF", base_shard_index);
+    g_item_stats_defer_pet_bonus = false;
   }
 
   // Standalone relic/charm completion bonus
@@ -881,6 +1154,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
 
     size_t pos_after_header = w.pos;
 
+    // Affix pet bonuses render inline, as the last items under the affix.
     add_stats_from_record(suffix_name, tr, &w, "#00A3FF", 0);
 
     if(w.pos == pos_after_header)
@@ -985,6 +1259,21 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
       if(buff_path && buff_path[0])
         add_stats_from_record(skill_dbr, tr, &w, "#DAA520", skill_index);
 
+      // Pet summon (Skill_SpawnPet[Monster]): list the conjured pet's
+      // attributes and abilities.  The spawn fields live on the skill record,
+      // but fall through a buff indirection just in case.  No-op for non-summon
+      // skills.
+      {
+        TQArzRecordData *spawn_src = NULL;
+
+        if(skill_data && record_get_string_fast(skill_data, INT_spawnObjects))
+          spawn_src = skill_data;
+        else if(effect_data && record_get_string_fast(effect_data, INT_spawnObjects))
+          spawn_src = effect_data;
+
+        append_pet_summon_stats(spawn_src, tr, &w, "#DAA520", skill_index);
+      }
+
       // Pet/secondary skill
       const char *pet_skill_path = effect_data ? record_get_string_fast(effect_data, INT_petSkillName) : NULL;
 
@@ -1036,6 +1325,13 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
 
   // Relic/Charm slot 2
   add_relic_section(relic_name2, relic_bonus2, var2, tr, &w);
+
+  // The base item's "Bonus to All Pets" -- deferred from the base render above
+  // so it lands after every other wearer benefit (base stats, granted skill +
+  // summoned-pet abilities).  Affix pet bonuses are NOT deferred: they render
+  // inline as the last items under their own Prefix/Suffix section.
+  append_pet_bonus_block(base_data, tr, &w,
+      standalone_relic_charm ? "#C1A472" : "#00FFFF", base_shard_index);
 
   // Item seed with hex and percentage.  Suppressed for reference views (DB
   // browser) where the item is never spawned, so the seed is always zero and

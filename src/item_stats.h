@@ -254,6 +254,11 @@ item_requirements(const char *base_name, const char *prefix_name,
                   const char *suffix_name, const char *relic_name,
                   const char *relic_name2, int out[4]);
 
+// When true, add_stats_from_record() defers its inline "Bonus to All Pets" block
+// (see definition in item_stats.c).  format_stats_common toggles it around the
+// prefix/base/suffix renders so pet bonuses are grouped at the end of the card.
+extern bool g_item_stats_defer_pet_bonus;
+
 // Pre-interned variable name pointers (shared across item_stats modules)
 extern const char *INT_itemNameTag, *INT_description, *INT_lootRandomizerName, *INT_FileDescription;
 extern const char *INT_itemClassification, *INT_itemText;
@@ -261,6 +266,9 @@ extern const char *INT_characterBaseAttackSpeedTag, *INT_artifactClassification;
 extern const char *INT_itemSkillName, *INT_buffSkillName, *INT_skillDisplayName;
 extern const char *INT_itemSkillAutoController, *INT_triggerType, *INT_itemSkillLevel;
 extern const char *INT_skillBaseDescription, *INT_petSkillName, *INT_skillChanceWeight;
+extern const char *INT_spawnObjects, *INT_petLimit, *INT_spawnObjectsTimeToLive;
+extern const char *INT_characterLife, *INT_characterMana;
+extern const char *INT_handHitDamageMin, *INT_handHitDamageMax;
 extern const char *INT_itemSetName, *INT_setName, *INT_setMembers;
 extern const char *INT_completedRelicLevel;
 extern const char *INT_dexterityRequirement, *INT_intelligenceRequirement;

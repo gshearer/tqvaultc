@@ -47,7 +47,7 @@ strip_markup_inplace(char *s)
 // Dumps all variables and the rendered tooltip from a DBR record.
 // record_path: the backslash-delimited DBR path (e.g. "records\\...\\foo.dbr")
 static void
-dump_dbr(const char *record_path)
+dump_dbr(const char *record_path, const char *prefix_path, const char *suffix_path)
 {
   TQArzRecordData *data = asset_get_dbr(record_path);
 
@@ -110,6 +110,24 @@ dump_dbr(const char *record_path)
   printf("\n--- Tooltip render: %s ---\n", record_path);
   strip_markup_inplace(buf);
   printf("%s", buf);
+
+  // Full item-card render (the GUI tooltip): includes sections that live in the
+  // formatter rather than in add_stats_from_record -- e.g. the "Grants Skill"
+  // block and the summoned-pet attributes/abilities.  Seed is hidden (the item
+  // is never spawned here, so it would always be zero and meaningless).
+  {
+    char card[16384];
+
+    vault_item_format_stats_flags(
+        &(TQVaultItem){ .base_name = (char *)record_path,
+                        .prefix_name = (char *)prefix_path,
+                        .suffix_name = (char *)suffix_path }, tr,
+        NULL, ITEM_FMT_HIDE_SEED, card, sizeof(card));
+
+    printf("\n--- Full item card: %s ---\n", record_path);
+    strip_markup_inplace(card);
+    printf("%s", card);
+  }
 
   // Classification of the raw (un-normalized) path, exactly as the GUI sees it.
   // Lets us verify separator/case handling drives colour + context-menu items.
@@ -313,7 +331,7 @@ debug_run_tests(int argc, char **argv)
   {
     if(strcmp(argv[i], "--debug") == 0)
       continue;
-    dump_dbr(argv[i]);
+    dump_dbr(argv[i], NULL, NULL);
   }
 
   printf("\n--- Debug Tests Complete ---\n");
@@ -422,6 +440,8 @@ main(int argc, char **argv)
   bool thumbs_build_only = false;
   bool first_run_build_only = false;
   bool stack_merge_selftest_only = false;
+  const char *tooltip_prefix = NULL;   // optional --prefix for --tooltip
+  const char *tooltip_suffix = NULL;   // optional --suffix for --tooltip
 
   for(int i = 1; i < argc; i++)
   {
@@ -439,6 +459,10 @@ main(int argc, char **argv)
       tooltip_only = true;
       tooltip_path = argv[++i];
     }
+    else if(strcmp(argv[i], "--prefix") == 0 && i + 1 < argc)
+      tooltip_prefix = argv[++i];
+    else if(strcmp(argv[i], "--suffix") == 0 && i + 1 < argc)
+      tooltip_suffix = argv[++i];
     else if(strcmp(argv[i], "--equip-check") == 0 && i + 2 < argc)
     {
       equip_check_only = true;
@@ -505,7 +529,7 @@ main(int argc, char **argv)
     arz_intern_init();
     item_stats_init();
     affix_table_init(NULL);
-    dump_dbr(tooltip_path);
+    dump_dbr(tooltip_path, tooltip_prefix, tooltip_suffix);
     item_stats_free();
     affix_table_free();
     arz_intern_free();

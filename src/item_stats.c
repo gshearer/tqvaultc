@@ -317,6 +317,14 @@ static const char *INT_retaliationStunModifier, *INT_retaliationStunModifierChan
 static const char *INT_retaliationElementalModifier, *INT_retaliationElementalModifierChance;
 static const char *INT_racialBonusPercentDamage, *INT_racialBonusPercentDefense, *INT_racialBonusRace;
 static const char *INT_petBonusName;
+
+// When true, add_stats_from_record skips its inline "Bonus to All Pets" block so
+// the caller (format_stats_common) can gather every source's pet bonuses into a
+// single group at the very end of the card — after the wearer's own benefits.
+// Single-threaded; the caller sets it only around the prefix/base/suffix renders
+// and clears it immediately after.
+bool g_item_stats_defer_pet_bonus = false;
+
 static const char *INT_skillCooldownTime, *INT_refreshTime;
 static const char *INT_skillCooldownReduction, *INT_skillCooldownReductionChance;
 static const char *INT_skillManaCostReduction, *INT_skillManaCostReductionChance;
@@ -371,6 +379,9 @@ const char *INT_characterBaseAttackSpeedTag, *INT_artifactClassification;
 const char *INT_itemSkillName, *INT_buffSkillName, *INT_skillDisplayName;
 const char *INT_itemSkillAutoController, *INT_triggerType, *INT_itemSkillLevel;
 const char *INT_skillBaseDescription, *INT_petSkillName, *INT_skillChanceWeight;
+const char *INT_spawnObjects, *INT_petLimit, *INT_spawnObjectsTimeToLive;
+const char *INT_characterLife, *INT_characterMana;
+const char *INT_handHitDamageMin, *INT_handHitDamageMax;
 const char *INT_itemSetName, *INT_setName, *INT_setMembers;
 const char *INT_completedRelicLevel;
 const char *INT_dexterityRequirement, *INT_intelligenceRequirement;
@@ -684,6 +695,9 @@ item_stats_init(void)
   INTERN(itemSkillName); INTERN(buffSkillName); INTERN(skillDisplayName);
   INTERN(itemSkillAutoController); INTERN(triggerType); INTERN(itemSkillLevel);
   INTERN(skillBaseDescription); INTERN(petSkillName); INTERN(skillChanceWeight);
+  INTERN(spawnObjects); INTERN(petLimit); INTERN(spawnObjectsTimeToLive);
+  INTERN(characterLife); INTERN(characterMana);
+  INTERN(handHitDamageMin); INTERN(handHitDamageMax);
   INTERN(itemSetName); INTERN(setName); INTERN(setMembers);
   INTERN(completedRelicLevel);
   INTERN(dexterityRequirement); INTERN(intelligenceRequirement);
@@ -3081,17 +3095,6 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   }
 
 
-  // Follow petBonusName reference (LootRandomizer pet bonus sub-records)
-  {
-    const char *pet_bonus = record_get_string_fast(data, INT_petBonusName);
-
-    if(pet_bonus && pet_bonus[0])
-    {
-      buf_write(w, "\n<span color='%s'>Bonus to All Pets:</span>\n", color);
-      add_stats_from_record(pet_bonus, tr, w, color, shard_index);
-    }
-  }
-
   // Flush the global-chance-wrapped section (relics/charms/armor/jewelry).
   if(global_chance > 0 && ow_writer.pos > 0)
   {
@@ -3109,4 +3112,18 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   // Flush deferred skill / mastery augmentations last (yellow, in-game ordering).
   if(skill_writer.pos > 0)
     buf_write(w, "%s", skill_buffer);
+
+  // Follow petBonusName reference (LootRandomizer pet bonus sub-records).
+  // Emitted after every player-benefit section (stats, chance blocks, skill
+  // augments) so the "Bonus to All Pets" group always sits at the very end,
+  // clearly separated from the wearer's own bonuses by its leading blank line.
+  {
+    const char *pet_bonus = record_get_string_fast(data, INT_petBonusName);
+
+    if(pet_bonus && pet_bonus[0] && !g_item_stats_defer_pet_bonus)
+    {
+      buf_write(w, "\n<span color='%s'>Bonus to All Pets:</span>\n", color);
+      add_stats_from_record(pet_bonus, tr, w, color, shard_index);
+    }
+  }
 }
