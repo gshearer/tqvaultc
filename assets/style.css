@@ -113,5 +113,7 @@
 
 /* Instant item tooltip */
 popover.item-tooltip { background: #1a1a2e; }
-popover.item-tooltip > contents { padding: 0; }
+/* No side/top padding (kept tight), but a few px at the bottom so the last
+   line's descenders aren't clipped by the popover's bottom edge. */
+popover.item-tooltip > contents { padding: 0; padding-bottom: 3px; }
 popover.item-tooltip label { color: #e0e4ec; }
