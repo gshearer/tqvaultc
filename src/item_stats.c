@@ -1514,16 +1514,16 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
     }
   }
 
-  // Racial bonus
+  // Racial bonus — requires a named race (see the item-card path for the full
+  // rationale). Skill/aura records carrying a racialBonus value but no
+  // racialBonusRace render nothing, matching the game and TQVaultAE.
   if(found < 3)
   {
-    const char *race = "Enemies";
     TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
+    const char *race = (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
+                         ? rv->value.str[0] : NULL;
 
-    if(rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
-      race = rv->value.str[0];
-
-    float rdmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, 0);
+    float rdmg = race ? dbr_get_float_fast(data, INT_racialBonusPercentDamage, 0) : 0.0f;
 
     if(fabs(rdmg) > 0.001f && found < 3)
     {
@@ -1551,7 +1551,7 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
       found++;
     }
 
-    float rdef = dbr_get_float_fast(data, INT_racialBonusPercentDefense, 0);
+    float rdef = race ? dbr_get_float_fast(data, INT_racialBonusPercentDefense, 0) : 0.0f;
 
     if(fabs(rdef) > 0.001f && found < 3)
     {
@@ -2780,33 +2780,39 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(w, "<span color='%s'>%.0f%% Reduced Petrify Duration</span>\n", color, val);
   }
 
-  // Racial bonus
+  // Racial bonus — only meaningful with a named race. The game format spec is
+  // "...{%s1}" with the race substituted in; with no racialBonusRace the engine
+  // (and TQVaultAE's GetRacialBonus) emit nothing. Some skill/aura records carry
+  // an internal racialBonus value with no race (e.g. Dream's Trance of Wrath has
+  // racialBonusPercentDefense=100 and no race) — it must NOT be rendered as
+  // "100% less damage from Enemies".
   {
-    const char *race = "Enemies";
     TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
+    const char *race = (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
+                         ? rv->value.str[0] : NULL;
 
-    if(rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
-      race = rv->value.str[0];
+    if(race)
+    {
+      float dmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
 
-    float dmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
+      if(fabs(dmg) > 0.001f)
+        buf_write(w, "<span color='%s'>%+d%% Damage to %s</span>\n", color, (int)round(dmg), race);
 
-    if(fabs(dmg) > 0.001f)
-      buf_write(w, "<span color='%s'>%+d%% Damage to %s</span>\n", color, (int)round(dmg), race);
+      float abs_dmg = dbr_get_float_fast(data, INT_racialBonusAbsoluteDamage, shard_index);
 
-    float abs_dmg = dbr_get_float_fast(data, INT_racialBonusAbsoluteDamage, shard_index);
+      if(fabs(abs_dmg) > 0.001f)
+        buf_write(w, "<span color='%s'>%+d Damage to %s</span>\n", color, (int)round(abs_dmg), race);
 
-    if(fabs(abs_dmg) > 0.001f)
-      buf_write(w, "<span color='%s'>%+d Damage to %s</span>\n", color, (int)round(abs_dmg), race);
+      float def = dbr_get_float_fast(data, INT_racialBonusPercentDefense, shard_index);
 
-    float def = dbr_get_float_fast(data, INT_racialBonusPercentDefense, shard_index);
+      if(fabs(def) > 0.001f)
+        buf_write(w, "<span color='%s'>%d%% less damage from %s</span>\n", color, (int)round(def), race);
 
-    if(fabs(def) > 0.001f)
-      buf_write(w, "<span color='%s'>%d%% less damage from %s</span>\n", color, (int)round(def), race);
+      float abs_def = dbr_get_float_fast(data, INT_racialBonusAbsoluteDefense, shard_index);
 
-    float abs_def = dbr_get_float_fast(data, INT_racialBonusAbsoluteDefense, shard_index);
-
-    if(fabs(abs_def) > 0.001f)
-      buf_write(w, "<span color='%s'>%d Less Damage from %s</span>\n", color, (int)round(abs_def), race);
+      if(fabs(abs_def) > 0.001f)
+        buf_write(w, "<span color='%s'>%d Less Damage from %s</span>\n", color, (int)round(abs_def), race);
+    }
   }
 
   // Mastery augmentation: "+N to all skills in X Mastery"
