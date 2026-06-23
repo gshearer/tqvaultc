@@ -196,9 +196,14 @@ static AttributeMap attr_maps[] = {
   // Misc
   {"characterTotalSpeedModifier", "%+d%% Total Speed", true, NULL},
   // skillCooldownReduction / skillManaCostReduction handled in dedicated
-  // block to merge value + ModifierChance into "X% Chance of -Y% Recharge"
-  {"skillCooldownReductionModifier", "+%d%% Recharge", true, NULL},
-  {"skillManaCostReductionModifier", "+%d%% Energy Cost", true, NULL},
+  // block to merge value + ModifierChance into "X% Chance of -Y% Recharge".
+  // The *Modifier variants are pure reductions (no Chance field exists in the
+  // DB) and the game renders them with a leading minus -- a stored value of 10
+  // means cooldown/cost drops by 10%, so display "-10% Recharge", not "+10%".
+  // (Game format tags: SkillCooldownReductionModifier=-{%.0f0}% Recharge,
+  //  SkillManaCostReductionModifier=-{%.0f0}% Energy Cost.)
+  {"skillCooldownReductionModifier", "-%d%% Recharge", true, NULL},
+  {"skillManaCostReductionModifier", "-%d%% Energy Cost", true, NULL},
   {"augmentAllLevel", "+%d to all Skills", false, NULL},
   {"characterIncreasedExperience", "%+d%% Increased Experience", false, NULL},
 
