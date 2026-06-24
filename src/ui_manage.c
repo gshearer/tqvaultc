@@ -516,6 +516,10 @@ on_duplicate_ok(GtkButton *btn, gpointer user_data)
   }
 
   save_character_if_dirty(dw->widgets);
+  // The per-character Storage (player stash) lives in winsys.dxb inside the
+  // character folder and is copied wholesale below; flush its dirty in-memory
+  // edits to disk first, or the duplicate inherits a stale/empty Storage.
+  save_stashes_if_dirty(dw->widgets);
 
   // Get current character directory
   char *cur = dropdown_get_selected_text(dw->widgets->character_combo);
@@ -1160,6 +1164,9 @@ on_rename_char_ok(GtkButton *btn, gpointer user_data)
   }
 
   save_character_if_dirty(dw->widgets);
+  // Flush the Storage stash (winsys.dxb) before moving the folder so unsaved
+  // in-memory edits aren't lost with the rename.
+  save_stashes_if_dirty(dw->widgets);
 
   if(rename(source, target) != 0)
   {
