@@ -42,6 +42,13 @@ typedef struct {
     uint8_t *raw_data;
     size_t data_size;
 
+    // Save-format provenance. headerVersion is the very first key: desktop
+    // (TQ:AE) writes 3, the iOS mobile port writes 4. has_my_save_id is set
+    // when the mobile-only `mySaveId` key is present, so a hypothetical future
+    // desktop v4 isn't mis-classified as mobile. See character_is_mobile().
+    int header_version;
+    bool has_my_save_id;
+
     // Extracted statistics
     char *character_name;
     char *class_name;   // playerCharacterClass, e.g. "Sorceress"
@@ -115,6 +122,14 @@ character_load(const char *filepath);
 // character: the character to free.
 void
 character_free(TQCharacter *character);
+
+// True if this character came from the iOS mobile port (headerVersion >= 4 and
+// the mobile-only `mySaveId` key was present). Mobile saves differ from desktop
+// in two ways the loader handles: a UTF-32LE myPlayerName and a three-file
+// Storage stash (0/1/2winsys.dxb at stashVersion 6).
+// character: the character to test (may be NULL -> false).
+bool
+character_is_mobile(const TQCharacter *character);
 
 // Convert a mastery DBR path to a short display name.
 // e.g. "Records\Skills\Earth\EarthMastery.dbr" -> "Earth",

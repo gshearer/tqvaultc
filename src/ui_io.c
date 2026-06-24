@@ -154,6 +154,9 @@ confirm_unsaved_character(AppWidgets *widgets)
 // Compare two string pointers for qsort (forward decl; defined below).
 static int compare_strings(const void *a, const void *b);
 
+// Build the "📱 …" combo markup for an open mobile char (forward decl).
+static char *build_mobile_display_markup(const TQCharacter *chr, TQTranslation *tr);
+
 // Build the character's "type" string from its masteries. See header for details.
 void
 character_type_string(const TQCharacter *chr, TQTranslation *tr,
@@ -352,6 +355,32 @@ repopulate_character_combo(AppWidgets *widgets, const char *select_name)
   }
   free(names);
 
+  // Preserve the open external (iOS mobile) entry across a rebuild — the scan
+  // above only covers SaveData/Main, and remove_all() cleared its display map
+  // entry. Re-add it so switching back to the mobile char keeps working.
+  if(widgets->mobile_folder)
+  {
+    char mob_chr[1024];
+
+    snprintf(mob_chr, sizeof(mob_chr), "%s/Player.chr", widgets->mobile_folder);
+
+    TQCharacter *mob = character_load(mob_chr);
+
+    if(mob)
+    {
+      g_hash_table_insert(widgets->char_display_map, g_strdup(widgets->mobile_folder),
+                          build_mobile_display_markup(mob, widgets->translations));
+      gtk_string_list_append(sl, widgets->mobile_folder);
+      character_free(mob);
+    }
+    else
+    {
+      // The folder vanished (e.g. unmounted) — forget the stale entry.
+      g_free(widgets->mobile_folder);
+      widgets->mobile_folder = NULL;
+    }
+  }
+
   guint active_idx = 0;
   const char *target = select_name ? select_name : global_config.last_character_path;
 
@@ -383,6 +412,190 @@ static int
 compare_strings(const void *a, const void *b)
 {
   return(strcmp(*(const char **)a, *(const char **)b));
+}
+
+// ── External (iOS mobile) save folder ───────────────────────────────────
+//
+// A copied iOS save is opened from an arbitrary folder rather than the
+// SaveData/Main scan. The chosen folder path doubles as the character combo's
+// entry string; on_character_changed routes any (re)load of that entry to
+// <folder>/Player.chr + <folder>/0winsys.dxb. See open_external_character_folder.
+
+// Build the distinctive combo markup for an open mobile character:
+// "📱 name <dim>— Type · Lv N · mobile</dim>". Mirrors build_char_display_markup
+// but flags the entry as an external save.
+//   chr - the loaded mobile character (non-NULL)
+//   tr  - translation table for the class title
+// Returns newly-allocated Pango markup (caller g_free's).
+static char *
+build_mobile_display_markup(const TQCharacter *chr, TQTranslation *tr)
+{
+  const char *nm = chr->character_name ? chr->character_name : "mobile";
+  char *name_esc = g_markup_escape_text(nm, -1);
+
+  char type[96];
+
+  character_type_string(chr, tr, false, type, sizeof(type));
+
+  char *type_esc = g_markup_escape_text(type, -1);
+  char *detail;
+
+  if(type[0])
+    detail = g_strdup_printf(" \xe2\x80\x94 %s \xc2\xb7 Lv %u \xc2\xb7 mobile", type_esc, chr->level);
+  else
+    detail = g_strdup_printf(" \xc2\xb7 Lv %u \xc2\xb7 mobile", chr->level);
+
+  char *out = g_strdup_printf("\xf0\x9f\x93\xb1 %s<span alpha='55%%'>%s</span>",
+                              name_esc, detail);
+
+  g_free(name_esc);
+  g_free(type_esc);
+  g_free(detail);
+  return(out);
+}
+
+// Return the index of `s` in the character combo's string-list model, or -1.
+static int
+char_combo_find(AppWidgets *widgets, const char *s)
+{
+  GtkStringList *sl = GTK_STRING_LIST(
+    gtk_drop_down_get_model(GTK_DROP_DOWN(widgets->character_combo)));
+  guint n = g_list_model_get_n_items(G_LIST_MODEL(sl));
+
+  for(guint i = 0; i < n; i++)
+    if(strcmp(gtk_string_list_get_string(sl, i), s) == 0)
+      return((int)i);
+
+  return(-1);
+}
+
+// Show a modal error alert anchored to the main window.
+static void
+mobile_error(AppWidgets *widgets, const char *msg)
+{
+  GtkAlertDialog *e = gtk_alert_dialog_new("%s", msg);
+
+  gtk_alert_dialog_set_modal(e, TRUE);
+  gtk_alert_dialog_show(e, GTK_WINDOW(widgets->main_window));
+  g_object_unref(e);
+}
+
+bool
+open_external_character_folder(AppWidgets *widgets, const char *folder)
+{
+  if(!folder || !folder[0])
+    return(false);
+
+  char chr_path[1024];
+
+  snprintf(chr_path, sizeof(chr_path), "%s/Player.chr", folder);
+
+  if(!g_file_test(chr_path, G_FILE_TEST_EXISTS))
+  {
+    mobile_error(widgets,
+      "No Player.chr in that folder.\n\n"
+      "Pick the character's save folder — the one that holds Player.chr.");
+    return(false);
+  }
+
+  // Probe to validate it's a mobile save and to build the combo label. The
+  // actual load happens via on_character_changed once the entry is selected.
+  TQCharacter *probe = character_load(chr_path);
+
+  if(!probe)
+  {
+    mobile_error(widgets, "Could not read Player.chr in that folder.");
+    return(false);
+  }
+
+  if(!character_is_mobile(probe))
+  {
+    character_free(probe);
+    mobile_error(widgets,
+      "That isn't a mobile (iOS) save.\n\n"
+      "Desktop characters open from the normal character list.");
+    return(false);
+  }
+
+  char *markup = build_mobile_display_markup(probe, widgets->translations);
+
+  character_free(probe);
+
+  GtkStringList *sl = GTK_STRING_LIST(
+    gtk_drop_down_get_model(GTK_DROP_DOWN(widgets->character_combo)));
+
+  // Mutate the model with the change handler blocked, then fire it once
+  // explicitly (mirrors repopulate_character_combo).
+  g_signal_handler_block(widgets->character_combo, widgets->char_combo_handler);
+
+  // Single external slot: drop any previously-open mobile entry first.
+  if(widgets->mobile_folder && strcmp(widgets->mobile_folder, folder) != 0)
+  {
+    int old = char_combo_find(widgets, widgets->mobile_folder);
+
+    if(old >= 0)
+      gtk_string_list_remove(sl, (guint)old);
+
+    g_hash_table_remove(widgets->char_display_map, widgets->mobile_folder);
+  }
+  g_free(widgets->mobile_folder);
+  widgets->mobile_folder = g_strdup(folder);
+
+  // Combo string = folder path; display map -> the "📱 …" markup.
+  g_hash_table_insert(widgets->char_display_map, g_strdup(folder), markup);
+  if(char_combo_find(widgets, folder) < 0)
+    gtk_string_list_append(sl, folder);
+
+  dropdown_select_by_name(widgets->character_combo, folder);
+  g_signal_handler_unblock(widgets->character_combo, widgets->char_combo_handler);
+
+  // Load the character + page-0 stash now (handler was blocked during select).
+  on_character_changed(G_OBJECT(widgets->character_combo), NULL, widgets);
+  return(true);
+}
+
+// Folder-picker completion for "Open Mobile Save Folder…".
+//   source    - the GtkFileDialog
+//   result    - async result
+//   user_data - AppWidgets*
+static void
+on_mobile_save_folder_ready(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+  GtkFileDialog *dlg = GTK_FILE_DIALOG(source);
+  AppWidgets *widgets = (AppWidgets *)user_data;
+  GFile *folder = gtk_file_dialog_select_folder_finish(dlg, result, NULL);
+
+  if(!folder)
+    return;  // cancelled
+
+  char *dir = g_file_get_path(folder);
+
+  g_object_unref(folder);
+  if(!dir)
+    return;
+
+  open_external_character_folder(widgets, dir);
+  g_free(dir);
+}
+
+void
+open_mobile_save_choose_folder(AppWidgets *widgets)
+{
+  GtkFileDialog *dlg = gtk_file_dialog_new();
+
+  gtk_file_dialog_set_title(dlg, "Open Mobile (iOS) Save Folder");
+
+  const char *home = g_get_home_dir();
+
+  if(home)
+  {
+    GFile *initial = g_file_new_for_path(home);
+
+    gtk_file_dialog_set_initial_folder(dlg, initial);
+    g_object_unref(initial);
+  }
+  gtk_file_dialog_select_folder(dlg, GTK_WINDOW(widgets->main_window), NULL,
+                                on_mobile_save_folder_ready, widgets);
 }
 
 // ── Missing-vault-folder prompt ─────────────────────────────────────
@@ -881,20 +1094,36 @@ on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_data)
   if(!name)
     return;
 
-  config_set_last_character(name);
-  config_save();
-
   char path[1024];
 
-  snprintf(path, sizeof(path), "%s/SaveData/Main/%s/Player.chr", global_config.save_folder, name);
-
-  // Load per-character player stash
-  char *ps_path = stash_build_path(STASH_PLAYER, name);
-
-  if(ps_path)
+  if(widgets->mobile_folder && strcmp(name, widgets->mobile_folder) == 0)
   {
+    // External iOS save: load the char + its page-0 Storage stash straight from
+    // the chosen folder, bypassing the SaveData/Main scan. Don't record it as
+    // last_character (it isn't a SaveData char). Interim: only 0winsys.dxb is
+    // shown/editable; 1/2winsys.dxb are left untouched on disk.
+    snprintf(path, sizeof(path), "%s/Player.chr", widgets->mobile_folder);
+
+    char *ps_path = g_build_filename(widgets->mobile_folder, "0winsys.dxb", NULL);
+
     widgets->player_stash = stash_load(ps_path);
-    free(ps_path);
+    g_free(ps_path);
+  }
+  else
+  {
+    config_set_last_character(name);
+    config_save();
+
+    snprintf(path, sizeof(path), "%s/SaveData/Main/%s/Player.chr", global_config.save_folder, name);
+
+    // Load per-character player stash
+    char *ps_path = stash_build_path(STASH_PLAYER, name);
+
+    if(ps_path)
+    {
+      widgets->player_stash = stash_load(ps_path);
+      free(ps_path);
+    }
   }
 
   g_free(name);

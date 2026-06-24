@@ -630,17 +630,34 @@ stash_load(const char *filepath)
   stash->sack.items = NULL;
   stash->sack.num_items = 0;
 
+  bool all_items_ok = true;
+
   for(int i = 0; i < num_items; i++)
   {
     if(!stash_parse_item(data, &off, sz, &stash->sack))
+    {
+      all_items_ok = false;
       break;
+    }
   }
 
-  // Final end_block (stash-level)
-  if(peek_key(data, off, sz, "end_block"))
+  // Capture everything after the last item to EOF (the final end_block, plus
+  // mobile's trailing unlockedInventory field) so stash_save replays it
+  // verbatim — see TQStash.footer. Only when items parsed cleanly; a broken
+  // parse leaves off mid-item, so fall back to a synthesized end_block instead.
+  if(all_items_ok && off <= sz)
   {
-    expect_key(data, &off, sz, "end_block");
-    read_val_u32(data, &off, sz);
+    stash->footer_len = sz - off;
+
+    if(stash->footer_len > 0)
+    {
+      stash->footer = malloc(stash->footer_len);
+
+      if(stash->footer)
+        memcpy(stash->footer, data + off, stash->footer_len);
+      else
+        stash->footer_len = 0;
+    }
   }
 
   free(data);
@@ -723,8 +740,13 @@ stash_save(TQStash *stash)
     bb_write_key_f32(&b, "yOffset", (float)item->point_y);
   }
 
-  // Final end_block
-  bb_write_key_u32(&b, "end_block", 0);
+  // Final footer: replay the captured trailing bytes verbatim (preserves the
+  // mobile unlockedInventory field) — see TQStash.footer. With no captured
+  // footer (e.g. a stash built in-memory), synthesize a bare final end_block.
+  if(stash->footer && stash->footer_len > 0)
+    bb_write(&b, stash->footer, stash->footer_len);
+  else
+    bb_write_key_u32(&b, "end_block", 0);
 
   // Compute CRC32 over entire buffer (including the zero placeholder)
   uint32_t crc = compute_crc32(b.data, b.size);
@@ -815,6 +837,7 @@ stash_free(TQStash *stash)
 
   free(stash->filepath);
   free(stash->stash_name);
+  free(stash->footer);
   for(int i = 0; i < stash->sack.num_items; i++)
     vault_item_free_strings(&stash->sack.items[i]);
   free(stash->sack.items);

@@ -1298,6 +1298,7 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   g_menu_append(char_menu, "Duplicate current character", "win.dup-char");
   g_menu_append(char_menu, "Rename current character", "win.rename-char");
   g_menu_append(char_menu, "Delete current character", "win.delete-char");
+  g_menu_append(char_menu, "Open Mobile Save Folder\xe2\x80\xa6", "win.open-mobile-save");
 
   GtkWidget *char_menu_btn = gtk_menu_button_new();
 

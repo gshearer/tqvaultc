@@ -20,6 +20,13 @@ typedef struct {
     int sack_width, sack_height;
     uint32_t begin_block_val;  // "crap" value preserved for round-trip
     TQVaultSack sack;
+    // Raw bytes after the last item to EOF, captured verbatim and replayed on
+    // save (recomputing the CRC). On desktop this is just the final end_block;
+    // the iOS mobile port (stashVersion 6) appends an extra `unlockedInventory`
+    // u32 here, which dropping would risk re-locking the player's Storage. NULL
+    // if not captured (the writer then synthesizes a final end_block).
+    uint8_t *footer;
+    size_t footer_len;
     bool dirty;
 } TQStash;
 

@@ -185,6 +185,11 @@ static const KnownKey known_keys[] = {
   {"alternateConfigEnabled",            VAL_U32},
   {"headerVersion",                     VAL_U32},
   {"playerVersion",                     VAL_U32},
+
+  // Mobile (iOS) port additions (headerVersion 4)
+  {"currentDifficulty",                 VAL_U32},
+  {"mySaveId",                          VAL_STRING},
+
   {"playerClassTag",                    VAL_STRING},
   {"uniqueId",                          VAL_STRING},
   {"streamData",                        VAL_STRING},
@@ -441,20 +446,23 @@ rd_string(const uint8_t *data, size_t off, size_t file_size,
   return(4 + len);
 }
 
-// rd_utf16 -- read a length-prefixed UTF-16LE string, convert to ASCII.
+// rd_utf16 -- read a length-prefixed wide string, convert to ASCII.
+// Desktop saves use UTF-16LE (char_width 2); the iOS mobile port (headerVersion
+// >= 4) uses UTF-32LE (char_width 4). The prefix counts characters either way.
 // data: binary data buffer.
 // off: byte offset of the length prefix.
 // file_size: total buffer size for bounds checking.
+// char_width: bytes per character (2 = UTF-16LE, 4 = UTF-32LE).
 // buf: output buffer for the ASCII string.
 // buf_size: size of buf.
 // returns number of bytes consumed.
 static size_t
-rd_utf16(const uint8_t *data, size_t off, size_t file_size,
+rd_utf16(const uint8_t *data, size_t off, size_t file_size, int char_width,
          char *buf, size_t buf_size)
 {
   uint32_t len = rd_u32(data, off);
 
-  if(len == 0 || off + 4 + len * 2 > file_size)
+  if(len == 0 || off + 4 + (size_t)len * char_width > file_size)
   {
     buf[0] = '\0';
     return(4);
@@ -463,10 +471,10 @@ rd_utf16(const uint8_t *data, size_t off, size_t file_size,
   size_t copy = len < buf_size - 1 ? len : buf_size - 1;
 
   for(size_t i = 0; i < copy; i++)
-    buf[i] = (char)data[off + 4 + i * 2];
+    buf[i] = (char)data[off + 4 + i * char_width];
 
   buf[copy] = '\0';
-  return(4 + len * 2);
+  return(4 + (size_t)len * char_width);
 }
 
 // lookup_key -- find a key in the known-key table.
@@ -547,6 +555,7 @@ parse_entries(const uint8_t *data, size_t file_size, ChrEntryList *out)
   entry_list_init(out);
   size_t offset = 0;
   int depth = 0;
+  int header_version = 0;  // captured from the first key; gates myPlayerName width
 
   while(offset + 4 <= file_size)
   {
@@ -622,6 +631,8 @@ parse_entries(const uint8_t *data, size_t file_size, ChrEntryList *out)
         {
         case VAL_U32:
           e.u32_val = rd_u32(data, offset);
+          if(strcmp(e.key, "headerVersion") == 0)
+            header_version = (int)e.u32_val;
           offset += 4;
           break;
         case VAL_FLOAT:
@@ -635,6 +646,7 @@ parse_entries(const uint8_t *data, size_t file_size, ChrEntryList *out)
           break;
         case VAL_UTF16:
           offset += rd_utf16(data, offset, file_size,
+                             header_version >= 4 ? 4 : 2,
                              e.str_val, sizeof(e.str_val));
           break;
         }

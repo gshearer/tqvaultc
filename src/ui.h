@@ -140,6 +140,12 @@ typedef struct {
     GtkWidget *bag_drawing_area;      // 8x5 extra bag (current_char_bag)
     int current_char_bag;             // 0-2 which extra bag is shown
     TQCharacter *current_character;
+    // Non-NULL while an external (iOS mobile) save folder is open. Holds the
+    // chosen folder path; it doubles as the character combo's entry string, so
+    // on_character_changed routes its (re)load to <folder>/Player.chr +
+    // <folder>/0winsys.dxb instead of the SaveData/Main scan. See
+    // open_external_character_folder().
+    char *mobile_folder;
     TQVault *current_vault;
     TQTranslation *translations;
     GHashTable *texture_cache;
@@ -345,6 +351,22 @@ repopulate_character_combo(AppWidgets *widgets, const char *select_name);
 // widgets: the application widget state.
 void
 install_character_combo_factory(AppWidgets *widgets);
+
+// Open a folder picker so the user can point us at a copied iOS save folder,
+// then load it via open_external_character_folder(). Mobile-save entry point.
+// widgets: the application widget state.
+void
+open_mobile_save_choose_folder(AppWidgets *widgets);
+
+// Load an external (iOS mobile) character from an arbitrary folder. Validates
+// <folder>/Player.chr exists and is a mobile save (headerVersion >= 4), adds a
+// distinct "📱 name (mobile)" combo entry, selects it (which loads the char +
+// page-0 Storage stash), and refreshes the panes. Bypasses the SaveData/Main
+// scan. Returns true on success; on failure shows an error and returns false.
+// widgets: the application widget state.
+// folder: absolute path to the copied save folder.
+bool
+open_external_character_folder(AppWidgets *widgets, const char *folder);
 
 // Build the character's "type" string from its masteries.
 // Dual mastery -> the translated class title (e.g. "Warlock"); with_masteries

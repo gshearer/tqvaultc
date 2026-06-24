@@ -1107,6 +1107,19 @@ on_dup_char_action(GSimpleAction *action, GVariant *param, gpointer user_data)
   on_duplicate_btn_clicked(NULL, user_data);
 }
 
+// Action handler for "Open Mobile Save Folder…": pick a copied iOS save folder
+// and load it as an external character.
+// action: GSimpleAction (unused)
+// param: action parameter (unused)
+// user_data: AppWidgets pointer
+static void
+on_open_mobile_save_action(GSimpleAction *action, GVariant *param, gpointer user_data)
+{
+  (void)action;
+  (void)param;
+  open_mobile_save_choose_folder((AppWidgets *)user_data);
+}
+
 // -- Rename character dialog ------------------------------------------------
 
 // OK button callback for the "Rename Character" dialog.
@@ -1411,6 +1424,7 @@ register_manage_actions(GtkWindow *window, AppWidgets *widgets)
     { "dup-char",     G_CALLBACK(on_dup_char_action) },
     { "rename-char",  G_CALLBACK(on_rename_char_action) },
     { "delete-char",  G_CALLBACK(on_delete_char_action) },
+    { "open-mobile-save", G_CALLBACK(on_open_mobile_save_action) },
   };
 
   for(size_t i = 0; i < sizeof(acts) / sizeof(acts[0]); i++)

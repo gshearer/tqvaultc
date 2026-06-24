@@ -78,13 +78,18 @@ read_string(const uint8_t *data, size_t offset, size_t *next_offset)
   return(str);
 }
 
-// Read a length-prefixed UTF-16LE string, converting to ASCII (low byte only).
+// Read a length-prefixed wide string, converting to ASCII (low byte only).
+// Desktop (TQ:AE) stores myPlayerName as UTF-16LE (char_width 2); the iOS mobile
+// port stores it as UTF-32LE (char_width 4). The length prefix counts characters
+// either way, so only the per-character stride differs.
 // data: raw byte buffer.
 // offset: byte position of the 4-byte character count prefix.
+// char_width: bytes per character (2 = UTF-16LE, 4 = UTF-32LE).
 // next_offset: if non-NULL, set to the byte position after the string.
 // Returns: allocated ASCII string, or NULL if length is 0 or > 1024.
 static char *
-read_string_utf16_as_ascii(const uint8_t *data, size_t offset, size_t *next_offset)
+read_string_utf16_as_ascii(const uint8_t *data, size_t offset, int char_width,
+                           size_t *next_offset)
 {
   uint32_t len = read_u32(data, offset);
 
@@ -105,12 +110,12 @@ read_string_utf16_as_ascii(const uint8_t *data, size_t offset, size_t *next_offs
   }
 
   for(uint32_t i = 0; i < len; i++)
-    str[i] = (char)data[offset + 4 + i * 2];
+    str[i] = (char)data[offset + 4 + (size_t)i * char_width];
 
   str[len] = '\0';
 
   if(next_offset)
-    *next_offset = offset + 4 + len * 2;
+    *next_offset = offset + 4 + (size_t)len * char_width;
 
   return(str);
 }
@@ -889,10 +894,32 @@ parse_equipment(ParseState *ps, const char *key)
 static int
 parse_char_stats(ParseState *ps, const char *key)
 {
+  if(strcmp(key, "headerVersion") == 0)
+  {
+    ps->chr->header_version = (int)read_u32(ps->data, *ps->offset);
+    *ps->offset += 4;
+    return(1);
+  }
+
+  if(strcmp(key, "mySaveId") == 0)
+  {
+    // Mobile-only key (the character name as a UTF-16 hex string). We don't use
+    // its value — just record its presence and consume it so the scanner needn't
+    // resync past it. The splice-save preserves it byte-for-byte regardless.
+    ps->chr->has_my_save_id = true;
+    char *save_id = read_string(ps->data, *ps->offset, ps->offset);
+    free(save_id);
+    return(1);
+  }
+
   if(strcmp(key, "myPlayerName") == 0)
   {
+    // headerVersion is the first key in the file, so it's already captured here:
+    // mobile (>= 4) uses a UTF-32LE name, desktop a UTF-16LE name.
+    int char_width = ps->chr->header_version >= 4 ? 4 : 2;
     free(ps->chr->character_name);
-    ps->chr->character_name = read_string_utf16_as_ascii(ps->data, *ps->offset, ps->offset);
+    ps->chr->character_name =
+      read_string_utf16_as_ascii(ps->data, *ps->offset, char_width, ps->offset);
     return(1);
   }
 
@@ -1423,6 +1450,14 @@ character_mastery_display_name(const char *dbr_path, char *out, size_t outsz)
 
   if(out[0])
     out[0] = (char)toupper((unsigned char)out[0]);
+}
+
+// True if this character came from the iOS mobile port. See header doc.
+// character: the character to test (may be NULL -> false).
+bool
+character_is_mobile(const TQCharacter *character)
+{
+  return(character && character->header_version >= 4 && character->has_my_save_id);
 }
 
 // Free all memory associated with a character.
