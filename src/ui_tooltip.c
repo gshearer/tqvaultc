@@ -156,6 +156,8 @@ update_instant_tooltip(AppWidgets *widgets)
         return;
 
       widgets->last_tooltip_item = item;
+      widgets->tooltip_item_base = item->base_name;
+      widgets->tooltip_item_var1 = item->var1;
       widgets->last_tooltip_markup[0] = '\0';
       ItemReqReduction red;
       item_req_reduction(widgets->current_character, item->base_name, &red);
@@ -204,6 +206,8 @@ update_instant_tooltip(AppWidgets *widgets)
         return;
 
       widgets->last_inv_tooltip_item = item;
+      widgets->tooltip_item_base = item->base_name;
+      widgets->tooltip_item_var1 = item->var1;
       widgets->last_inv_tooltip_markup[0] = '\0';
       ItemReqReduction red;
       item_req_reduction(widgets->current_character, item->base_name, &red);
@@ -254,6 +258,8 @@ update_instant_tooltip(AppWidgets *widgets)
         return;
 
       widgets->last_bag_tooltip_item = item;
+      widgets->tooltip_item_base = item->base_name;
+      widgets->tooltip_item_var1 = item->var1;
       widgets->last_bag_tooltip_markup[0] = '\0';
       ItemReqReduction red;
       item_req_reduction(widgets->current_character, item->base_name, &red);
@@ -316,6 +322,8 @@ update_instant_tooltip(AppWidgets *widgets)
           if(item == widgets->cache_item &&                                     \
              gtk_widget_get_visible(popover)) return;                          \
           widgets->cache_item = item;                                          \
+          widgets->tooltip_item_base = item->base_name;                        \
+          widgets->tooltip_item_var1 = item->var1;                             \
           widgets->cache_markup[0] = '\0';                                     \
           ItemReqReduction red;                                                \
           item_req_reduction(widgets->current_character, item->base_name, &red); \
@@ -388,6 +396,8 @@ update_instant_tooltip(AppWidgets *widgets)
       vi.relic_bonus2= eq->relic_bonus2;
       vi.var1        = eq->var1;
       vi.var2        = eq->var2;
+      widgets->tooltip_item_base = eq->base_name;
+      widgets->tooltip_item_var1 = eq->var1;
       ItemReqReduction red;
       item_req_reduction(widgets->current_character, vi.base_name, &red);
       vault_item_format_stats_ex(&vi, widgets->translations, &red,
@@ -419,6 +429,180 @@ update_instant_tooltip(AppWidgets *widgets)
   }
 
   gtk_widget_set_visible(popover, FALSE);
+}
+
+// Timeout callback: hide the toast and clear the pending source id.
+// user_data: AppWidgets pointer.
+// Returns G_SOURCE_REMOVE so the timeout fires only once.
+static gboolean
+toast_hide_cb(gpointer user_data)
+{
+  AppWidgets *widgets = user_data;
+
+  if(widgets->toast_label)
+    gtk_widget_set_visible(widgets->toast_label, FALSE);
+
+  widgets->toast_timeout_id = 0;
+  return(G_SOURCE_REMOVE);
+}
+
+// Briefly show a transient toast message at the bottom of the window, then
+// auto-hide it after ~2s.  Re-arming while one is showing replaces the text and
+// restarts the timer.
+//
+// widgets: application state.
+// message: text to display.
+void
+show_toast(AppWidgets *widgets, const char *message)
+{
+  if(!widgets->toast_label)
+    return;
+
+  gtk_label_set_text(GTK_LABEL(widgets->toast_label), message);
+  gtk_widget_set_visible(widgets->toast_label, TRUE);
+
+  if(widgets->toast_timeout_id)
+    g_source_remove(widgets->toast_timeout_id);
+
+  widgets->toast_timeout_id =
+    g_timeout_add(2000, toast_hide_cb, widgets);
+}
+
+// Render the currently-visible tooltip popover to a GdkTexture and copy it to
+// the system clipboard, so the user can paste the item card into Discord and
+// other apps.  The item's icon is composited at the top-centre, above a
+// snapshot of the popover's content widget (main card plus the compare column
+// when shown), all over the tooltip's dark background colour.
+//
+// widgets: application state.
+// Returns TRUE if a tooltip was visible and an image was copied.
+gboolean
+tooltip_copy_to_clipboard(AppWidgets *widgets)
+{
+  GtkWidget *popover = widgets->tooltip_popover;
+
+  if(!popover || !gtk_widget_get_visible(popover))
+    return(FALSE);
+
+  GtkWidget *content = gtk_popover_get_child(GTK_POPOVER(popover));
+
+  if(!content)
+    return(FALSE);
+
+  int cw = gtk_widget_get_width(content);
+  int ch = gtk_widget_get_height(content);
+
+  if(cw <= 0 || ch <= 0)
+    return(FALSE);
+
+  // Load the hovered item's icon and decide its drawn size.  Item textures are
+  // small, so scale up to ~2x but cap the longest edge at 128px.
+  GdkTexture *icon_tex = NULL;
+  int icon_w = 0, icon_h = 0;
+  const int icon_gap = 6;
+
+  if(widgets->tooltip_item_base)
+  {
+    GdkPixbuf *icon = load_item_texture(widgets, widgets->tooltip_item_base,
+                                        widgets->tooltip_item_var1);
+
+    if(icon)
+    {
+      int nw = gdk_pixbuf_get_width(icon);
+      int nh = gdk_pixbuf_get_height(icon);
+
+      if(nw > 0 && nh > 0)
+      {
+        double scale = 2.0;
+        double longest = (nw > nh ? nw : nh) * scale;
+
+        if(longest > 128.0)
+          scale = 128.0 / (nw > nh ? nw : nh);
+
+        icon_w = (int)(nw * scale);
+        icon_h = (int)(nh * scale);
+
+        // Build a texture from the pixbuf without the deprecated
+        // gdk_texture_new_for_pixbuf (mirrors set_bag_btn_image in ui_io.c).
+        GBytes *bytes = g_bytes_new(gdk_pixbuf_get_pixels(icon),
+                                    (gsize)nh * gdk_pixbuf_get_rowstride(icon));
+
+        icon_tex = gdk_memory_texture_new(
+          nw, nh,
+          gdk_pixbuf_get_has_alpha(icon) ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8,
+          bytes, gdk_pixbuf_get_rowstride(icon));
+        g_bytes_unref(bytes);
+      }
+
+      g_object_unref(icon);
+    }
+  }
+
+  // Pad around everything so the content isn't flush against the image edge,
+  // matching the look of the on-screen popover.
+  const int pad = 8;
+  int top_band = icon_tex ? icon_h + icon_gap : 0;
+  int inner_w = cw > icon_w ? cw : icon_w;
+  int tw = inner_w + pad * 2;
+  int th = top_band + ch + pad * 2;
+
+  GtkSnapshot *snapshot = gtk_snapshot_new();
+  graphene_rect_t full = GRAPHENE_RECT_INIT(0, 0, tw, th);
+
+  // Fill the tooltip's dark background (matches popover.item-tooltip in CSS) so
+  // the pasted image isn't transparent.
+  GdkRGBA bg;
+
+  gdk_rgba_parse(&bg, "#1a1a2e");
+  gtk_snapshot_append_color(snapshot, &bg, &full);
+
+  // Icon centred horizontally in the top band (absolute coords, before any
+  // transform is pushed for the card below).
+  if(icon_tex)
+  {
+    graphene_rect_t irect =
+      GRAPHENE_RECT_INIT((tw - icon_w) / 2.0f, pad, icon_w, icon_h);
+
+    gtk_snapshot_append_texture(snapshot, icon_tex, &irect);
+  }
+
+  // Card content, centred horizontally, below the icon band.
+  graphene_point_t off =
+    GRAPHENE_POINT_INIT((tw - cw) / 2.0f, pad + top_band);
+
+  gtk_snapshot_translate(snapshot, &off);
+
+  GdkPaintable *paintable = gtk_widget_paintable_new(content);
+
+  gdk_paintable_snapshot(paintable, snapshot, cw, ch);
+  g_object_unref(paintable);
+
+  GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
+
+  if(!node)
+  {
+    g_clear_object(&icon_tex);
+    return(FALSE);
+  }
+
+  GtkNative *native = gtk_widget_get_native(content);
+  GskRenderer *renderer = native ? gtk_native_get_renderer(native) : NULL;
+  GdkTexture *texture = NULL;
+
+  if(renderer)
+    texture = gsk_renderer_render_texture(renderer, node, &full);
+
+  gsk_render_node_unref(node);
+  g_clear_object(&icon_tex);
+
+  if(!texture)
+    return(FALSE);
+
+  GdkClipboard *clipboard = gtk_widget_get_clipboard(widgets->main_window);
+
+  gdk_clipboard_set_texture(clipboard, texture);
+  g_object_unref(texture);
+  return(TRUE);
 }
 
 // Handle pointer motion over a drawing area.  Updates cursor tracking

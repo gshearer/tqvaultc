@@ -936,6 +936,17 @@ on_key_pressed(GtkEventControllerKey *ctrl, guint keyval,
   if(state & (GDK_CONTROL_MASK | GDK_ALT_MASK | GDK_SUPER_MASK))
     return(FALSE);
 
+  // 'p' (for "pic") copies the currently-shown tooltip to the clipboard as a
+  // PNG image, so the item card can be pasted into Discord and other apps.
+  if(keyval == GDK_KEY_p && !widgets->held_item)
+  {
+    if(tooltip_copy_to_clipboard(widgets))
+      show_toast(widgets, "Tooltip image copied to clipboard");
+    else
+      show_toast(widgets, "Hover an item, then press P to copy its tooltip");
+    return(TRUE);
+  }
+
   // 's' opens the Skill Manager (when a character is loaded and we're not
   // mid-drag).  A focused text entry consumes the keystroke first, so this
   // never fires while typing in a search box.
@@ -996,6 +1007,13 @@ on_close_request(GtkWindow *window, gpointer user_data)
 
   cancel_held_item(widgets);
   save_vault_if_dirty(widgets);
+
+  // Drop any pending toast auto-hide so it can't fire after teardown.
+  if(widgets->toast_timeout_id)
+  {
+    g_source_remove(widgets->toast_timeout_id);
+    widgets->toast_timeout_id = 0;
+  }
 
   // Character data and the stash tabs share one Save/Discard/Cancel prompt so
   // stash edits are no longer saved silently behind the user's back: on Save we
@@ -1400,6 +1418,17 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_drawing_area_set_draw_func(GTK_DRAWING_AREA(widgets->held_overlay),
                                  held_overlay_draw_cb, widgets, NULL);
   gtk_overlay_add_overlay(GTK_OVERLAY(overlay), widgets->held_overlay);
+
+  // Transient toast: a small label pinned to the bottom-centre, hidden until
+  // show_toast() reveals it.  Non-targetable so it never steals clicks.
+  widgets->toast_label = gtk_label_new(NULL);
+  gtk_widget_add_css_class(widgets->toast_label, "toast");
+  gtk_widget_set_halign(widgets->toast_label, GTK_ALIGN_CENTER);
+  gtk_widget_set_valign(widgets->toast_label, GTK_ALIGN_END);
+  gtk_widget_set_margin_bottom(widgets->toast_label, 24);
+  gtk_widget_set_can_target(widgets->toast_label, FALSE);
+  gtk_widget_set_visible(widgets->toast_label, FALSE);
+  gtk_overlay_add_overlay(GTK_OVERLAY(overlay), widgets->toast_label);
 
   // Capture-phase motion on the overlay: tracks cursor globally
   GtkEventController *overlay_motion = gtk_event_controller_motion_new();

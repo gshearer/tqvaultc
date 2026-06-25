@@ -239,6 +239,15 @@ typedef struct {
     GtkWidget *tooltip_label;
     GtkWidget *tooltip_parent;       // current parent drawing area
 
+    // Transient in-app toast (bottom-centre overlay; cross-platform feedback)
+    GtkWidget *toast_label;
+    guint      toast_timeout_id;     // pending auto-hide source, 0 if none
+
+    // Identity of the item shown in the currently-visible tooltip, so the
+    // clipboard-image feature ('p') can render the item icon alongside the card.
+    const char *tooltip_item_base;   // base_name (borrowed, valid while shown)
+    uint32_t    tooltip_item_var1;   // shard count / variant for icon resolution
+
     // Item comparison state (Ctrl+click to mark, hover to compare)
     TQVaultItem    compare_item;           // deep copy of marked item
     bool           compare_active;         // true when compare is set
@@ -612,6 +621,20 @@ on_motion(GtkEventControllerMotion *ctrl, double x, double y, gpointer user_data
 // user_data: AppWidgets pointer.
 void
 on_motion_leave(GtkEventControllerMotion *ctrl, gpointer user_data);
+
+// Render the currently-visible tooltip popover to a PNG image and copy it to
+// the system clipboard (for pasting into Discord etc.).  No-op if no tooltip is
+// currently shown.  Returns TRUE if an image was copied.
+// widgets: AppWidgets pointer.
+gboolean
+tooltip_copy_to_clipboard(AppWidgets *widgets);
+
+// Briefly show a transient toast message at the bottom of the window, then
+// auto-hide it.  Cross-platform in-app feedback (no OS notification needed).
+// widgets: AppWidgets pointer.
+// message: text to display.
+void
+show_toast(AppWidgets *widgets, const char *message);
 
 // ── Entry points in ui_dnd.c ──────────────────────────────────────────────
 

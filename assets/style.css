@@ -117,3 +117,12 @@ popover.item-tooltip { background: #1a1a2e; }
    line's descenders aren't clipped by the popover's bottom edge. */
 popover.item-tooltip > contents { padding: 0; padding-bottom: 3px; }
 popover.item-tooltip label { color: #e0e4ec; }
+
+/* Transient in-app toast (bottom-centre feedback, e.g. "copied to clipboard") */
+label.toast {
+  background: rgba(26, 26, 46, 0.92);
+  color: #e0e4ec;
+  border: 1px solid #3a3a5e;
+  border-radius: 8px;
+  padding: 8px 16px;
+}
