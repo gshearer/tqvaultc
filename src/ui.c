@@ -599,6 +599,36 @@ search_release_focus(AppWidgets *widgets)
   gtk_window_set_focus(GTK_WINDOW(widgets->main_window), NULL);
 }
 
+// Release the main window's keyboard focus on the NEXT main-loop iteration.
+// A GtkPopoverMenu restores/moves keyboard focus during the unmap that runs
+// AFTER its "closed" signal — especially after a submenu activation (e.g.
+// changing a relic/charm completion bonus) — so an immediate release is
+// overwritten and the window-level hotkeys (on_key_pressed) stay dead until you
+// click a focusable widget (the "switch bags fixes it" symptom).  Deferring to
+// idle wins that race.  widgets is app-lifetime, so no source-removal is needed.
+static gboolean
+release_window_focus_idle(gpointer user_data)
+{
+  AppWidgets *widgets = user_data;
+
+  gtk_window_set_focus(GTK_WINDOW(widgets->main_window), NULL);
+  return(G_SOURCE_REMOVE);
+}
+
+void
+ui_release_window_focus_deferred(AppWidgets *widgets)
+{
+  g_idle_add(release_window_focus_idle, widgets);
+}
+
+// Fired when the right-click context menu (a GtkPopoverMenu) closes.
+static void
+on_context_menu_closed(GtkPopover *popover, gpointer user_data)
+{
+  (void)popover;
+  ui_release_window_focus_deferred((AppWidgets *)user_data);
+}
+
 // Callback: fired when the search entry text changes.
 //   entry     - the GtkSearchEntry
 //   user_data - AppWidgets*
@@ -1165,6 +1195,8 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   g_object_ref_sink(widgets->context_menu);  // own the popover so unparent won't destroy it
   gtk_popover_set_has_arrow(GTK_POPOVER(widgets->context_menu), FALSE);
   gtk_widget_set_halign(widgets->context_menu, GTK_ALIGN_START);
+  g_signal_connect(widgets->context_menu, "closed",
+                   G_CALLBACK(on_context_menu_closed), widgets);
 
   // Bag context menu: actions + popover
   register_bag_menu_actions(app, widgets);
@@ -1173,6 +1205,8 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   g_object_ref_sink(widgets->bag_menu);
   gtk_popover_set_has_arrow(GTK_POPOVER(widgets->bag_menu), FALSE);
   gtk_widget_set_halign(widgets->bag_menu, GTK_ALIGN_START);
+  g_signal_connect(widgets->bag_menu, "closed",
+                   G_CALLBACK(on_context_menu_closed), widgets);
 
   // Instant tooltip popover (zero-delay, replaces GTK4's 500ms tooltip)
   widgets->tooltip_popover = gtk_popover_new();

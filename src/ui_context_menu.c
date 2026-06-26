@@ -1276,6 +1276,9 @@ on_set_relic_bonus(GSimpleAction *action, GVariant *param, gpointer data)
   invalidate_tooltips(widgets);
   queue_redraw_equip(widgets);
   update_save_button_sensitivity(widgets);
+  // Activating this submenu item leaves keyboard focus trapped on the popover's
+  // hidden internals, killing the window hotkeys until focus is reset; release it.
+  ui_release_window_focus_deferred(widgets);
 }
 
 // Set completion bonus on slot 2.
@@ -1314,6 +1317,9 @@ on_set_relic_bonus2(GSimpleAction *action, GVariant *param, gpointer data)
   invalidate_tooltips(widgets);
   queue_redraw_equip(widgets);
   update_save_button_sensitivity(widgets);
+  // Activating this submenu item leaves keyboard focus trapped on the popover's
+  // hidden internals, killing the window hotkeys until focus is reset; release it.
+  ui_release_window_focus_deferred(widgets);
 }
 
 // ── Modify Affixes action (launches dialog) ─────────────────────────────

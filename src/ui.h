@@ -310,6 +310,13 @@ queue_redraw_all(AppWidgets *widgets);
 void
 queue_redraw_equip(AppWidgets *widgets);
 
+// Clear the main window's keyboard focus on the next main-loop iteration so the
+// window-level hotkeys (on_key_pressed) resume.  Deferred because GTK's own
+// popover-close/unmap focus handling runs after the menu "closed" signal and
+// would overwrite an immediate release.  widgets: the application widget state.
+void
+ui_release_window_focus_deferred(AppWidgets *widgets);
+
 // Save the current vault to disk if it has been modified.
 // widgets: the application widget state.
 void
