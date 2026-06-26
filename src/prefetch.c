@@ -221,6 +221,9 @@ collect_item_paths(TQVaultSack *sacks, int num_sacks)
 static void
 start_prefetch(char **paths)
 {
+  // Ensure any DBR-cache clear joins this thread before freeing records we hold
+  // pointers into.  Idempotent; only the GUI path ever starts a prefetch.
+  asset_set_cache_clear_hook(prefetch_cancel);
   g_atomic_int_set(&g_prefetch_cancel, 0);
   g_prefetch_thread = g_thread_new("dbr-prefetch", prefetch_thread_func, paths);
 }

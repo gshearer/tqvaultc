@@ -1346,16 +1346,43 @@ db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
   g_hash_table_destroy(seen_name);
 }
 
+// db_creature_at / db_quest_at - fetch by index with bounds + NULL validation.
+// bi->src_idx comes straight from the on-disk browser cache; a stale/corrupt
+// cache could yield an out-of-range index (or a NULL index array), so never
+// index blindly.  Returns NULL when the index is unusable.
+static DbCreature *
+db_creature_at(DbBrowserState *st, int idx)
+{
+  if(!st->creatures || !st->creatures->creatures ||
+     idx < 0 || (guint)idx >= st->creatures->creatures->len)
+    return(NULL);
+
+  return(g_ptr_array_index(st->creatures->creatures, idx));
+}
+
+static DbQuest *
+db_quest_at(DbBrowserState *st, int idx)
+{
+  if(!st->quests || !st->quests->quests ||
+     idx < 0 || (guint)idx >= st->quests->quests->len)
+    return(NULL);
+
+  return(g_ptr_array_index(st->quests->quests, idx));
+}
+
 // Build the creature detail markup (text only): name, classification/race/
 // levels, the Properties block, and the items it can drop (per-difficulty
 // chance).  No widget/thumbnail access.
 static void
 build_creature_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
-  DbCreature *c = g_ptr_array_index(st->creatures->creatures, bi->src_idx);
+  DbCreature *c = db_creature_at(st, bi->src_idx);
   BufWriter w;
 
   buf_init(&w, out, outsz);
+
+  if(!c)
+    return;
 
   char *e_name = escape_markup(bi->name);
 
@@ -1397,14 +1424,14 @@ build_creature_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t ou
 static void
 update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
 {
-  DbCreature *c = g_ptr_array_index(st->creatures->creatures, bi->src_idx);
+  DbCreature *c = db_creature_at(st, bi->src_idx);
   char markup[32768];
 
   build_creature_markup(st, bi, markup, sizeof(markup));
   gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
 
   // Show the creature's rendered model thumbnail (cached at startup), if any.
-  GdkPixbuf *pb = creature_thumbs_load(c->path);
+  GdkPixbuf *pb = c ? creature_thumbs_load(c->path) : NULL;
 
   db_detail_set_pixbuf(st, pb);
   if(pb)
@@ -1416,10 +1443,13 @@ update_detail_creature(DbBrowserState *st, DbBrowseItem *bi)
 static void
 build_quest_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz)
 {
-  DbQuest *q = g_ptr_array_index(st->quests->quests, bi->src_idx);
+  DbQuest *q = db_quest_at(st, bi->src_idx);
   BufWriter w;
 
   buf_init(&w, out, outsz);
+
+  if(!q)
+    return;
 
   char *e_name = escape_markup(bi->name);
 

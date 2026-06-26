@@ -98,7 +98,8 @@ parse_text_data(TQTranslation *t, uint8_t *data, size_t size)
     }
   }
 
-  char *line = strtok(content, "\r\n");
+  char *saveptr = NULL;
+  char *line = strtok_r(content, "\r\n", &saveptr);
 
   while(line)
   {
@@ -110,10 +111,15 @@ parse_text_data(TQTranslation *t, uint8_t *data, size_t size)
       char *tag = g_ascii_strdown(line, -1);
       char *val = strdup(eq + 1);
 
-      strip_tq_tags(val);
-      g_hash_table_insert(t->tags, tag, val);
+      if(val)
+      {
+        strip_tq_tags(val);
+        g_hash_table_insert(t->tags, tag, val);
+      }
+      else
+        g_free(tag);
     }
-    line = strtok(NULL, "\r\n");
+    line = strtok_r(NULL, "\r\n", &saveptr);
   }
   g_free(content);
 }

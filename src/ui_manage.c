@@ -380,8 +380,12 @@ on_new_vault_ok(GtkButton *btn, gpointer user_data)
 
   snprintf(combo_name, sizeof(combo_name), "%s", text);
 
+  // Capture widgets before destroying the dialog: the state struct is freed by
+  // the window's g_object_set_data_full(g_free) notify during destroy.
+  AppWidgets *widgets = nw->widgets;
+
   gtk_window_destroy(GTK_WINDOW(nw->dialog));
-  repopulate_vault_combo(nw->widgets, combo_name);
+  repopulate_vault_combo(widgets, combo_name);
 }
 
 // Cancel button callback for the "New Vault" dialog.
@@ -550,8 +554,11 @@ on_duplicate_ok(GtkButton *btn, gpointer user_data)
   if(patch_player_name(chr_path, display_name) != 0)
     fprintf(stderr, "Warning: failed to patch myPlayerName in %s\n", chr_path);
 
+  // Capture widgets before destroy frees the state struct (g_free notify).
+  AppWidgets *widgets = dw->widgets;
+
   gtk_window_destroy(GTK_WINDOW(dw->dialog));
-  repopulate_character_combo(dw->widgets, new_dir);
+  repopulate_character_combo(widgets, new_dir);
 }
 
 // Cancel button callback for the "Duplicate Character" dialog.
@@ -729,8 +736,14 @@ on_dup_vault_ok(GtkButton *btn, gpointer user_data)
   fclose(fout);
   free(buf);
 
+  // Capture widgets and copy the name before destroy: the state struct is freed
+  // by the window's g_free notify, and `text` is owned by the destroyed entry.
+  AppWidgets *widgets = nw->widgets;
+  char *name_copy = g_strdup(text);
+
   gtk_window_destroy(GTK_WINDOW(nw->dialog));
-  repopulate_vault_combo(nw->widgets, text);
+  repopulate_vault_combo(widgets, name_copy);
+  g_free(name_copy);
 }
 
 // Cancel button callback for the "Duplicate Vault" dialog.
@@ -871,8 +884,14 @@ on_rename_vault_ok(GtkButton *btn, gpointer user_data)
     return;
   }
 
+  // Capture widgets and copy the name before destroy: the state struct is freed
+  // by the window's g_free notify, and `text` is owned by the destroyed entry.
+  AppWidgets *widgets = nw->widgets;
+  char *name_copy = g_strdup(text);
+
   gtk_window_destroy(GTK_WINDOW(nw->dialog));
-  repopulate_vault_combo(nw->widgets, text);
+  repopulate_vault_combo(widgets, name_copy);
+  g_free(name_copy);
 }
 
 // Cancel button callback for the "Rename Vault" dialog.
@@ -983,16 +1002,19 @@ on_delete_vault_yes(GtkButton *btn, gpointer user_data)
   if(g_unlink(filepath) != 0)
     fprintf(stderr, "Failed to delete vault: %s\n", filepath);
 
+  // Capture widgets before destroy frees the state struct (g_free notify).
+  AppWidgets *widgets = dvw->widgets;
+
   gtk_window_destroy(GTK_WINDOW(dvw->dialog));
 
   // Clear current vault so we don't write it back on combo change
-  if(dvw->widgets->current_vault)
+  if(widgets->current_vault)
   {
-    vault_free(dvw->widgets->current_vault);
-    dvw->widgets->current_vault = NULL;
+    vault_free(widgets->current_vault);
+    widgets->current_vault = NULL;
   }
 
-  repopulate_vault_combo(dvw->widgets, NULL);
+  repopulate_vault_combo(widgets, NULL);
 }
 
 // Cancel button callback for the "Delete Vault" confirmation dialog.
@@ -1197,8 +1219,11 @@ on_rename_char_ok(GtkButton *btn, gpointer user_data)
   if(patch_player_name(chr_path, display_name) != 0)
     fprintf(stderr, "Warning: failed to patch myPlayerName in %s\n", chr_path);
 
+  // Capture widgets before destroy frees the state struct (g_free notify).
+  AppWidgets *widgets = dw->widgets;
+
   gtk_window_destroy(GTK_WINDOW(dw->dialog));
-  repopulate_character_combo(dw->widgets, new_dir);
+  repopulate_character_combo(widgets, new_dir);
 }
 
 // Cancel button callback for the "Rename Character" dialog.
@@ -1309,16 +1334,19 @@ on_delete_char_yes(GtkButton *btn, gpointer user_data)
   if(remove_directory_recursive(dirpath) != 0)
     fprintf(stderr, "Failed to delete character directory: %s\n", dirpath);
 
+  // Capture widgets before destroy frees the state struct (g_free notify).
+  AppWidgets *widgets = dcw->widgets;
+
   gtk_window_destroy(GTK_WINDOW(dcw->dialog));
 
   // Clear current character state
-  if(dcw->widgets->current_character)
+  if(widgets->current_character)
   {
-    character_free(dcw->widgets->current_character);
-    dcw->widgets->current_character = NULL;
+    character_free(widgets->current_character);
+    widgets->current_character = NULL;
   }
 
-  repopulate_character_combo(dcw->widgets, NULL);
+  repopulate_character_combo(widgets, NULL);
 }
 
 // Cancel button callback for the "Delete Character" confirmation dialog.

@@ -42,6 +42,13 @@ arc_load(const char *filepath)
   if(!data)
     return(NULL);
 
+  // Need the full fixed header before reading num_files/num_parts/toc_offset.
+  if(file_size < sizeof(ArcHeader))
+  {
+    platform_munmap(data, file_size);
+    return(NULL);
+  }
+
   ArcHeader *header = (ArcHeader *)data;
 
   if(memcmp(header->magic, "ARC\0", 4) != 0)
@@ -76,6 +83,19 @@ arc_load(const char *filepath)
     return(NULL);
   }
 
+  // Validate the part table and the trailing file-record table fit in the file
+  // before reading them — toc_offset/num_parts/num_files all come from the file.
+  if((size_t)header->toc_offset + (size_t)arc->num_parts * sizeof(TQArcPart) > file_size
+     || 44ULL * header->num_files > file_size)
+  {
+    free(arc->entries);
+    free(arc->parts);
+    free(arc->filepath);
+    platform_munmap(data, file_size);
+    free(arc);
+    return(NULL);
+  }
+
   memcpy(arc->parts, data + header->toc_offset, arc->num_parts * sizeof(TQArcPart));
 
   size_t filenames_offset = header->toc_offset + arc->num_parts * sizeof(TQArcPart);
@@ -83,13 +103,21 @@ arc_load(const char *filepath)
   // Read records from end
   ArcFileRecord *records = (ArcFileRecord *)(data + file_size - 44LL * header->num_files);
 
-  // Read filenames sequentially
+  // Read filenames sequentially.  The name region runs up to the file-record
+  // table at EOF; stop assigning if a name has no NUL before that end (corrupt).
+  const uint8_t *names_end = data + file_size;
   uint8_t *name_ptr = data + filenames_offset;
 
   for(uint32_t i = 0; i < header->num_files; i++)
   {
-    arc->entries[i].path = strdup((char *)name_ptr);
-    name_ptr += strlen((char *)name_ptr) + 1;
+    if(name_ptr < names_end)
+    {
+      size_t avail = (size_t)(names_end - name_ptr);
+      size_t nlen = strnlen((char *)name_ptr, avail);
+
+      arc->entries[i].path = (nlen < avail) ? strdup((char *)name_ptr) : NULL;
+      name_ptr += nlen + 1;
+    }
 
     arc->entries[i].real_size = records[i].real_size;
     arc->entries[i].num_parts = records[i].num_parts;
@@ -183,6 +211,11 @@ arc_extract_file(TQArcFile *arc, uint32_t entry_index, size_t *out_size)
     TQArcPart *part = &arc->parts[part_idx];
 
     if((size_t)part->file_offset + part->compressed_size > arc->data_size)
+      break;
+
+    // Never write past real_data (malloc'd entry->real_size): each part->real_size
+    // is read from the file independently of the entry's claimed total.
+    if(current_offset + part->real_size > entry->real_size)
       break;
 
     uLongf dest_len = part->real_size;

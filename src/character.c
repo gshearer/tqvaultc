@@ -45,15 +45,23 @@ read_u32(const uint8_t *data, size_t offset)
 
 // Read a length-prefixed ASCII string from data at offset.
 // data: raw byte buffer.
+// size: total bytes in data, so a corrupt length prefix can't drive an over-read.
 // offset: byte position of the 4-byte length prefix.
 // next_offset: if non-NULL, set to the byte position after the string.
-// Returns: allocated string, or NULL if length is 0 or > 1024.
+// Returns: allocated string, or NULL if length is 0, > 1024, or runs past EOF.
 static char *
-read_string(const uint8_t *data, size_t offset, size_t *next_offset)
+read_string(const uint8_t *data, size_t size, size_t offset, size_t *next_offset)
 {
+  if(offset + 4 > size)
+  {
+    if(next_offset)
+      *next_offset = size;
+    return(NULL);
+  }
+
   uint32_t len = read_u32(data, offset);
 
-  if(len == 0 || len > 1024)
+  if(len == 0 || len > 1024 || offset + 4 + (size_t)len > size)
   {
     if(next_offset)
       *next_offset = offset + 4;
@@ -83,17 +91,26 @@ read_string(const uint8_t *data, size_t offset, size_t *next_offset)
 // port stores it as UTF-32LE (char_width 4). The length prefix counts characters
 // either way, so only the per-character stride differs.
 // data: raw byte buffer.
+// size: total bytes in data, so a corrupt length prefix can't drive an over-read.
 // offset: byte position of the 4-byte character count prefix.
 // char_width: bytes per character (2 = UTF-16LE, 4 = UTF-32LE).
 // next_offset: if non-NULL, set to the byte position after the string.
-// Returns: allocated ASCII string, or NULL if length is 0 or > 1024.
+// Returns: allocated ASCII string, or NULL if length is 0, > 1024, or past EOF.
 static char *
-read_string_utf16_as_ascii(const uint8_t *data, size_t offset, int char_width,
-                           size_t *next_offset)
+read_string_utf16_as_ascii(const uint8_t *data, size_t size, size_t offset,
+                           int char_width, size_t *next_offset)
 {
+  if(offset + 4 > size)
+  {
+    if(next_offset)
+      *next_offset = size;
+    return(NULL);
+  }
+
   uint32_t len = read_u32(data, offset);
 
-  if(len == 0 || len > 1024)
+  if(len == 0 || len > 1024 ||
+     offset + 4 + (size_t)len * (size_t)char_width > size)
   {
     if(next_offset)
       *next_offset = offset + 4;
@@ -644,7 +661,7 @@ parse_item_strings(ParseState *ps, const char *key)
 {
   if(strcmp(key, "baseName") == 0)
   {
-    char *val = read_string(ps->data, *ps->offset, ps->offset);
+    char *val = read_string(ps->data, ps->size, *ps->offset, ps->offset);
 
     if(ps->in_equipment)
     {
@@ -690,7 +707,7 @@ parse_item_strings(ParseState *ps, const char *key)
      strcmp(key, "relicName2")  == 0 ||
      strcmp(key, "relicBonus2") == 0)
   {
-    char *val = read_string(ps->data, *ps->offset, ps->offset);
+    char *val = read_string(ps->data, ps->size, *ps->offset, ps->offset);
 
     if(ps->in_equipment && ps->cur_equip_slot < 12 && ps->chr->equipment[ps->cur_equip_slot])
     {
@@ -907,7 +924,7 @@ parse_char_stats(ParseState *ps, const char *key)
     // its value — just record its presence and consume it so the scanner needn't
     // resync past it. The splice-save preserves it byte-for-byte regardless.
     ps->chr->has_my_save_id = true;
-    char *save_id = read_string(ps->data, *ps->offset, ps->offset);
+    char *save_id = read_string(ps->data, ps->size, *ps->offset, ps->offset);
     free(save_id);
     return(1);
   }
@@ -919,21 +936,21 @@ parse_char_stats(ParseState *ps, const char *key)
     int char_width = ps->chr->header_version >= 4 ? 4 : 2;
     free(ps->chr->character_name);
     ps->chr->character_name =
-      read_string_utf16_as_ascii(ps->data, *ps->offset, char_width, ps->offset);
+      read_string_utf16_as_ascii(ps->data, ps->size, *ps->offset, char_width, ps->offset);
     return(1);
   }
 
   if(strcmp(key, "playerCharacterClass") == 0)
   {
     free(ps->chr->class_name);
-    ps->chr->class_name = read_string(ps->data, *ps->offset, ps->offset);
+    ps->chr->class_name = read_string(ps->data, ps->size, *ps->offset, ps->offset);
     return(1);
   }
 
   if(strcmp(key, "playerClassTag") == 0)
   {
     free(ps->chr->class_tag);
-    ps->chr->class_tag = read_string(ps->data, *ps->offset, ps->offset);
+    ps->chr->class_tag = read_string(ps->data, ps->size, *ps->offset, ps->offset);
     return(1);
   }
 
@@ -1066,7 +1083,7 @@ parse_skills(ParseState *ps, const char *key)
       ps->skill_list_max_off = ps->last_max_val_off;
     }
 
-    char *skill = read_string(ps->data, *ps->offset, ps->offset);
+    char *skill = read_string(ps->data, ps->size, *ps->offset, ps->offset);
 
     // Case-insensitive: some masteries store lowercase "mastery.dbr"
     // (e.g. Neidan: "...Neidan\neidanmastery.dbr") vs. base-game

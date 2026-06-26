@@ -11,6 +11,13 @@
 // lowercase string -> canonical pointer
 static GHashTable *g_intern_table = NULL;
 
+// Guards g_intern_table.  arz_intern() is reachable from the background DBR
+// prefetch thread (asset_get_dbr -> arz_read_record_at -> build_var_index ->
+// arz_intern) while the GTK main thread interns names constantly (tooltips,
+// stats, skill tree, DB browser).  GHashTable is not safe for concurrent
+// access, so every touch of g_intern_table must hold this lock.
+static GMutex g_intern_mutex;
+
 // arz_intern_init -- initialize the string interning system.
 // creates the global hash table if it does not already exist.
 void
@@ -31,10 +38,7 @@ arz_intern(const char *name)
   if(!name)
     return(NULL);
 
-  if(!g_intern_table)
-    arz_intern_init();
-
-  // Lowercase the name for canonical form
+  // Lowercase the name for canonical form (no shared state — outside the lock)
   size_t len = strlen(name);
   char *lower = malloc(len + 1);
 
@@ -44,16 +48,23 @@ arz_intern(const char *name)
   for(size_t i = 0; i <= len; i++)
     lower[i] = (name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i];
 
+  g_mutex_lock(&g_intern_mutex);
+
+  if(!g_intern_table)
+    arz_intern_init();
+
   const char *existing = g_hash_table_lookup(g_intern_table, lower);
 
   if(existing)
   {
+    g_mutex_unlock(&g_intern_mutex);
     free(lower);
     return(existing);
   }
 
   // lower becomes the canonical copy owned by the hash table
   g_hash_table_insert(g_intern_table, lower, lower);
+  g_mutex_unlock(&g_intern_mutex);
   return(lower);
 }
 
@@ -62,11 +73,15 @@ arz_intern(const char *name)
 void
 arz_intern_free(void)
 {
+  g_mutex_lock(&g_intern_mutex);
+
   if(g_intern_table)
   {
     g_hash_table_destroy(g_intern_table);
     g_intern_table = NULL;
   }
+
+  g_mutex_unlock(&g_intern_mutex);
 }
 
 // ── var_index building ──────────────────────────────────────────
@@ -140,14 +155,31 @@ read_u16(const uint8_t *data, size_t offset)
 
 // read_string_prefixed -- read a length-prefixed string from a byte buffer.
 // data: source buffer.
+// data_size: total size of data, so the length prefix can't drive an over-read.
 // offset: byte offset where the 4-byte length prefix starts.
 // next_offset: if non-NULL, set to the offset after the string.
-// returns: malloc'd null-terminated string.
+// returns: malloc'd null-terminated string, or NULL if the record runs past EOF.
 static char *
-read_string_prefixed(const uint8_t *data, size_t offset, size_t *next_offset)
+read_string_prefixed(const uint8_t *data, size_t data_size, size_t offset,
+                     size_t *next_offset)
 {
+  if(offset + 4 > data_size)
+  {
+    if(next_offset)
+      *next_offset = data_size;
+    return(NULL);
+  }
+
   uint32_t len = read_u32(data, offset);
-  char *str = malloc(len + 1);
+
+  if(offset + 4 + (size_t)len > data_size)
+  {
+    if(next_offset)
+      *next_offset = data_size;
+    return(NULL);
+  }
+
+  char *str = malloc((size_t)len + 1);
 
   if(!str)
   {
@@ -177,6 +209,14 @@ arz_load(const char *filepath)
   if(!data)
     return(NULL);
 
+  // Header is 24 bytes (magic@0, record table @4/12, string table start @16).
+  // Reject anything too small before reading those fields out of the mmap.
+  if(file_size < 24)
+  {
+    platform_munmap(data, file_size);
+    return(NULL);
+  }
+
   uint32_t magic = read_u32(data, 0);
 
   if(magic != 0x0052415a && magic != 0x00030004)
@@ -201,6 +241,14 @@ arz_load(const char *filepath)
   uint32_t record_count = read_u32(data, 12);
   uint32_t string_start = read_u32(data, 16);
 
+  if((size_t)string_start + 4 > file_size)
+  {
+    free(arz->filepath);
+    platform_munmap(data, file_size);
+    free(arz);
+    return(NULL);
+  }
+
   arz->num_strings = read_u32(data, string_start);
   arz->string_table = calloc(arz->num_strings, sizeof(char *));
 
@@ -215,7 +263,7 @@ arz_load(const char *filepath)
   size_t s_off = string_start + 4;
 
   for(uint32_t i = 0; i < arz->num_strings; i++)
-    arz->string_table[i] = read_string_prefixed(data, s_off, &s_off);
+    arz->string_table[i] = read_string_prefixed(data, file_size, s_off, &s_off);
 
   arz->num_records = record_count;
   arz->records = calloc(record_count, sizeof(TQArzRecord));
@@ -235,10 +283,16 @@ arz_load(const char *filepath)
 
   for(uint32_t i = 0; i < record_count; i++)
   {
+    if(r_off + 8 > file_size)
+      break;
+
     uint32_t name_idx = read_u32(data, r_off);
     uint32_t type_len = read_u32(data, r_off + 4);
 
-    r_off += 8 + type_len;
+    r_off += 8 + (size_t)type_len;
+
+    if(r_off + 8 > file_size)
+      break;
 
     arz->records[i].path = (name_idx < arz->num_strings) ? arz->string_table[name_idx] : NULL;
     arz->records[i].offset = read_u32(data, r_off) + 24;
@@ -264,7 +318,10 @@ arz_load(const char *filepath)
 TQArzRecordData *
 arz_read_record_at(TQArzFile *arz, uint32_t offset, uint32_t compressed_size)
 {
-  if(!arz || offset + compressed_size > arz->data_size)
+  // Cast to size_t first: offset + compressed_size are uint32_t and would wrap
+  // mod 2^32 before the comparison, letting a crafted/corrupt offset near
+  // UINT32_MAX slip past the bound and over-read the mmap.
+  if(!arz || (size_t)offset + compressed_size > arz->data_size)
     return(NULL);
 
   uLong uncompressed_size = 1024 * 1024; // 1MB initial

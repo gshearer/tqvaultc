@@ -16,6 +16,18 @@ set_err(char **err_out, const char *msg)
     *err_out = strdup(msg);
 }
 
+// json_strdup - strdup a JSON string value, tolerating a JSON null.
+// json_object_get_string() returns NULL for a JSON null, and strdup(NULL) is
+// undefined; a corrupt/hand-edited vault with e.g. "baseName": null must not crash.
+// val: json object (may represent null); returns malloc'd copy or NULL.
+static char *
+json_strdup(struct json_object *val)
+{
+  const char *s = json_object_get_string(val);
+
+  return(s ? strdup(s) : NULL);
+}
+
 // vault_load_json - load a vault from a JSON file
 // filepath: path to the vault JSON file
 // returns: parsed vault, or NULL on failure
@@ -144,25 +156,25 @@ vault_load_json_ex(const char *filepath, char **err_out)
           vault->sacks[s].items[i].seed = (uint32_t)json_object_get_int(val);
 
         if(json_object_object_get_ex(item_obj, "baseName", &val))
-          vault->sacks[s].items[i].base_name = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].base_name = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "prefixName", &val))
-          vault->sacks[s].items[i].prefix_name = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].prefix_name = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "suffixName", &val))
-          vault->sacks[s].items[i].suffix_name = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].suffix_name = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "relicName", &val))
-          vault->sacks[s].items[i].relic_name = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].relic_name = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "relicBonus", &val))
-          vault->sacks[s].items[i].relic_bonus = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].relic_bonus = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "relicName2", &val))
-          vault->sacks[s].items[i].relic_name2 = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].relic_name2 = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "relicBonus2", &val))
-          vault->sacks[s].items[i].relic_bonus2 = strdup(json_object_get_string(val));
+          vault->sacks[s].items[i].relic_bonus2 = json_strdup(val);
 
         if(json_object_object_get_ex(item_obj, "var1", &val))
           vault->sacks[s].items[i].var1 = (uint32_t)json_object_get_int(val);

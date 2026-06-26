@@ -1700,11 +1700,17 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
   // Pet bonus
   if(found == 0)
   {
+    // Depth-guard the petBonusName self-recursion against cyclic/modded chains.
+    static int pet_depth = 0;
     const char *pet = record_get_string_fast(data, INT_petBonusName);
 
-    if(pet && pet[0])
+    if(pet && pet[0] && pet_depth < 8)
     {
-      char *pet_summary = item_bonus_stat_summary(pet, tr);
+      char *pet_summary;
+
+      pet_depth++;
+      pet_summary = item_bonus_stat_summary(pet, tr);
+      pet_depth--;
 
       if(pet_summary)
       {
@@ -3129,12 +3135,17 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   // augments) so the "Bonus to All Pets" group always sits at the very end,
   // clearly separated from the wearer's own bonuses by its leading blank line.
   {
+    // Depth-guard the petBonusName self-recursion: shipped data is acyclic, but a
+    // cyclic/modded chain would recurse until the ~18KB-per-frame stack overflows.
+    static int pet_depth = 0;
     const char *pet_bonus = record_get_string_fast(data, INT_petBonusName);
 
-    if(pet_bonus && pet_bonus[0] && !g_item_stats_defer_pet_bonus)
+    if(pet_bonus && pet_bonus[0] && !g_item_stats_defer_pet_bonus && pet_depth < 8)
     {
       buf_write(w, "\n<span color='%s'>Bonus to All Pets:</span>\n", color);
+      pet_depth++;
       add_stats_from_record(pet_bonus, tr, w, color, shard_index);
+      pet_depth--;
     }
   }
 }

@@ -16,6 +16,14 @@ static GHashTable *g_dbr_cache = NULL;
 static int g_num_files = 0;
 static GMutex g_dbr_mutex;
 
+// Optional callback run at the very start of asset_dbr_cache_clear(), before any
+// record is freed.  The GUI registers prefetch_cancel() here so a background
+// prefetch (which holds raw TQArzRecordData* pointers into g_dbr_cache) is
+// joined before the cache is wiped — otherwise the clear frees records the
+// prefetch thread is still dereferencing (use-after-free).  Kept as a function
+// pointer so this layer never links against prefetch.c (tq-dbr-tool does not).
+static void (*g_cache_clear_hook)(void) = NULL;
+
 static void *g_index_mmap = NULL;
 static size_t g_index_size = 0;
 static TQIndexHeader *g_index_header = NULL;
@@ -768,10 +776,22 @@ asset_get_dbr(const char *record_path)
 // the resource index are left intact.  Callers MUST NOT hold any TQArzRecordData
 // pointer returned by asset_get_dbr() across this call (it frees them).
 void
+asset_set_cache_clear_hook(void (*hook)(void))
+{
+  g_cache_clear_hook = hook;
+}
+
+void
 asset_dbr_cache_clear(void)
 {
   if(!g_dbr_cache)
     return;
+
+  // Stop any thread that may hold pointers into the cache BEFORE we free them.
+  // Runs outside g_dbr_mutex so the prefetch thread's in-flight asset_get_dbr()
+  // can finish (it takes the same lock) and observe the cancel.
+  if(g_cache_clear_hook)
+    g_cache_clear_hook();
 
   g_mutex_lock(&g_dbr_mutex);
   g_hash_table_remove_all(g_dbr_cache);

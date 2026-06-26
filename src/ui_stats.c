@@ -614,7 +614,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
           {
             TQVariable *v = &data->vars[vi];
 
-            if(v->type == TQ_VAR_STRING && v->count > 0 && v->value.str[0])
+            if(v->type == TQ_VAR_STRING && v->count > 0 && v->value.str && v->value.str[0])
             {
               TQArzRecordData *pet = asset_get_dbr(v->value.str[0]);
 

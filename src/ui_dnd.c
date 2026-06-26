@@ -981,7 +981,14 @@ pick_up_from_sack(AppWidgets *widgets, TQVaultSack *sack,
   get_item_dims(widgets, hit, &hi->item_w, &hi->item_h);
   hi->texture = load_item_texture(widgets, hit->base_name, hit->var1);
 
-  // Remove from sack (shift items, don't free strings since we copied them)
+  // Capture the source's grid coords before it is freed/shifted away.
+  int src_point_x = hit->point_x;
+  int src_point_y = hit->point_y;
+
+  // Remove from sack: hi->item holds independent copies, so free the source
+  // slot's strings (else they leak) before shifting the items down over it.
+  vault_item_free_strings(hit);
+
   if(hit_idx < sack->num_items - 1)
     memmove(&sack->items[hit_idx], &sack->items[hit_idx + 1],
             (size_t)(sack->num_items - 1 - hit_idx) * sizeof(TQVaultItem));
@@ -992,8 +999,8 @@ pick_up_from_sack(AppWidgets *widgets, TQVaultSack *sack,
   if(widgets->compare_active &&
      widgets->compare_source == ctype &&
      widgets->compare_sack_idx == sack_idx &&
-     hit->point_x == widgets->compare_item.point_x &&
-     hit->point_y == widgets->compare_item.point_y)
+     src_point_x == widgets->compare_item.point_x &&
+     src_point_y == widgets->compare_item.point_y)
     clear_compare_item(widgets);
 
   widgets->held_item = hi;
@@ -1196,6 +1203,10 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
   int tw, th;
 
   get_item_dims(widgets, swap_with, &tw, &th);
+
+  // target_copy holds independent copies, so free the swapped item's strings
+  // (else they leak) before shifting items down over its slot.
+  vault_item_free_strings(swap_with);
 
   // Remove the swapped item from the sack
   if(swap_idx < sack->num_items - 1)

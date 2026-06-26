@@ -28,11 +28,8 @@ static void
 bb_init(ByteBuf *b, size_t cap)
 {
   b->data = malloc(cap);
-  if(!b->data)
-    return;
-
   b->size = 0;
-  b->cap  = cap;
+  b->cap  = b->data ? cap : 0;   // keep fields defined even if malloc failed
 }
 
 // Ensure the ByteBuf has room for at least `need` more bytes, doubling as needed.
@@ -44,10 +41,18 @@ bb_ensure(ByteBuf *b, size_t need)
   if(b->size + need <= b->cap)
     return;
 
-  while(b->cap < b->size + need)
-    b->cap *= 2;
+  size_t newcap = b->cap ? b->cap : 64;   // avoid an infinite loop when cap == 0
 
-  b->data = realloc(b->data, b->cap);
+  while(newcap < b->size + need)
+    newcap *= 2;
+
+  uint8_t *grown = realloc(b->data, newcap);
+
+  if(!grown)
+    return;   // leave the buffer intact; bb_write drops the write rather than overflow
+
+  b->data = grown;
+  b->cap = newcap;
 }
 
 // Append `len` bytes from `src` to the ByteBuf.
@@ -58,6 +63,10 @@ static void
 bb_write(ByteBuf *b, const void *src, size_t len)
 {
   bb_ensure(b, len);
+
+  if(b->size + len > b->cap)
+    return;   // ensure couldn't grow (OOM): drop the write instead of overflowing
+
   memcpy(b->data + b->size, src, len);
   b->size += len;
 }

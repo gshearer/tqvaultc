@@ -18,6 +18,18 @@ TQConfig global_config = {NULL, NULL, NULL, NULL, NULL, 0, NULL};
 bool tqvc_debug = false;
 static bool g_first_run = false;
 
+// json_strdup - strdup a JSON string value, tolerating a JSON null.
+// json_object_get_string() returns NULL for a JSON null, and strdup(NULL) is
+// undefined; a corrupt/hand-edited config must not crash on load.
+// val: json object (may represent null); returns malloc'd copy or NULL.
+static char *
+json_strdup(struct json_object *val)
+{
+  const char *s = json_object_get_string(val);
+
+  return(s ? strdup(s) : NULL);
+}
+
 // load_from_file - load configuration from a JSON file on disk
 // path: filesystem path to the config JSON file
 static void
@@ -66,10 +78,10 @@ load_from_file(const char *path)
   struct json_object *save_folder_obj, *game_folder_obj, *last_char_obj, *last_vault_obj;
 
   if(json_object_object_get_ex(parsed_json, "save_folder", &save_folder_obj))
-    global_config.save_folder = strdup(json_object_get_string(save_folder_obj));
+    global_config.save_folder = json_strdup(save_folder_obj);
 
   if(json_object_object_get_ex(parsed_json, "game_folder", &game_folder_obj))
-    global_config.game_folder = strdup(json_object_get_string(game_folder_obj));
+    global_config.game_folder = json_strdup(game_folder_obj);
 
   // vault_folder: only honor a non-empty value (config_save writes "" when
   // unset, which must read back as NULL so we fall back to the default dir).
@@ -84,10 +96,10 @@ load_from_file(const char *path)
   }
 
   if(json_object_object_get_ex(parsed_json, "last_character_path", &last_char_obj))
-    global_config.last_character_path = strdup(json_object_get_string(last_char_obj));
+    global_config.last_character_path = json_strdup(last_char_obj);
 
   if(json_object_object_get_ex(parsed_json, "last_vault_name", &last_vault_obj))
-    global_config.last_vault_name = strdup(json_object_get_string(last_vault_obj));
+    global_config.last_vault_name = json_strdup(last_vault_obj);
 
   struct json_object *last_vault_bag_obj;
 

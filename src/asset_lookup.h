@@ -60,6 +60,12 @@ void asset_dbr_cache_clear(void);
 // The trim is slow (whole-heap walk), so use this only at phase boundaries.
 void asset_dbr_cache_clear_and_trim(void);
 
+// asset_set_cache_clear_hook - register a callback invoked at the start of
+// asset_dbr_cache_clear() (before any record is freed).  The GUI passes
+// prefetch_cancel() so a background prefetch is joined before its cache pointers
+// are freed.  Pass NULL to clear.  Not thread-safe; set once at startup.
+void asset_set_cache_clear_hook(void (*hook)(void));
+
 // asset_manager_probe_ok - true iff the last asset_manager_init() resolved its
 // probe asset.  False => wrong/empty game folder (data won't resolve); the
 // startup path uses this to fall back to the folder picker.
