@@ -65,6 +65,19 @@ affix_table_get_forge(const char *item_base_name, TQTranslation *tr);
 void
 affix_result_free(TQItemAffixes *affixes);
 
+// Callback for affix_table_foreach: invoked once per (item, table-pair) edge.
+// item_path is normalized (lowercase, '\\'-separated); prefix_table and
+// suffix_table are the item's LootRandomizerTable paths (either may be NULL).
+typedef void (*AffixTablePairFn)(const char *item_path,
+                                 const char *prefix_table,
+                                 const char *suffix_table,
+                                 void *user_data);
+
+// Iterate every item->affix-table edge in the global map (built by
+// affix_table_init).  Lets callers invert the item->affix relationship.
+void
+affix_table_foreach(AffixTablePairFn fn, void *user_data);
+
 // Free the global affix table (call at shutdown).
 void
 affix_table_free(void);

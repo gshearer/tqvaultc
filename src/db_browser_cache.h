@@ -70,4 +70,11 @@ int db_browser_search_selftest(const char *keywords);
 // few sample multi-tier runs, and returns a process exit code (0 == all pass).
 int db_browser_sort_selftest(void);
 
+// Headless affix drill-down self-test (tqvaultc --affix-items "<affix>"): build
+// the real full index live, find the prefix/suffix whose name contains <affix>
+// (case-insensitive), and for each gear type it lists print the concrete items
+// of that type able to roll it -- exercising db_affix_items_for_type() without
+// the GUI.  Returns a process exit code (0 == found).
+int db_browser_affix_items_selftest(const char *affix_query);
+
 #endif

@@ -6,6 +6,7 @@
 #include "config.h"
 #include "item_stats.h"
 #include "asset_lookup.h"
+#include "affix_table.h"
 #include "ui_skills_layout.h"
 #include <stdio.h>
 #include <stdlib.h>
@@ -838,6 +839,130 @@ build_affix_index(DbBrowserState *st)
   }
 
   g_hash_table_destroy(affixes);
+}
+
+// -- Affix drill-down: items of a gear type that can roll a given affix -------
+
+// Does randomizer table `table_path` reference any of the affix records in the
+// `want` set (keys = normalized affix DBR paths)?  Reads the table's
+// randomizerName* entries and tests each, normalized, for membership.
+static bool
+db_table_references_affix(const char *table_path, GHashTable *want)
+{
+  TQArzRecordData *table = asset_get_dbr(table_path);
+
+  if(!table)
+    return(false);
+
+  for(uint32_t v = 0; v < table->num_vars; v++)
+  {
+    TQVariable *var = &table->vars[v];
+
+    if(!var->name ||
+       strncasecmp(var->name, "randomizerName", 14) != 0 ||
+       var->type != TQ_VAR_STRING || var->count == 0 ||
+       !var->value.str || !var->value.str[0] || !var->value.str[0][0])
+      continue;
+
+    char *norm = db_norm_path(var->value.str[0]);
+    bool hit = g_hash_table_contains(want, norm);
+
+    g_free(norm);
+    if(hit)
+      return(true);
+  }
+
+  return(false);
+}
+
+// Walk state for db_affix_items_for_type, threaded through affix_table_foreach.
+typedef struct {
+  int          kind;     // 0 == prefix table, 1 == suffix table
+  const char  *label;    // target equipment-type label (e.g. "Spear")
+  GHashTable  *want;     // set<normalized affix path>: the affix's variants
+  GHashTable  *memo;     // table-norm-path -> GINT (1 references, 2 not)
+  GHashTable  *result;   // set<normalized item path>: matches (keys owned)
+} AffixItemsCtx;
+
+// affix_table_foreach callback: if this item's prefix/suffix table (per kind)
+// is of the target gear type and references the affix, record the item.
+static void
+db_affix_items_cb(const char *item_path, const char *prefix_table,
+                  const char *suffix_table, void *user_data)
+{
+  AffixItemsCtx *c = user_data;
+  const char *table = c->kind ? suffix_table : prefix_table;
+
+  if(!table || !table[0])
+    return;
+
+  char *low = db_norm_path(table);
+
+  // Filter by gear type first (cheap, no DBR read): the table's filename
+  // encodes which equipment type it affixes.
+  char *tlabel = NULL;
+
+  if(!db_affix_table_label(low, &tlabel) || !tlabel ||
+     strcmp(tlabel, c->label) != 0)
+  {
+    g_free(tlabel);
+    g_free(low);
+    return;
+  }
+  g_free(tlabel);
+
+  // Memoize the (expensive) table->affix membership test by table path.
+  gpointer m = g_hash_table_lookup(c->memo, low);
+  bool refs;
+
+  if(m)
+    refs = (GPOINTER_TO_INT(m) == 1);
+  else
+  {
+    refs = db_table_references_affix(table, c->want);
+    g_hash_table_insert(c->memo, g_strdup(low), GINT_TO_POINTER(refs ? 1 : 2));
+  }
+
+  if(refs && !g_hash_table_contains(c->result, item_path))
+    g_hash_table_add(c->result, g_strdup(item_path));
+
+  g_free(low);
+}
+
+GPtrArray *
+db_affix_items_for_type(char *const *variants, int kind, const char *gear_label)
+{
+  GPtrArray *out = g_ptr_array_new_with_free_func(g_free);
+
+  if(!variants || !gear_label || !gear_label[0])
+    return(out);
+
+  AffixItemsCtx c = {
+    .kind   = kind,
+    .label  = gear_label,
+    .want   = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL),
+    .memo   = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL),
+    .result = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL),
+  };
+
+  for(char *const *vp = variants; *vp; vp++)
+    g_hash_table_add(c.want, db_norm_path(*vp));
+
+  // Reading randomizer tables caches large DBRs; release them afterwards.
+  affix_table_foreach(db_affix_items_cb, &c);
+  asset_dbr_cache_clear_and_trim();
+
+  GHashTableIter it;
+  gpointer k, v;
+
+  g_hash_table_iter_init(&it, c.result);
+  while(g_hash_table_iter_next(&it, &k, &v))
+    g_ptr_array_add(out, g_strdup(k));
+
+  g_hash_table_destroy(c.want);
+  g_hash_table_destroy(c.memo);
+  g_hash_table_destroy(c.result);
+  return(out);
 }
 
 // -- Skills -----------------------------------------------------------------

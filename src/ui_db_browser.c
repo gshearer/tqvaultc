@@ -177,16 +177,18 @@ on_dlg_overlay_leave(GtkEventControllerMotion *ctrl, gpointer data)
     gtk_widget_queue_draw(st->dlg_held_overlay);
 }
 
-// Attach a fresh copy of the given item record to the cursor for drop into an
-// inventory.  Mirrors db_record_pickup() in ui_database_dialog.c.
+// Attach a fresh copy of the item record at `path` (shard count `var1`) to the
+// cursor for drop into an inventory.  Mirrors db_record_pickup() in
+// ui_database_dialog.c.  `path` need not be a browsable category item -- this
+// is how a common/white base the affix drill-down lists (but db_categorize
+// excludes from the grid) still gets picked up.
 static void
-db_browse_pickup(DbBrowserState *st, DbBrowseItem *bi)
+db_browse_pickup_path(DbBrowserState *st, const char *path, uint32_t var1)
 {
   AppWidgets *widgets = st->widgets;
 
-  if(!bi || !bi->path || bi->is_set || bi->is_affix || bi->is_skill ||
-     bi->is_creature || bi->is_quest)
-    return;  // a set / affix / skill / creature / quest isn't a droppable item
+  if(!path || !path[0])
+    return;
 
   if(widgets->held_item)
     cancel_held_item(widgets);
@@ -197,8 +199,8 @@ db_browse_pickup(DbBrowserState *st, DbBrowseItem *bi)
     return;
 
   hi->item.seed       = (uint32_t)(rand() % 0x7fff);
-  hi->item.base_name  = safe_strdup(bi->path);
-  hi->item.var1       = bi->var1;
+  hi->item.base_name  = safe_strdup(path);
+  hi->item.var1       = var1;
   hi->item.stack_size = 1;
 
   hi->source            = CONTAINER_VAULT;
@@ -220,6 +222,18 @@ db_browse_pickup(DbBrowserState *st, DbBrowseItem *bi)
   queue_redraw_all(widgets);
   if(st->dlg_held_overlay)
     gtk_widget_queue_draw(st->dlg_held_overlay);
+}
+
+// Attach a fresh copy of the given browse item to the cursor for drop into an
+// inventory.  Sets/affixes/skills/creatures/quests aren't droppable items.
+static void
+db_browse_pickup(DbBrowserState *st, DbBrowseItem *bi)
+{
+  if(!bi || !bi->path || bi->is_set || bi->is_affix || bi->is_skill ||
+     bi->is_creature || bi->is_quest)
+    return;
+
+  db_browse_pickup_path(st, bi->path, bi->var1);
 }
 
 // Right-click on the grid: locate the bound DbBrowseItem (stashed on the cell
@@ -996,6 +1010,57 @@ db_schedule_jump(DbBrowserState *st, int cat, DbBrowseItem *target)
   g_idle_add(db_jump_idle, j);
 }
 
+// A deferred affix detail re-render (drill into a gear type, or Back to the
+// affix).  Like DbJump it must run from idle, not from inside the GtkLabel's
+// own activate-link emission: rebuilding the label's markup frees the link
+// array GTK still touches after the handler returns.
+typedef struct
+{
+  DbBrowserState *st;
+  GtkWidget      *dialog;   // ref held -> keeps st alive until the idle fires
+  DbBrowseItem   *affix;    // ref held: the prefix/suffix being viewed
+  char           *label;    // gear type to drill into, or NULL == Back
+} DbAffixDrill;
+
+static gboolean
+db_affix_drill_idle(gpointer data)
+{
+  DbAffixDrill *d = data;
+
+  if(gtk_widget_get_visible(d->dialog))
+  {
+    if(d->label)
+      update_detail_affix_items(d->st, d->affix, d->label);
+    else
+      update_detail(d->st, d->affix);  // Back: re-render the affix card
+  }
+
+  g_object_unref(d->affix);
+  g_object_unref(d->dialog);
+  g_free(d->label);
+  g_free(d);
+  return(G_SOURCE_REMOVE);
+}
+
+// Schedule an affix drill-down (label != NULL) or Back (label == NULL) render
+// for the currently-selected affix, deferred out of the activate-link handler.
+static void
+db_schedule_affix_drill(DbBrowserState *st, const char *label)
+{
+  DbBrowseItem *affix = gtk_single_selection_get_selected_item(st->selection);
+
+  if(!affix || !affix->is_affix)
+    return;
+
+  DbAffixDrill *d = g_new(DbAffixDrill, 1);
+
+  d->st     = st;
+  d->dialog = g_object_ref(st->dialog);
+  d->affix  = g_object_ref(affix);
+  d->label  = label ? g_strdup(label) : NULL;
+  g_idle_add(db_affix_drill_idle, d);
+}
+
 // GtkLabel::activate-link handler for the detail pane.  Routes the private URI
 // schemes above; always returns TRUE so the URI is never handed to
 // gtk_show_uri() (which would try to open it as an external link).
@@ -1019,6 +1084,13 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
       db_schedule_jump(st, cat, t);
       g_object_unref(t);
     }
+    else
+    {
+      // Not in any category (a common/white base the affix drill-down lists but
+      // db_categorize excludes from the grid): there's nowhere to jump, so pick
+      // it up instead -- the user can drop it into an inventory or vault.
+      db_browse_pickup_path(st, uri + 2, 0);
+    }
   }
   else if(uri[0] == 'c')
   {
@@ -1039,6 +1111,14 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
       db_schedule_jump(st, CAT_QUEST, t);
       g_object_unref(t);
     }
+  }
+  else if(uri[0] == 't')        // affix -> drill into items of this gear type
+  {
+    db_schedule_affix_drill(st, uri + 2);
+  }
+  else if(uri[0] == 'b')        // affix drill-down -> Back to the affix card
+  {
+    db_schedule_affix_drill(st, NULL);
   }
 
   return(TRUE);

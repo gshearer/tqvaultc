@@ -1306,6 +1306,35 @@ affix_result_free(TQItemAffixes *affixes)
   free(affixes);
 }
 
+// Walk every (item -> prefix_table, suffix_table) edge recorded in the global
+// map.  Used by the Database Browser to invert the relationship ("which items
+// of gear type T can roll this affix").  item_path is the normalized item DBR
+// path; prefix_table/suffix_table are the LootRandomizerTable paths for that
+// item (either may be NULL/empty).  No-op until affix_table_init() has run.
+void
+affix_table_foreach(AffixTablePairFn fn, void *user_data)
+{
+  if(!g_affix_map || !fn)
+    return;
+
+  GHashTableIter it;
+  gpointer key, val;
+
+  g_hash_table_iter_init(&it, g_affix_map);
+  while(g_hash_table_iter_next(&it, &key, &val))
+  {
+    const char *item_path = key;
+    AffixTableList *list = val;
+
+    if(!list)
+      continue;
+
+    for(int i = 0; i < list->count; i++)
+      fn(item_path, list->pairs[i].prefix_table,
+         list->pairs[i].suffix_table, user_data);
+  }
+}
+
 // Destroy the global affix map and cache, freeing all memory.
 void
 affix_table_free(void)

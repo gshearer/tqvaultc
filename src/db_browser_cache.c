@@ -1044,6 +1044,110 @@ db_browser_search_selftest(const char *keywords)
   return(0);
 }
 
+// g_ptr_array_sort comparator: order char* elements by display name (CI).
+static int
+db_strptr_ci_cmp(gconstpointer a, gconstpointer b)
+{
+  return(g_ascii_strcasecmp(*(const char * const *)a, *(const char * const *)b));
+}
+
+int
+db_browser_affix_items_selftest(const char *affix_query)
+{
+  const char *gf = global_config.game_folder;
+
+  if(!gf)
+  {
+    fprintf(stderr, "affix-items: game_folder not configured\n");
+    return(1);
+  }
+  if(!affix_query || !affix_query[0])
+  {
+    fprintf(stderr, "affix-items: usage: --affix-items \"<affix name>\" "
+                    "[config]\n");
+    return(1);
+  }
+
+  TQTranslation *tr = db_selftest_translations();
+  DbBrowserState *st = db_selftest_build_state(tr);
+
+  char *q_lc = g_ascii_strdown(affix_query, -1);
+  int found = 0;
+
+  for(int c = CAT_PREFIX; c <= CAT_SUFFIX; c++)
+  {
+    GListModel *m = G_LIST_MODEL(st->cat_stores[c]);
+    guint n = g_list_model_get_n_items(m);
+
+    for(guint i = 0; i < n; i++)
+    {
+      DbBrowseItem *bi = g_list_model_get_item(m, i);
+
+      if(!bi->name_lc || !strstr(bi->name_lc, q_lc) || !bi->equip_types)
+      {
+        g_object_unref(bi);
+        continue;
+      }
+
+      found++;
+      printf("%s: %s\n", c == CAT_PREFIX ? "Prefix" : "Suffix", bi->name);
+
+      int kind = c == CAT_SUFFIX ? 1 : 0;
+      char **types = g_strsplit(bi->equip_types, ", ", -1);
+
+      for(char **tp = types; tp && *tp; tp++)
+      {
+        if(!(*tp)[0])
+          continue;
+
+        GPtrArray *items = db_affix_items_for_type(bi->variants, kind, *tp);
+
+        // Resolve + dedupe by display name (matching the GUI list, which shows
+        // each name once though several DBR variants may share it).
+        GPtrArray *names = g_ptr_array_new_with_free_func(g_free);
+
+        for(guint k = 0; k < items->len; k++)
+        {
+          const char *p = g_ptr_array_index(items, k);
+          char *nm = db_item_display_name(st, p);
+
+          g_ptr_array_add(names, nm ? nm : g_strdup(p));
+        }
+        g_ptr_array_sort(names, db_strptr_ci_cmp);
+
+        guint distinct = 0;
+
+        for(guint k = 0; k < names->len; k++)
+          if(k == 0 || g_ascii_strcasecmp(g_ptr_array_index(names, k),
+                                          g_ptr_array_index(names, k - 1)) != 0)
+            distinct++;
+
+        printf("  [%s] %u item%s\n", *tp, distinct, distinct == 1 ? "" : "s");
+
+        for(guint k = 0; k < names->len; k++)
+          if(k == 0 || g_ascii_strcasecmp(g_ptr_array_index(names, k),
+                                          g_ptr_array_index(names, k - 1)) != 0)
+            printf("      %s\n", (char *)g_ptr_array_index(names, k));
+
+        g_ptr_array_free(names, TRUE);
+        g_ptr_array_free(items, TRUE);
+      }
+
+      g_strfreev(types);
+      g_object_unref(bi);
+    }
+  }
+
+  if(!found)
+    printf("No prefix/suffix matching \"%s\"\n", affix_query);
+
+  g_free(q_lc);
+  db_free_state(st);
+  if(tr)
+    translation_free(tr);
+  return(found ? 0 : 1);
+}
+
 // Short label for a difficulty tier rank (see db_item_tier_rank).
 static const char *
 db_tier_label(int rank)

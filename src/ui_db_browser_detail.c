@@ -784,16 +784,167 @@ build_affix_markup(DbBrowserState *st, DbBrowseItem *bi, char *out, size_t outsz
     }
   }
 
-  // Equipment types the affix can roll on.
+  // Equipment types the affix can roll on -- each a clickable link that drills
+  // into the concrete items of that type able to roll this affix (the broad
+  // type list overstates availability; the item list is the real answer).
   if(bi->equip_types && bi->equip_types[0])
   {
-    char *e = escape_markup(bi->equip_types);
+    buf_write(&w, "\n<span color='#B0B0B0'>Can appear on "
+                  "<span color='#707070'>(click a type for items)</span>:"
+                  "</span>\n");
 
-    buf_write(&w, "\n<span color='#B0B0B0'>Can appear on:</span>\n");
-    buf_write(&w, "<span color='#C8C8C8'>%s</span>\n", e ? e : "");
-    if(e)
-      free(e);
+    // equip_types is a ", "-joined sorted label set; the labels themselves
+    // never contain a comma, so splitting on ", " recovers them exactly.
+    char **types = g_strsplit(bi->equip_types, ", ", -1);
+
+    for(char **tp = types; tp && *tp; tp++)
+    {
+      if(!(*tp)[0])
+        continue;
+
+      char *e = escape_markup(*tp);
+
+      buf_write(&w, "    <a href='t:%s'><span color='#C8C8C8'>%s</span></a>\n",
+                e ? e : "", e ? e : "");
+      if(e)
+        free(e);
+    }
+
+    g_strfreev(types);
   }
+}
+
+// -- Affix drill-down: the items of one gear type that can roll the affix ------
+
+// qsort comparator for (name, path, color) rows: name (CI), then -- for
+// same-named difficulty/MI variants -- legendary->epic->normal, then path, so
+// the row kept when collapsing a same-name run is the top tier (cf.
+// db_browse_item_cmp, which orders the grid the same way).
+typedef struct { char *name; char *path; const char *color; } DbAffixItemRow;
+
+static int
+db_affix_item_row_cmp(const void *a, const void *b)
+{
+  const DbAffixItemRow *x = a;
+  const DbAffixItemRow *y = b;
+
+  int c = g_ascii_strcasecmp(x->name ? x->name : "", y->name ? y->name : "");
+
+  if(c != 0)
+    return(c);
+
+  int tx = db_item_tier_rank(x->path);
+  int ty = db_item_tier_rank(y->path);
+
+  if(tx != ty)
+    return(ty - tx);  // higher tier first
+
+  return(g_ascii_strcasecmp(x->path ? x->path : "", y->path ? y->path : ""));
+}
+
+// Build the drill-down markup: the affix name, a Back link, and the concrete
+// items of `gear_label` type that can roll this affix (each a clickable i:link
+// that jumps to the item).  Mirrors build_affix_markup's header style.
+static void
+build_affix_items_markup(DbBrowserState *st, DbBrowseItem *bi,
+                         const char *gear_label, char *out, size_t outsz)
+{
+  BufWriter w;
+
+  buf_init(&w, out, outsz);
+
+  // Header: affix name (rarity color) + the gear type we drilled into.
+  char *e_name  = escape_markup(bi->name);
+  char *e_label = escape_markup(gear_label);
+
+  buf_write(&w, "<span color='%s'><b>%s</b></span>\n",
+            bi->color ? bi->color : "white", e_name ? e_name : "");
+  buf_write(&w, "<a href='b:'><span color='#7FB0FF'>← Back</span></a>\n");
+
+  int kind = path_contains_ci(bi->path, "\\suffix\\") ? 1 : 0;
+  GPtrArray *paths = db_affix_items_for_type(bi->variants, kind, gear_label);
+
+  // Resolve display name + color for each item, then sort by name.
+  DbAffixItemRow *rows = g_new0(DbAffixItemRow, paths->len);
+  guint nrows = 0;
+
+  for(guint i = 0; i < paths->len; i++)
+  {
+    const char *p = g_ptr_array_index(paths, i);
+    char *nm = db_item_display_name(st, p);
+
+    if(!nm)
+      continue;
+
+    rows[nrows].name  = nm;
+    rows[nrows].path  = g_strdup(p);
+    rows[nrows].color = get_item_color(p, NULL, NULL);
+    nrows++;
+  }
+
+  qsort(rows, nrows, sizeof(DbAffixItemRow), db_affix_item_row_cmp);
+
+  // Count the distinct names first (several DBR records -- difficulty/MI
+  // variants -- can share one display name; we show each name once).
+  guint distinct = 0;
+
+  for(guint i = 0; i < nrows; i++)
+    if(i == 0 || g_ascii_strcasecmp(rows[i].name, rows[i - 1].name) != 0)
+      distinct++;
+
+  buf_write(&w, "\n<span color='#B0B0B0'>%s items that can roll "
+                "<span color='%s'>%s</span> "
+                "<span color='#707070'>(%u)</span>:</span>\n",
+            e_label ? e_label : "",
+            bi->color ? bi->color : "white", e_name ? e_name : "",
+            distinct);
+
+  if(nrows == 0)
+    buf_write(&w, "<span color='#808080'>(no specific items found)</span>\n");
+
+  for(guint i = 0; i < nrows; i++)
+  {
+    // Collapse runs of the same display name to one clickable row (the first,
+    // which after the legendary->epic->normal sort jumps to the top tier).
+    if(i > 0 && g_ascii_strcasecmp(rows[i].name, rows[i - 1].name) == 0)
+    {
+      g_free(rows[i].name);
+      g_free(rows[i].path);
+      continue;
+    }
+
+    char *e_item = escape_markup(rows[i].name);
+    char *e_href = escape_markup(rows[i].path);
+
+    buf_write(&w, "    <a href='i:%s'><span color='%s'>%s</span></a>\n",
+              e_href ? e_href : "",
+              rows[i].color ? rows[i].color : "white", e_item ? e_item : "");
+    if(e_item)
+      free(e_item);
+    if(e_href)
+      free(e_href);
+    g_free(rows[i].name);
+    g_free(rows[i].path);
+  }
+
+  g_free(rows);
+  g_ptr_array_free(paths, TRUE);
+  if(e_name)
+    free(e_name);
+  if(e_label)
+    free(e_label);
+}
+
+// Render the affix drill-down (items of one gear type) into the detail pane.
+void
+update_detail_affix_items(DbBrowserState *st, DbBrowseItem *bi,
+                          const char *gear_label)
+{
+  char markup[32768];
+
+  build_affix_items_markup(st, bi, gear_label, markup, sizeof(markup));
+  gtk_label_set_markup(GTK_LABEL(st->detail_label), markup);
+  db_detail_set_icon(st, NULL, 0);
 }
 
 // Rebuild the detail pane for a prefix/suffix affix (affixes have no icon).

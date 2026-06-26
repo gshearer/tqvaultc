@@ -135,6 +135,14 @@ void build_quest_index_grid(DbBrowserState *st);
 // the fresh-index and disk-cache paths.
 void db_browser_sort_stores(DbBrowserState *st);
 
+// Affix drill-down (ui_db_browser_index.c): return the concrete item DBR paths
+// of equipment type `gear_label` (e.g. "Spear") that can roll the affix whose
+// variant records are `variants` (NULL-terminated), with `kind` 0=prefix /
+// 1=suffix.  Result is a newly-allocated GPtrArray of g_strdup'd normalized
+// paths (deduped, unsorted); free with g_ptr_array_free(arr, TRUE).  Never NULL.
+GPtrArray *db_affix_items_for_type(char *const *variants, int kind,
+                                   const char *gear_label);
+
 // Difficulty-tier rank from an item DBR filename's "_n_/_e_/_l_" infix:
 // legendary=3, epic=2, normal=1, untiered=0.  Exposed for --db-sort-selftest.
 int db_item_tier_rank(const char *path);
@@ -152,6 +160,12 @@ const char *db_creature_color(const char *classification);
 
 // Detail renderer (ui_db_browser_detail.c).
 void update_detail(DbBrowserState *st, DbBrowseItem *bi);
+
+// Render the affix drill-down: the concrete items of equipment type
+// `gear_label` that can roll affix `bi` (a prefix/suffix DbBrowseItem), each a
+// clickable jump-to-item link, plus a Back link.  (ui_db_browser_detail.c)
+void update_detail_affix_items(DbBrowserState *st, DbBrowseItem *bi,
+                               const char *gear_label);
 
 // Populate every indexed item's search_blob (lowercased plain text of its whole
 // detail card).  Window-less (uses st->tr only); run after all category indexes
