@@ -588,6 +588,17 @@ run_search(AppWidgets *widgets)
   queue_redraw_all(widgets);
 }
 
+// Drop keyboard focus from the search entry so the window's global hotkeys
+// (s/d/c/p, ...) work again.  Grabbing the vault drawing area is a no-op --
+// a GtkDrawingArea isn't focusable -- so clear the window's focus widget
+// outright; with nothing focused, key events bubble straight to the
+// window-level key controller (on_key_pressed).
+static void
+search_release_focus(AppWidgets *widgets)
+{
+  gtk_window_set_focus(GTK_WINDOW(widgets->main_window), NULL);
+}
+
 // Callback: fired when the search entry text changes.
 //   entry     - the GtkSearchEntry
 //   user_data - AppWidgets*
@@ -612,9 +623,9 @@ on_search_changed(GtkSearchEntry *entry, gpointer user_data)
   else
   {
     widgets->search_text[0] = '\0';
-    // Release focus from the search box when text is cleared (e.g. via
-    // the clear button) so keyboard shortcuts become accessible again.
-    gtk_widget_grab_focus(widgets->vault_drawing_area);
+    // Keep focus in the entry while the user edits the query down to empty --
+    // focus is released only on the explicit Enter/Escape gestures
+    // (on_search_key), so backspacing to retype doesn't yank the cursor away.
   }
 
   // Recompile the matcher from the RAW entry text (regex needs the unfolded
@@ -637,33 +648,48 @@ on_search_stop(GtkSearchEntry *entry, gpointer user_data)
 
   widgets->search_text[0] = '\0';
   gtk_editable_set_text(GTK_EDITABLE(widgets->search_entry), "");
-  gtk_widget_grab_focus(widgets->vault_drawing_area);
+  search_release_focus(widgets);
   run_search(widgets);
 }
 
-// Escape in the search box: clear text + release focus in a single keypress.
+// Key handling for the search box (capture phase, so it sees these keys
+// before the entry's internal GtkText does):
+//   Enter  - drop focus, keeping the typed filter active.
+//   Escape - clear the filter and drop focus, in a single keypress.
+// Either way focus leaves the box so the window's global hotkeys work again.
 //   ctrl      - key event controller
 //   keyval    - the key that was pressed
 //   keycode   - hardware keycode
 //   state     - modifier state
 //   user_data - AppWidgets*
-// Returns TRUE if the event was handled (Escape), FALSE otherwise.
+// Returns TRUE if the event was handled (Enter/Escape), FALSE otherwise.
 static gboolean
 on_search_key(GtkEventControllerKey *ctrl, guint keyval,
               guint keycode, GdkModifierType state, gpointer user_data)
 {
   (void)ctrl; (void)keycode; (void)state;
 
-  if(keyval != GDK_KEY_Escape)
-    return(FALSE);
-
   AppWidgets *widgets = (AppWidgets *)user_data;
 
-  widgets->search_text[0] = '\0';
-  gtk_editable_set_text(GTK_EDITABLE(widgets->search_entry), "");
-  gtk_widget_grab_focus(widgets->vault_drawing_area);
-  run_search(widgets);
-  return(TRUE);  // stop further handling
+  // Enter: keep the filter, just release focus.
+  if(keyval == GDK_KEY_Return || keyval == GDK_KEY_KP_Enter ||
+     keyval == GDK_KEY_ISO_Enter)
+  {
+    search_release_focus(widgets);
+    return(TRUE);
+  }
+
+  // Escape: clear the filter and release focus.
+  if(keyval == GDK_KEY_Escape)
+  {
+    widgets->search_text[0] = '\0';
+    gtk_editable_set_text(GTK_EDITABLE(widgets->search_entry), "");
+    search_release_focus(widgets);
+    run_search(widgets);
+    return(TRUE);
+  }
+
+  return(FALSE);  // let normal typing through to the entry
 }
 
 // ── Copy/Duplicate helpers ──────────────────────────────────────────────
@@ -1365,6 +1391,10 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
 
   GtkEventController *search_key = gtk_event_controller_key_new();
 
+  // Capture phase: intercept Enter/Escape before the entry's internal GtkText
+  // does -- Return is bound to "activate" there and would otherwise be
+  // consumed before it could bubble out to this controller.
+  gtk_event_controller_set_propagation_phase(search_key, GTK_PHASE_CAPTURE);
   g_signal_connect(search_key, "key-pressed", G_CALLBACK(on_search_key), widgets);
   gtk_widget_add_controller(widgets->search_entry, search_key);
   gtk_header_bar_pack_end(GTK_HEADER_BAR(header), widgets->search_entry);
