@@ -161,6 +161,13 @@ skill_inc(SkillsState *st, MasteryPane *mp, int idx)
     return(false);
   if(n->cur_level >= n->max_level)
     return(false);
+  // Refuse points that can't raise the skill: once equipment +skill bonuses have
+  // already pushed the effective level to the ultimate cap, further invested
+  // points do nothing (mirrors the tooltip's "no Next Level" rule). Without this
+  // a skill with strong gear lets you spend points past the cap for no effect.
+  if(effective_level(n->cur_level, n->gear_all + n->gear_mastery + n->gear_skill,
+                     n->ultimate_level) >= n->ultimate_level)
+    return(false);
   if(compute_avail(st) <= 0)
     return(false);
 
