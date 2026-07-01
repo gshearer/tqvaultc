@@ -1227,11 +1227,21 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   gtk_widget_set_margin_top(widgets->tooltip_label, 4);
   gtk_widget_set_margin_bottom(widgets->tooltip_label, 4);
 
+  // Cap the tooltip height so a giant card can't run off the monitor, but keep
+  // it high enough that tall artifact/set cards (base stats + granted skill +
+  // full summoned-pet ability list + seed/expansion/required-level footer) fit
+  // without clipping.  The old 800px cap cut the last few footer lines off long
+  // cards, and because the tooltip is non-interactive (can_target/can_focus
+  // FALSE) the resulting scrollbar could never be used to reach them.  A popover
+  // is clamped to the monitor, not the parent window, so this may exceed the
+  // window height.
+  const int tooltip_max_h = 1000;
+
   GtkWidget *tip_scroll = gtk_scrolled_window_new();
 
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tip_scroll),
                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(tip_scroll), 800);
+  gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(tip_scroll), tooltip_max_h);
   gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(tip_scroll), TRUE);
   gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(tip_scroll), 350);
   gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(tip_scroll), TRUE);
@@ -1251,7 +1261,7 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
   widgets->compare_scroll = gtk_scrolled_window_new();
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(widgets->compare_scroll),
                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(widgets->compare_scroll), 800);
+  gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(widgets->compare_scroll), tooltip_max_h);
   gtk_scrolled_window_set_propagate_natural_height(GTK_SCROLLED_WINDOW(widgets->compare_scroll), TRUE);
   gtk_scrolled_window_set_min_content_width(GTK_SCROLLED_WINDOW(widgets->compare_scroll), 350);
   gtk_scrolled_window_set_propagate_natural_width(GTK_SCROLLED_WINDOW(widgets->compare_scroll), TRUE);
