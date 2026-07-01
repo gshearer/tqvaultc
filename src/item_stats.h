@@ -185,16 +185,18 @@ strip_pango_markup(char *dst, size_t dst_size, const char *src);
 // One GTK-free matcher reused by the main-window global search, the Database
 // Browser search box, and the headless self-tests.  The mode is auto-detected
 // from the raw query text:
-//   - REGEX:   if it carries an alternation/grouping/class metacharacter
-//              (| ( ) [ ]) it compiles to a case-insensitive GRegex matched
-//              unanchored (substring semantics), so e.g.
-//              "vitality damage|elemental damage" matches either phrase.
+//   - REGEX:   if it carries a grouping/class metacharacter (( ) [ ]) it
+//              compiles to a case-insensitive GRegex matched unanchored
+//              (substring semantics), for power-user patterns like "(vita|ele)".
 //   - LITERAL: if that GRegex fails to compile (an incomplete pattern typed so
 //              far, e.g. "(vita") it degrades to a case-insensitive substring of
 //              the raw text, so the UI never breaks mid-type.
-//   - TOKENS:  otherwise the query is split on whitespace and EVERY token must
-//              appear (order-independent AND) -- the original fast behavior, so
-//              plain typing and chars like + . % stay literal.
+//   - PHRASE:  otherwise whitespace is literal, so "attack damage" matches the
+//              contiguous phrase (NOT items merely mentioning "attack" AND
+//              "damage" separately).  A '|' splits the query into alternative
+//              phrases OR'd together, so "attack damage|elemental damage"
+//              matches an item that says either phrase.  Each alternative is
+//              trimmed; chars like + . % stay literal.
 //   - EMPTY:   blank / whitespace-only query (matches everything; callers treat
 //              it as "no search active").
 // All match haystacks are expected to be already lowercased.
@@ -202,7 +204,7 @@ typedef struct SearchQuery SearchQuery;
 
 typedef enum {
   SEARCH_QUERY_EMPTY,
-  SEARCH_QUERY_TOKENS,
+  SEARCH_QUERY_PHRASE,
   SEARCH_QUERY_REGEX,
   SEARCH_QUERY_LITERAL,
 } SearchQueryMode;

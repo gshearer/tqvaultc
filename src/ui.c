@@ -510,8 +510,9 @@ item_matches_search(AppWidgets *widgets, TQVaultItem *item)
   for(char *p = plain; *p; p++)
     *p = (char)tolower((unsigned char)*p);
 
-  // The compiled query auto-detects regex (alternation/grouping/class) vs the
-  // original multi-token AND; plain is already lowercased.
+  // The compiled query auto-detects a grouping/class regex vs literal phrase(s):
+  // whitespace is literal (contiguous phrase) and '|' OR's alternative phrases;
+  // plain is already lowercased.
   bool match = search_query_match(widgets->search_query, plain);
 
   if(tqvc_debug && match)

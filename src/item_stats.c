@@ -1093,46 +1093,48 @@ strip_pango_markup(char *dst, size_t dst_size, const char *src)
 
 struct SearchQuery {
   SearchQueryMode mode;
-  char **tokens;   // TOKENS: NULL-terminated lowercased GStrv (AND semantics)
+  char **alts;     // PHRASE: NULL-terminated lowercased alternatives OR'd together
   GRegex *re;      // REGEX:  compiled case-insensitive pattern
   char *literal;   // LITERAL: lowercased raw text (substring fallback)
 };
 
-// True if the raw query carries a regex metacharacter we honor: alternation,
-// grouping, or a character class.  Plain searches (which may contain + . % etc.)
-// stay on the fast literal-token path so common item text is matched verbatim.
+// True if the raw query carries a grouping/class metacharacter, which we treat
+// as an intentional power-user regex.  Plain whitespace and '|' do NOT count:
+// spaces stay literal (phrase matching) and '|' splits into OR'd phrases, so
+// common item text (which may contain + . % etc.) is matched verbatim.
 static bool
-search_has_regex_meta(const char *raw)
+search_has_regex_grouping(const char *raw)
 {
   for(const char *p = raw; *p; p++)
-    if(*p == '|' || *p == '(' || *p == ')' || *p == '[' || *p == ']')
+    if(*p == '(' || *p == ')' || *p == '[' || *p == ']')
       return(true);
 
   return(false);
 }
 
-// Split a lowercased string into whitespace-separated tokens (drops empties).
-// Returns a NULL-terminated GStrv (g_strfreev'able), never NULL.
+// Lowercase the raw query and split it on '|' into alternative phrases, trimming
+// surrounding whitespace and dropping empties.  A query with no '|' yields a
+// single alternative (the whole trimmed text), so "attack damage" stays one
+// contiguous phrase.  Returns a NULL-terminated GStrv (g_strfreev'able).
 static char **
-search_split_tokens(const char *lc)
+search_split_alts(const char *raw)
 {
-  GPtrArray *toks = g_ptr_array_new();
+  char *lc = g_ascii_strdown(raw, -1);
+  char **parts = g_strsplit(lc, "|", -1);
+  GPtrArray *alts = g_ptr_array_new();
 
-  for(const char *p = lc; *p;)
+  for(char **p = parts; *p; p++)
   {
-    while(*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r')
-      p++;
-    if(!*p)
-      break;
+    char *a = g_strstrip(*p);   // trim leading/trailing whitespace in place
 
-    const char *start = p;
-
-    while(*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r')
-      p++;
-    g_ptr_array_add(toks, g_strndup(start, (size_t)(p - start)));
+    if(*a)
+      g_ptr_array_add(alts, g_strdup(a));
   }
-  g_ptr_array_add(toks, NULL);
-  return((char **)g_ptr_array_free(toks, FALSE));
+
+  g_strfreev(parts);
+  g_free(lc);
+  g_ptr_array_add(alts, NULL);
+  return((char **)g_ptr_array_free(alts, FALSE));
 }
 
 SearchQuery *
@@ -1146,7 +1148,7 @@ search_query_compile(const char *raw)
     return(q);
   }
 
-  if(search_has_regex_meta(raw))
+  if(search_has_regex_grouping(raw))
   {
     GError *err = NULL;
 
@@ -1167,12 +1169,10 @@ search_query_compile(const char *raw)
     return(q);
   }
 
-  // Plain text: lowercase, then split into order-independent AND tokens.
-  char *lc = g_ascii_strdown(raw, -1);
-
-  q->tokens = search_split_tokens(lc);
-  g_free(lc);
-  q->mode = (q->tokens[0] == NULL) ? SEARCH_QUERY_EMPTY : SEARCH_QUERY_TOKENS;
+  // Plain text: whitespace is literal (contiguous-phrase match), and '|' splits
+  // into alternative phrases that are OR'd together.
+  q->alts = search_split_alts(raw);
+  q->mode = (q->alts[0] == NULL) ? SEARCH_QUERY_EMPTY : SEARCH_QUERY_PHRASE;
   return(q);
 }
 
@@ -1198,11 +1198,14 @@ search_query_match(const SearchQuery *q, const char *haystack_lc)
     case SEARCH_QUERY_LITERAL:
       return(strstr(haystack_lc, q->literal) != NULL);
 
-    case SEARCH_QUERY_TOKENS:
-      for(char **t = q->tokens; *t; t++)
-        if(!strstr(haystack_lc, *t))
-          return(false);
-      return(true);
+    case SEARCH_QUERY_PHRASE:
+      // Match if the haystack contains ANY alternative phrase (OR); each
+      // alternative's internal whitespace is literal, so multi-word terms match
+      // contiguously.
+      for(char **a = q->alts; *a; a++)
+        if(strstr(haystack_lc, *a))
+          return(true);
+      return(false);
 
     default:
       return(true);
@@ -1222,7 +1225,7 @@ search_query_mode_name(const SearchQuery *q)
   {
     case SEARCH_QUERY_REGEX:   return("regex");
     case SEARCH_QUERY_LITERAL: return("literal");
-    case SEARCH_QUERY_TOKENS:  return("tokens");
+    case SEARCH_QUERY_PHRASE:  return("phrase");
     default:                   return("empty");
   }
 }
@@ -1233,8 +1236,8 @@ search_query_free(SearchQuery *q)
   if(!q)
     return;
 
-  if(q->tokens)
-    g_strfreev(q->tokens);
+  if(q->alts)
+    g_strfreev(q->alts);
   if(q->re)
     g_regex_unref(q->re);
   g_free(q->literal);
