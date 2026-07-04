@@ -26,7 +26,10 @@
 // to the header so a path correction rebuilds instead of reusing a stale cache.)
 // (v7: granted pet-summon skills now render the pet's attributes + abilities in
 // the card, so the search blob gained that text and must be rebuilt.)
-#define DB_CACHE_VERSION 7
+// (v8: card text overhaul -- granted-skill names/activation, skill projectile +
+// fumble lines, game-exact wording ("~" ranges, "Elemental Damages", block
+// line) and equation-computed requirements all change the search blob.)
+#define DB_CACHE_VERSION 8
 
 // True iff a cache file exists whose header (magic + version + database.arz
 // size/mtime + game_folder) matches the current install — i.e. a load would

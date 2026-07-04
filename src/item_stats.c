@@ -264,8 +264,8 @@ static const char *INT_offensiveSlowDefensiveReductionMin, *INT_offensiveSlowDef
 static const char *INT_offensiveSlowAttackSpeedMin, *INT_offensiveSlowAttackSpeedDurationMin;
 static const char *INT_offensiveSlowRunSpeedMin, *INT_offensiveSlowRunSpeedDurationMin;
 static const char *INT_offensiveStunMin, *INT_offensiveStunDurationMin, *INT_offensiveStunChance;
-static const char *INT_offensiveFumbleMin, *INT_offensiveFumbleDurationMin, *INT_offensiveFumbleChance;
-static const char *INT_offensiveProjectileFumbleMin, *INT_offensiveProjectileFumbleDurationMin, *INT_offensiveProjectileFumbleChance;
+static const char *INT_offensiveFumbleMin, *INT_offensiveFumbleMax, *INT_offensiveFumbleDurationMin, *INT_offensiveFumbleChance;
+static const char *INT_offensiveProjectileFumbleMin, *INT_offensiveProjectileFumbleMax, *INT_offensiveProjectileFumbleDurationMin, *INT_offensiveProjectileFumbleChance;
 static const char *INT_offensiveFreezeMin, *INT_offensiveFreezeDurationMin, *INT_offensiveFreezeChance;
 static const char *INT_offensivePetrifyMin, *INT_offensivePetrifyDurationMin, *INT_offensivePetrifyChance;
 static const char *INT_offensiveConfusionMin, *INT_offensiveConfusionDurationMin, *INT_offensiveConfusionChance;
@@ -331,6 +331,8 @@ static const char *INT_petBonusName;
 bool g_item_stats_defer_pet_bonus = false;
 
 static const char *INT_skillCooldownTime, *INT_refreshTime;
+static const char *INT_projectileLaunchNumber, *INT_projectilePiercingChance;
+static const char *INT_projectileFragmentsLaunchNumberMin, *INT_projectileFragmentsLaunchNumberMax;
 static const char *INT_skillCooldownReduction, *INT_skillCooldownReductionChance;
 static const char *INT_skillManaCostReduction, *INT_skillManaCostReductionChance;
 static const char *INT_skillTargetNumber, *INT_skillActiveDuration, *INT_skillTargetRadius;
@@ -588,8 +590,8 @@ item_stats_init(void)
   INTERN(offensiveSlowAttackSpeedMin); INTERN(offensiveSlowAttackSpeedDurationMin);
   INTERN(offensiveSlowRunSpeedMin); INTERN(offensiveSlowRunSpeedDurationMin);
   INTERN(offensiveStunMin); INTERN(offensiveStunDurationMin); INTERN(offensiveStunChance);
-  INTERN(offensiveFumbleMin); INTERN(offensiveFumbleDurationMin); INTERN(offensiveFumbleChance);
-  INTERN(offensiveProjectileFumbleMin); INTERN(offensiveProjectileFumbleDurationMin); INTERN(offensiveProjectileFumbleChance);
+  INTERN(offensiveFumbleMin); INTERN(offensiveFumbleMax); INTERN(offensiveFumbleDurationMin); INTERN(offensiveFumbleChance);
+  INTERN(offensiveProjectileFumbleMin); INTERN(offensiveProjectileFumbleMax); INTERN(offensiveProjectileFumbleDurationMin); INTERN(offensiveProjectileFumbleChance);
   INTERN(offensiveFreezeMin); INTERN(offensiveFreezeDurationMin); INTERN(offensiveFreezeChance);
   INTERN(offensivePetrifyMin); INTERN(offensivePetrifyDurationMin); INTERN(offensivePetrifyChance);
   INTERN(offensiveConfusionMin); INTERN(offensiveConfusionDurationMin); INTERN(offensiveConfusionChance);
@@ -647,6 +649,8 @@ item_stats_init(void)
   INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
   INTERN(petBonusName);
   INTERN(skillCooldownTime); INTERN(refreshTime);
+  INTERN(projectileLaunchNumber); INTERN(projectilePiercingChance);
+  INTERN(projectileFragmentsLaunchNumberMin); INTERN(projectileFragmentsLaunchNumberMax);
   INTERN(skillCooldownReduction); INTERN(skillCooldownReductionChance);
   INTERN(skillManaCostReduction); INTERN(skillManaCostReductionChance);
   INTERN(skillTargetNumber); INTERN(skillActiveDuration); INTERN(skillTargetRadius);
@@ -1593,7 +1597,7 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
       {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage"},
       {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage"},
       {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage"},
-      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damage"},
+      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damages"},
       {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage"},
     };
 
@@ -1801,6 +1805,48 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   buf_init(&skill_writer, skill_buffer, sizeof(skill_buffer));
   const char *skill_color = "#FFCC00";
 
+  // Skill mechanics lead the card -- energy cost, recharge, then projectile
+  // behaviour -- matching the in-game skill tooltip layout.  These fields only
+  // exist on skill records, so item renders are unaffected.  The game colours
+  // the cost/recharge lines teal (the ^a code in its CooldownTime/SkillManaCost
+  // format tags) independent of the surrounding block colour; mirror that.
+  {
+    float mana_cost = dbr_get_float_fast(data, INT_skillManaCost, shard_index);
+
+    if(mana_cost > 0)
+      buf_write(w, "<span color='#00E5E5'>%d Energy Cost</span>\n", (int)round(mana_cost));
+
+    float cooldown = dbr_get_float_fast(data, INT_skillCooldownTime, shard_index);
+
+    if(cooldown <= 0)
+      cooldown = dbr_get_float_fast(data, INT_refreshTime, shard_index);
+
+    if(cooldown > 0)
+      buf_write(w, "<span color='#00E5E5'>%.1f Second(s) Recharge</span>\n", cooldown);
+
+    float projectiles = dbr_get_float_fast(data, INT_projectileLaunchNumber, shard_index);
+
+    if(projectiles > 0)
+      buf_write(w, "<span color='%s'>%d Projectile(s)</span>\n", color, (int)projectiles);
+
+    float pierce_chance = dbr_get_float_fast(data, INT_projectilePiercingChance, shard_index);
+
+    if(pierce_chance > 0)
+      buf_write(w, "<span color='%s'>%.0f%% Chance to pass through Enemies</span>\n", color, pierce_chance);
+
+    // The game's own MinMax tag uses "-" here, not the "~" of damage ranges.
+    float frag_min = dbr_get_float_fast(data, INT_projectileFragmentsLaunchNumberMin, shard_index);
+    float frag_max = dbr_get_float_fast(data, INT_projectileFragmentsLaunchNumberMax, shard_index);
+
+    if(frag_min > 0)
+    {
+      if(frag_max > frag_min)
+        buf_write(w, "<span color='%s'>%d - %d Fragments</span>\n", color, (int)frag_min, (int)frag_max);
+      else
+        buf_write(w, "<span color='%s'>%d Fragments</span>\n", color, (int)frag_min);
+    }
+  }
+
   // Armor first -- matches in-game tooltip ordering for armor pieces.
   {
     float armor = dbr_get_float_fast(data, arz_intern("defensiveProtection"), shard_index);
@@ -1809,12 +1855,50 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(w, "<span color='%s'>%d Armor</span>\n", color, (int)round(armor));
   }
 
-  // Flat damage ranges (min-max), with optional chance qualifier
+  // Shield block leads the shield's base block, in the game's single-line
+  // format ("11% Chance to block 94 damage", tagShieldBlockInfo); odd records
+  // carrying only one half keep a standalone line.  defensiveAbsorption is
+  // only meaningful on shields (paired with block); non-shield items (e.g.
+  // greaves) sometimes carry a stray value that the game engine ignores --
+  // suppress it here too.
+  {
+    float blk_val = dbr_get_float_fast(data, INT_defensiveBlock, shard_index);
+    float blk_ch = dbr_get_float_fast(data, INT_defensiveBlockChance, shard_index);
+    float blk_abs = dbr_get_float_fast(data, INT_defensiveAbsorption, shard_index);
+
+    if(blk_ch > 0 && blk_val > 0)
+      buf_write(w, "<span color='%s'>%.0f%% Chance to block %.0f damage</span>\n", color, blk_ch, blk_val);
+
+    else if(blk_ch > 0)
+      buf_write(w, "<span color='%s'>%.0f%% Shield Block Chance</span>\n", color, blk_ch);
+
+    else if(blk_val > 0)
+      buf_write(w, "<span color='%s'>%.0f Damage Blocked</span>\n", color, blk_val);
+
+    if(blk_abs > 0 && (blk_val > 0 || blk_ch > 0))
+      buf_write(w, "<span color='%s'>%.0f%% Damage Absorption</span>\n", color, blk_abs);
+  }
+
+  // Flat damage ranges (min-max), with optional chance qualifier.  Weapon base
+  // damage renders first, then the pierce ratio and attack-speed lines, then
+  // bonus damage -- the in-game weapon tooltip layout.
   {
     // prefix: stat name segment used to look up offensive<Prefix>Global.
     // is_base: weapon base damage (always top-level).  NULL prefix on
     // non-base entries means "no Global lookup" (treat like top-level).
-    static struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; bool is_base; const char *prefix; } damage_types[] = {
+    typedef struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; bool is_base; const char *prefix; } DamageRow;
+
+    // The game labels base physical damage plainly "Damage" (DamageBasePhysical).
+    static const DamageRow base_damage_types[] = {
+      {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Damage", true, NULL},
+      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage", true, NULL},
+      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage", true, NULL},
+      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage", true, NULL},
+      {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage", true, NULL},
+      {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage", true, NULL},
+      {NULL, NULL, NULL, NULL, false, NULL}
+    };
+    static const DamageRow bonus_damage_types[] = {
       {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, &INT_offensivePhysicalChance, "Physical Damage", false, "Physical"},
       {&INT_offensiveFireMin, &INT_offensiveFireMax, &INT_offensiveFireChance, "Fire Damage", false, "Fire"},
       {&INT_offensiveColdMin, &INT_offensiveColdMax, &INT_offensiveColdChance, "Cold Damage", false, "Cold"},
@@ -1823,51 +1907,118 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       {&INT_offensivePierceMin, &INT_offensivePierceMax, &INT_offensivePierceChance, "Piercing Damage", false, "Pierce"},
       {&INT_offensiveElementalMin, &INT_offensiveElementalMax, &INT_offensiveElementalChance, "Elemental Damage", false, "Elemental"},
       {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech", false, NULL},
-      {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Physical Damage", true, NULL},
-      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage", true, NULL},
-      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage", true, NULL},
-      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage", true, NULL},
-      {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage", true, NULL},
-      {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage", true, NULL},
       {&INT_offensiveLifeMin, &INT_offensiveLifeMax, &INT_offensiveLifeChance, "Vitality Damage", false, "Life"},
-      {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, &INT_offensiveBonusPhysicalChance, "Physical Damage", false, "BonusPhysical"},
+      {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, &INT_offensiveBonusPhysicalChance, "Bonus Damage", false, "BonusPhysical"},
       {NULL, NULL, NULL, NULL, false, NULL}
     };
+    const DamageRow *tables[2] = {base_damage_types, bonus_damage_types};
 
-    for(int d = 0; damage_types[d].min_int; d++)
+    // Old-format weapons (original TQ records) store their base swing damage
+    // in offensivePhysicalMin/Max rather than offensiveBase*; the engine
+    // treats it as base damage on any Weapon* class.  Pull it into the base
+    // phase (labelled plainly "Damage") unless real offensiveBase physical
+    // damage exists or a chance qualifier marks it as a proc bonus.
+    bool weapon_base_physical = cls && strncasecmp(cls, "Weapon", 6) == 0
+        && dbr_get_float_fast(data, INT_offensivePhysicalMin, shard_index) > 0
+        && dbr_get_float_fast(data, INT_offensiveBasePhysicalMin, shard_index) <= 0
+        && dbr_get_float_fast(data, INT_offensivePhysicalChance, shard_index) <= 0;
+
+    for(int t = 0; t < 2; t++)
     {
-      float mn = dbr_get_float_fast(data, *damage_types[d].min_int, shard_index);
-      float mx = dbr_get_float_fast(data, *damage_types[d].max_int, shard_index);
+      const DamageRow *damage_types = tables[t];
 
-      if(mn > 0)
+      if(t == 0 && weapon_base_physical)
       {
-        float chance = damage_types[d].chance_int ? dbr_get_float_fast(data, *damage_types[d].chance_int, shard_index) : 0;
-        const char *dmg_label = damage_types[d].label;
+        float mn = dbr_get_float_fast(data, INT_offensivePhysicalMin, shard_index);
+        float mx = dbr_get_float_fast(data, INT_offensivePhysicalMax, shard_index);
 
-        if(chance > 0)
+        if(mx > mn)
+          buf_write(w, "<span color='%s'>%d ~ %d Damage</span>\n", color, (int)round(mn), (int)round(mx));
+        else
+          buf_write(w, "<span color='%s'>%d Damage</span>\n", color, (int)round(mn));
+      }
+
+      for(int d = 0; damage_types[d].min_int; d++)
+      {
+        if(t > 0 && weapon_base_physical && damage_types[d].min_int == &INT_offensivePhysicalMin)
+          continue;
+
+        float mn = dbr_get_float_fast(data, *damage_types[d].min_int, shard_index);
+        float mx = dbr_get_float_fast(data, *damage_types[d].max_int, shard_index);
+
+        if(mn > 0)
         {
-          if(mx > mn)
-            buf_write(w, "<span color='%s'>%.1f%% Chance of %d - %d %s</span>\n", color, chance, (int)round(mn), (int)round(mx), dmg_label);
+          float chance = damage_types[d].chance_int ? dbr_get_float_fast(data, *damage_types[d].chance_int, shard_index) : 0;
+          const char *dmg_label = damage_types[d].label;
+
+          if(chance > 0)
+          {
+            if(mx > mn)
+              buf_write(w, "<span color='%s'>%.1f%% Chance of %d ~ %d %s</span>\n", color, chance, (int)round(mn), (int)round(mx), dmg_label);
+
+            else
+              buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n", color, chance, (int)round(mn), dmg_label);
+          }
 
           else
-            buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n", color, chance, (int)round(mn), dmg_label);
+          {
+            // Base weapon damage and stats whose Global flag is false stay
+            // outside the chance block; only stats with Global=true go inside.
+            bool in_chance = !damage_types[d].is_base
+                             && global_chance > 0
+                             && offensive_proc_in_chance(data, damage_types[d].prefix, shard_index);
+            BufWriter *target = in_chance ? ow : w;
+            const char *target_indent = in_chance ? indent : "";
+
+            if(mx > mn)
+              buf_write(target, "<span color='%s'>%s%d ~ %d %s</span>\n", color, target_indent, (int)round(mn), (int)round(mx), dmg_label);
+
+            else
+              buf_write(target, "<span color='%s'>%s%d %s</span>\n", color, target_indent, (int)round(mn), dmg_label);
+          }
+        }
+      }
+
+      if(t > 0)
+        continue;
+
+      // Between the weapon's base damage and its bonus stats: the pierce ratio
+      // ("x% Pierce Ratio", part of the DamageBase* family in-game) and the
+      // attack-speed line, followed by a blank separator -- the in-game weapon
+      // header block.  Weapons and shields only; skill/affix records lack the
+      // speed tag and item class, so this is a no-op for them.
+      {
+        float pr_min = dbr_get_float_fast(data, INT_offensivePierceRatioMin, shard_index);
+        float pr_max = dbr_get_float_fast(data, INT_offensivePierceRatioMax, shard_index);
+
+        if(pr_min > 0)
+        {
+          char val_str[64];
+
+          if(pr_max > pr_min)
+            snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", pr_min, pr_max);
+          else
+            snprintf(val_str, sizeof(val_str), "%.0f%%", pr_min);
+
+          float pr_chance = dbr_get_float_fast(data, INT_offensivePierceRatioChance, shard_index);
+
+          if(pr_chance > 0 && pr_chance < 100)
+            buf_write(w, "<span color='%s'>%.1f%% Chance of %s Pierce Ratio</span>\n", color, pr_chance, val_str);
+          else
+            buf_write(w, "<span color='%s'>%s Pierce Ratio</span>\n", color, val_str);
         }
 
-        else
+        const char *speed_tag = record_get_string_fast(data, INT_characterBaseAttackSpeedTag);
+
+        if(speed_tag && cls && (strncasecmp(cls, "WeaponMelee_", 12) == 0 ||
+                                strncasecmp(cls, "WeaponHunting_", 14) == 0 ||
+                                strncasecmp(cls, "WeaponMagical_", 14) == 0 ||
+                                strcasecmp(cls, "WeaponArmor_Shield") == 0))
         {
-          // Base weapon damage and stats whose Global flag is false stay
-          // outside the chance block; only stats with Global=true go inside.
-          bool in_chance = !damage_types[d].is_base
-                           && global_chance > 0
-                           && offensive_proc_in_chance(data, damage_types[d].prefix, shard_index);
-          BufWriter *target = in_chance ? ow : w;
-          const char *target_indent = in_chance ? indent : "";
+          const char *speed_str = tr ? translation_get(tr, speed_tag) : NULL;
 
-          if(mx > mn)
-            buf_write(target, "<span color='%s'>%s%d - %d %s</span>\n", color, target_indent, (int)round(mn), (int)round(mx), dmg_label);
-
-          else
-            buf_write(target, "<span color='%s'>%s%d %s</span>\n", color, target_indent, (int)round(mn), dmg_label);
+          if(speed_str)
+            buf_write(w, "<span color='%s'>%s</span>\n\n", color, speed_str);
         }
       }
     }
@@ -1885,10 +2036,10 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       const char *target_indent = in_chance ? indent : "";
 
       if(mx > mn)
-        buf_write(target, "<span color='%s'>%s%d%% - %d%% Attack Damage Converted to Health</span>\n", color, target_indent, (int)round(mn), (int)round(mx));
+        buf_write(target, "<span color='%s'>%s%d%% ~ %d%% of Attack damage converted to Health</span>\n", color, target_indent, (int)round(mn), (int)round(mx));
 
       else
-        buf_write(target, "<span color='%s'>%s%d%% Attack Damage Converted to Health</span>\n", color, target_indent, (int)round(mn));
+        buf_write(target, "<span color='%s'>%s%d%% of Attack damage converted to Health</span>\n", color, target_indent, (int)round(mn));
     }
   }
 
@@ -1921,7 +2072,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
         if(chance > 0)
         {
           if(mx > mn)
-            buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f - %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, mx * dur, lbl, dur);
+            buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f ~ %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, mx * dur, lbl, dur);
 
           else
             buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, lbl, dur);
@@ -1930,7 +2081,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
         else
         {
           if(mx > mn)
-            buf_write(ow, "<span color='%s'>%s%.0f - %.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, mx * dur, lbl, dur);
+            buf_write(ow, "<span color='%s'>%s%.0f ~ %.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, mx * dur, lbl, dur);
 
           else
             buf_write(ow, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, lbl, dur);
@@ -2005,7 +2156,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       if(ch > 0 && ch < 100)
       {
         if(mx > mn)
-          buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f - %.0f %s over %.1f Seconds</span>\n",
+          buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f ~ %.0f %s over %.1f Seconds</span>\n",
                     color, indent, ch, mn * dur, mx * dur, retal_dots[ri].label, dur);
         else
           buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f %s over %.1f Seconds</span>\n",
@@ -2015,7 +2166,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       else
       {
         if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%.0f - %.0f %s over %.1f Seconds</span>\n",
+          buf_write(rw, "<span color='%s'>%s%.0f ~ %.0f %s over %.1f Seconds</span>\n",
                     color, retal_indent, mn * dur, mx * dur, retal_dots[ri].label, dur);
         else
           buf_write(rw, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n",
@@ -2052,7 +2203,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       if(ch > 0 && ch < 100)
       {
         if(mx > mn)
-          buf_write(w, "<span color='%s'>%.1f%% Chance of %d - %d %s</span>\n",
+          buf_write(w, "<span color='%s'>%.1f%% Chance of %d ~ %d %s</span>\n",
                     color, ch, (int)round(mn), (int)round(mx), retal_flat[ri].label);
         else
           buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n",
@@ -2062,7 +2213,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       else
       {
         if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%d - %d %s</span>\n",
+          buf_write(rw, "<span color='%s'>%s%d ~ %d %s</span>\n",
                     color, retal_indent, (int)round(mn), (int)round(mx), retal_flat[ri].label);
         else
           buf_write(rw, "<span color='%s'>%s%d %s</span>\n",
@@ -2083,14 +2234,14 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       if(ch > 0 && ch < 100)
       {
         if(mx > mn)
-          buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f - %.1f Second Stun Retaliation</span>\n", color, ch, mn, mx);
+          buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f ~ %.1f Second Stun Retaliation</span>\n", color, ch, mn, mx);
         else
           buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second Stun Retaliation</span>\n", color, ch, mn);
       }
       else
       {
         if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%.1f - %.1f Second Stun Retaliation</span>\n", color, retal_indent, mn, mx);
+          buf_write(rw, "<span color='%s'>%s%.1f ~ %.1f Second Stun Retaliation</span>\n", color, retal_indent, mn, mx);
         else
           buf_write(rw, "<span color='%s'>%s%.1f Second Stun Retaliation</span>\n", color, retal_indent, mn);
       }
@@ -2109,14 +2260,14 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       if(ch > 0 && ch < 100)
       {
         if(mx > mn)
-          buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% - %.0f%% of Current Life Retaliation</span>\n", color, ch, mn, mx);
+          buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% ~ %.0f%% of Current Life Retaliation</span>\n", color, ch, mn, mx);
         else
           buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% of Current Life Retaliation</span>\n", color, ch, mn);
       }
       else
       {
         if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%.0f%% - %.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn, mx);
+          buf_write(rw, "<span color='%s'>%s%.0f%% ~ %.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn, mx);
         else
           buf_write(rw, "<span color='%s'>%s%.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn);
       }
@@ -2155,10 +2306,10 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
         snprintf(val_str, sizeof(val_str), "%.0f%s", mn, pct);
 
       if(ch > 0 && ch < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of %s %s for %.1f Second(s)</span>\n",
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %s %s for %.1f Seconds</span>\n",
                   color, ch, val_str, retal_debuffs[ri].label, dur);
       else
-        buf_write(rw, "<span color='%s'>%s%s %s for %.1f Second(s)</span>\n",
+        buf_write(rw, "<span color='%s'>%s%s %s for %.1f Seconds</span>\n",
                   color, retal_indent, val_str, retal_debuffs[ri].label, dur);
     }
   }
@@ -2169,7 +2320,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     float dur = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionDurationMin, shard_index);
 
     if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor for %.1f Second(s)</span>\n", color, indent, val, dur);
+      buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor for %.1f Seconds</span>\n", color, indent, val, dur);
 
     else if(val > 0)
       buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor</span>\n", color, indent, val);
@@ -2187,14 +2338,14 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(val_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f - %.0f", val, val_max);
+        snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", val, val_max);
       else
         snprintf(val_str, sizeof(val_str), "%.0f", val);
 
       if(ch > 0 && ch < 100 && dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Reduced Resistances for %.1f Second(s)</span>\n", color, indent, ch, val_str, dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Reduced Resistances for %.1f Seconds</span>\n", color, indent, ch, val_str, dur);
       else if(dur > 0)
-        buf_write(ow, "<span color='%s'>%s%s Reduced Resistances for %.1f Second(s)</span>\n", color, indent, val_str, dur);
+        buf_write(ow, "<span color='%s'>%s%s Reduced Resistances for %.1f Seconds</span>\n", color, indent, val_str, dur);
       else
         buf_write(ow, "<span color='%s'>%s%s Reduced Resistances</span>\n", color, indent, val_str);
     }
@@ -2209,9 +2360,9 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     if(val > 0)
     {
       if(ch > 0 && ch < 100 && dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Resistances for %.1f Second(s)</span>\n", color, indent, ch, val, dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Resistances for %.1f Seconds</span>\n", color, indent, ch, val, dur);
       else if(dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances for %.1f Second(s)</span>\n", color, indent, val, dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances for %.1f Seconds</span>\n", color, indent, val, dur);
       else
         buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances</span>\n", color, indent, val);
     }
@@ -2223,7 +2374,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     float dur = dbr_get_float_fast(data, INT_defensiveDisruptionDuration, shard_index);
 
     if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.1f Second(s) of Skill Disruption</span>\n", color, indent, val, dur);
+      buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.1f second(s) of Skill Disruption</span>\n", color, indent, val, dur);
 
     else if(val > 0)
       buf_write(w, "<span color='%s'>%.0f%% Skill Disruption Protection</span>\n", color, val);
@@ -2240,14 +2391,14 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(val_max > val)
-        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", val, val_max);
+        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", val, val_max);
       else
         snprintf(val_str, sizeof(val_str), "%.1f", val);
 
       if(ch > 0 && ch < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Skill Disruption</span>\n", color, indent, ch, val_str);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Skill Disruption</span>\n", color, indent, ch, val_str);
       else
-        buf_write(ow, "<span color='%s'>%s%s Second(s) of Skill Disruption</span>\n", color, indent, val_str);
+        buf_write(ow, "<span color='%s'>%s%s second(s) of Skill Disruption</span>\n", color, indent, val_str);
     }
   }
 
@@ -2257,7 +2408,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     float dur = dbr_get_float_fast(data, INT_offensiveSlowAttackSpeedDurationMin, shard_index);
 
     if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed for %.1f Second(s)</span>\n", color, indent, val, dur);
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed for %.1f Seconds</span>\n", color, indent, val, dur);
 
     else if(val > 0)
       buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed</span>\n", color, indent, val);
@@ -2274,12 +2425,12 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(val_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f%% - %.0f%%", val, val_max);
+        snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", val, val_max);
       else
         snprintf(val_str, sizeof(val_str), "%.0f%%", val);
 
       if(dur > 0)
-        buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed for %.1f Second(s)</span>\n", color, indent, val_str, dur);
+        buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed for %.1f Seconds</span>\n", color, indent, val_str, dur);
       else
         buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed</span>\n", color, indent, val_str);
     }
@@ -2298,7 +2449,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage",    "Poison"},
       {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage",  "Life"},
       {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage",    "Pierce"},
-      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damage", "Elemental"},
+      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damages", "Elemental"},
       {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage", NULL},
     };
 
@@ -2371,7 +2522,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       if(pcl_chance > 0 && pcl_chance < 100)
       {
         if(pcl_max > pcl)
-          buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% - %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl, pcl_max);
+          buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% ~ %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl, pcl_max);
         else
           buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl);
       }
@@ -2379,7 +2530,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       else
       {
         if(pcl_max > pcl)
-          buf_write(target, "<span color='%s'>%s%.0f%% - %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl, pcl_max);
+          buf_write(target, "<span color='%s'>%s%.0f%% ~ %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl, pcl_max);
         else
           buf_write(target, "<span color='%s'>%s%.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl);
       }
@@ -2400,7 +2551,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(drain_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f - %.0f", val, drain_max);
+        snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", val, drain_max);
       else
         snprintf(val_str, sizeof(val_str), "%.0f", val);
 
@@ -2444,16 +2595,16 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(stun_hi > stun_lo)
-        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", stun_lo, stun_hi);
+        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", stun_lo, stun_hi);
       else
         snprintf(val_str, sizeof(val_str), "%.1f", stun_lo);
 
       float stun_chance = dbr_get_float_fast(data, INT_offensiveStunChance, shard_index);
 
       if(stun_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Stun</span>\n", color, indent, stun_chance, val_str);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Stun</span>\n", color, indent, stun_chance, val_str);
       else
-        buf_write(ow, "<span color='%s'>%s%s Second(s) of Stun</span>\n", color, indent, val_str);
+        buf_write(ow, "<span color='%s'>%s%s second(s) of Stun</span>\n", color, indent, val_str);
     }
 
     float stun_mod = dbr_get_float_fast(data, INT_offensiveStunModifier, shard_index);
@@ -2462,43 +2613,43 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(ow, "<span color='%s'>%s%+d%% Stun Duration</span>\n", color, indent, (int)round(stun_mod));
   }
 
-  // Offensive fumble (chance to fumble attacks -- melee)
+  // Offensive fumble (melee) and projectile fumble (Impaired Aim -- ranged).
+  // The stat's Min value IS the fumble chance percentage (the game's
+  // DamageDurationFumble tag: "{value}% Chance to Fumble attacks"); the
+  // separate *FumbleChance field is the usual chance-of-effect wrapper.
   {
-    float fumble_min = dbr_get_float_fast(data, INT_offensiveFumbleMin, shard_index);
-    float fumble_dur = dbr_get_float_fast(data, INT_offensiveFumbleDurationMin, shard_index);
+    static const struct { const char **min_int; const char **max_int; const char **dur_int; const char **chance_int; const char *label; } fumble_types[] = {
+      {&INT_offensiveFumbleMin, &INT_offensiveFumbleMax, &INT_offensiveFumbleDurationMin, &INT_offensiveFumbleChance, "Chance to Fumble attacks"},
+      {&INT_offensiveProjectileFumbleMin, &INT_offensiveProjectileFumbleMax, &INT_offensiveProjectileFumbleDurationMin, &INT_offensiveProjectileFumbleChance, "Chance of Impaired Aim"},
+      {NULL, NULL, NULL, NULL, NULL}
+    };
 
-    if(fumble_dur <= 0)
-      fumble_dur = fumble_min;
-
-    if(fumble_dur > 0)
+    for(int f = 0; fumble_types[f].min_int; f++)
     {
-      float fumble_chance = dbr_get_float_fast(data, INT_offensiveFumbleChance, shard_index);
+      float mn = dbr_get_float_fast(data, *fumble_types[f].min_int, shard_index);
 
-      if(fumble_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance to Fumble Attacks for %.1f Seconds</span>\n", color, indent, fumble_chance, fumble_dur);
+      if(mn <= 0)
+        continue;
 
+      float mx = dbr_get_float_fast(data, *fumble_types[f].max_int, shard_index);
+      float dur = dbr_get_float_fast(data, *fumble_types[f].dur_int, shard_index);
+      float ch = dbr_get_float_fast(data, *fumble_types[f].chance_int, shard_index);
+      char val_str[64];
+
+      if(mx > mn)
+        snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", mn, mx);
       else
-        buf_write(ow, "<span color='%s'>%sChance to Fumble Attacks for %.1f Seconds</span>\n", color, indent, fumble_dur);
-    }
-  }
+        snprintf(val_str, sizeof(val_str), "%.0f%%", mn);
 
-  // Offensive projectile fumble (impaired aim -- ranged)
-  {
-    float pfumble_min = dbr_get_float_fast(data, INT_offensiveProjectileFumbleMin, shard_index);
-    float pfumble_dur = dbr_get_float_fast(data, INT_offensiveProjectileFumbleDurationMin, shard_index);
+      char dur_str[48] = "";
 
-    if(pfumble_dur <= 0)
-      pfumble_dur = pfumble_min;
+      if(dur > 0)
+        snprintf(dur_str, sizeof(dur_str), " for %.1f Seconds", dur);
 
-    if(pfumble_dur > 0)
-    {
-      float pfumble_chance = dbr_get_float_fast(data, INT_offensiveProjectileFumbleChance, shard_index);
-
-      if(pfumble_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of Impaired Aim for %.1f Seconds</span>\n", color, indent, pfumble_chance, pfumble_dur);
-
+      if(ch > 0 && ch < 100)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s%s</span>\n", color, indent, ch, val_str, fumble_types[f].label, dur_str);
       else
-        buf_write(ow, "<span color='%s'>%sChance of Impaired Aim for %.1f Seconds</span>\n", color, indent, pfumble_dur);
+        buf_write(ow, "<span color='%s'>%s%s %s%s</span>\n", color, indent, val_str, fumble_types[f].label, dur_str);
     }
   }
 
@@ -2515,16 +2666,16 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(hi > lo)
-        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", lo, hi);
+        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", lo, hi);
       else
         snprintf(val_str, sizeof(val_str), "%.1f", lo);
 
       float freeze_chance = dbr_get_float_fast(data, INT_offensiveFreezeChance, shard_index);
 
       if(freeze_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Freeze</span>\n", color, indent, freeze_chance, val_str);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Freeze</span>\n", color, indent, freeze_chance, val_str);
       else
-        buf_write(ow, "<span color='%s'>%s%s Second(s) of Freeze</span>\n", color, indent, val_str);
+        buf_write(ow, "<span color='%s'>%s%s second(s) of Freeze</span>\n", color, indent, val_str);
     }
   }
 
@@ -2541,16 +2692,16 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(hi > lo)
-        snprintf(val_str, sizeof(val_str), "%.1f - %.1f", lo, hi);
+        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", lo, hi);
       else
         snprintf(val_str, sizeof(val_str), "%.1f", lo);
 
       float sleep_chance = dbr_get_float_fast(data, INT_offensiveSleepChance, shard_index);
 
       if(sleep_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Second(s) of Sleep</span>\n", color, indent, sleep_chance, val_str);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Sleep</span>\n", color, indent, sleep_chance, val_str);
       else
-        buf_write(ow, "<span color='%s'>%s%s Second(s) of Sleep</span>\n", color, indent, val_str);
+        buf_write(ow, "<span color='%s'>%s%s second(s) of Sleep</span>\n", color, indent, val_str);
     }
 
     float sleep_mod = dbr_get_float_fast(data, INT_offensiveSleepModifier, shard_index);
@@ -2559,36 +2710,18 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       buf_write(ow, "<span color='%s'>%s%+d%% Sleep Duration</span>\n", color, indent, (int)round(sleep_mod));
   }
 
-  // Pierce Ratio: damage converted to piercing (raw + modifier)
+  // Pierce Ratio modifier ("of Piercing" affixes).  The raw ratio renders in
+  // the weapon-base block above, next to base damage, as the game does.
   {
-    float pr_min = dbr_get_float_fast(data, INT_offensivePierceRatioMin, shard_index);
-    float pr_max = dbr_get_float_fast(data, INT_offensivePierceRatioMax, shard_index);
-    float pr_chance = dbr_get_float_fast(data, INT_offensivePierceRatioChance, shard_index);
-
-    if(pr_min > 0)
-    {
-      char val_str[64];
-
-      if(pr_max > pr_min)
-        snprintf(val_str, sizeof(val_str), "%.0f%% - %.0f%%", pr_min, pr_max);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f%%", pr_min);
-
-      if(pr_chance > 0 && pr_chance < 100)
-        buf_write(w, "<span color='%s'>%.1f%% Chance of %s Pierce Ratio</span>\n", color, pr_chance, val_str);
-      else
-        buf_write(w, "<span color='%s'>%s Pierce Ratio</span>\n", color, val_str);
-    }
-
     float pr_mod = dbr_get_float_fast(data, INT_offensivePierceRatioModifier, shard_index);
     float pr_mod_chance = dbr_get_float_fast(data, INT_offensivePierceRatioModifierChance, shard_index);
 
     if(fabs(pr_mod) > 0.001f)
     {
       if(pr_mod_chance > 0 && pr_mod_chance < 100)
-        buf_write(w, "<span color='%s'>%.1f%% Chance of %+d%% Pierce Ratio</span>\n", color, pr_mod_chance, (int)round(pr_mod));
+        buf_write(w, "<span color='%s'>%.1f%% Chance of %+d%% increased Pierce Ratio</span>\n", color, pr_mod_chance, (int)round(pr_mod));
       else
-        buf_write(w, "<span color='%s'>%+d%% Pierce Ratio</span>\n", color, (int)round(pr_mod));
+        buf_write(w, "<span color='%s'>%+d%% increased Pierce Ratio</span>\n", color, (int)round(pr_mod));
     }
   }
 
@@ -2605,10 +2738,10 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       float petrify_chance = dbr_get_float_fast(data, INT_offensivePetrifyChance, shard_index);
 
       if(petrify_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Petrify</span>\n", color, indent, petrify_chance, petrify_dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f second(s) of Petrify</span>\n", color, indent, petrify_chance, petrify_dur);
 
       else
-        buf_write(ow, "<span color='%s'>%s%.1f Second(s) of Petrify</span>\n", color, indent, petrify_dur);
+        buf_write(ow, "<span color='%s'>%s%.1f second(s) of Petrify</span>\n", color, indent, petrify_dur);
     }
   }
 
@@ -2642,17 +2775,17 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       if(confuse_chance > 0)
       {
         if(val_max > 0)
-          buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f - %.1f Second(s) of Confusion</span>\n", color, indent, confuse_chance, val, val_max);
+          buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f ~ %.1f second(s) of Confusion</span>\n", color, indent, confuse_chance, val, val_max);
         else
-          buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f Second(s) of Confusion</span>\n", color, indent, confuse_chance, val);
+          buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f second(s) of Confusion</span>\n", color, indent, confuse_chance, val);
       }
 
       else
       {
         if(val_max > 0)
-          buf_write(ow, "<span color='%s'>%s%.1f - %.1f Second(s) of Confusion</span>\n", color, indent, val, val_max);
+          buf_write(ow, "<span color='%s'>%s%.1f ~ %.1f second(s) of Confusion</span>\n", color, indent, val, val_max);
         else
-          buf_write(ow, "<span color='%s'>%s%.1f Second(s) of Confusion</span>\n", color, indent, val);
+          buf_write(ow, "<span color='%s'>%s%.1f second(s) of Confusion</span>\n", color, indent, val);
       }
     }
   }
@@ -2665,10 +2798,10 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     if(fear_min > 0)
     {
       if(fear_max > fear_min)
-        buf_write(ow, "<span color='%s'>%s%.1f - %.1f Second(s) of Fear</span>\n", color, indent, fear_min, fear_max);
+        buf_write(ow, "<span color='%s'>%s%.1f ~ %.1f second(s) of Fear</span>\n", color, indent, fear_min, fear_max);
 
       else
-        buf_write(ow, "<span color='%s'>%s%.1f Second(s) of Fear</span>\n", color, indent, fear_min);
+        buf_write(ow, "<span color='%s'>%s%.1f second(s) of Fear</span>\n", color, indent, fear_min);
     }
   }
 
@@ -2680,7 +2813,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     if(tdmg_min > 0)
     {
       if(tdmg_dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage for %.1f Second(s)</span>\n", color, indent, tdmg_min, tdmg_dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage for %.1f Seconds</span>\n", color, indent, tdmg_min, tdmg_dur);
 
       else
         buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage</span>\n", color, indent, tdmg_min);
@@ -2693,7 +2826,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     float oa_dur = dbr_get_float_fast(data, INT_offensiveSlowOffensiveAbilityDurationMin, shard_index);
 
     if(fabs(oa_mod) > 0.001f && oa_dur > 0)
-      buf_write(ow, "<span color='%s'>%s%+d%% Offensive Ability for %.1f Second(s)</span>\n", color, indent, (int)round(-oa_mod), oa_dur);
+      buf_write(ow, "<span color='%s'>%s%+d%% Offensive Ability for %.1f Seconds</span>\n", color, indent, (int)round(-oa_mod), oa_dur);
   }
 
   // Reduced Defensive Ability debuff (applied to enemies)
@@ -2702,7 +2835,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     float da_dur = dbr_get_float_fast(data, INT_offensiveSlowOffensiveReductionDurationMin, shard_index);
 
     if(fabs(da_mod) > 0.001f && da_dur > 0)
-      buf_write(ow, "<span color='%s'>%s%+d%% Defensive Ability for %.1f Second(s)</span>\n", color, indent, (int)round(-da_mod), da_dur);
+      buf_write(ow, "<span color='%s'>%s%+d%% Defensive Ability for %.1f Seconds</span>\n", color, indent, (int)round(-da_mod), da_dur);
   }
 
   // Reduced Defensive/Offensive Ability proc-style (Min/Max/Chance, applied to enemies)
@@ -2728,15 +2861,15 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       char val_str[64];
 
       if(mx > mn)
-        snprintf(val_str, sizeof(val_str), "%.0f - %.0f", mn, mx);
+        snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", mn, mx);
       else
         snprintf(val_str, sizeof(val_str), "%.0f", mn);
 
       if(ch > 0 && ch < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s for %.1f Second(s)</span>\n",
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s for %.1f Seconds</span>\n",
                   color, indent, ch, val_str, ability_debuffs[ad].label, dur);
       else
-        buf_write(ow, "<span color='%s'>%s%s %s for %.1f Second(s)</span>\n",
+        buf_write(ow, "<span color='%s'>%s%s %s for %.1f Seconds</span>\n",
                   color, indent, val_str, ability_debuffs[ad].label, dur);
     }
   }
@@ -2751,9 +2884,9 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
       float slow_dur = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedDurationMin, shard_index);
 
       if(slow_ch > 0 && slow_dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Total Speed for %.1f Second(s)</span>\n", color, indent, slow_ch, slow_min, slow_dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Total Speed for %.1f Seconds</span>\n", color, indent, slow_ch, slow_min, slow_dur);
       else if(slow_dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed for %.1f Second(s)</span>\n", color, indent, slow_min, slow_dur);
+        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed for %.1f Seconds</span>\n", color, indent, slow_min, slow_dur);
       else
         buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed</span>\n", color, indent, slow_min);
     }
@@ -2762,24 +2895,7 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   // -- End of offensive sections --
   // (non-offensive sections follow below, then chance group is flushed at the end)
 
-  // Shield block: raw value, raw chance, and absorption
-  {
-    float blk_val = dbr_get_float_fast(data, INT_defensiveBlock, shard_index);
-    float blk_ch = dbr_get_float_fast(data, INT_defensiveBlockChance, shard_index);
-    float blk_abs = dbr_get_float_fast(data, INT_defensiveAbsorption, shard_index);
-
-    if(blk_ch > 0)
-      buf_write(w, "<span color='%s'>%.0f%% Shield Block Chance</span>\n", color, blk_ch);
-
-    if(blk_val > 0)
-      buf_write(w, "<span color='%s'>%.0f Damage Blocked</span>\n", color, blk_val);
-
-    // defensiveAbsorption is only meaningful on shields (paired with block).
-    // Non-shield items (e.g. greaves) sometimes carry a stray value that the
-    // game engine ignores -- suppress it here too.
-    if(blk_abs > 0 && (blk_val > 0 || blk_ch > 0))
-      buf_write(w, "<span color='%s'>%.0f%% Damage Absorption</span>\n", color, blk_abs);
-  }
+  // (Shield block renders in the weapon/shield base block near the top.)
 
   // Petrify resistance (% reduced petrify duration)
   {
@@ -3063,31 +3179,13 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
     }
   }
 
-  // Skill parameters: cooldown/recharge time
-  {
-    float cooldown = dbr_get_float_fast(data, INT_skillCooldownTime, shard_index);
-
-    if(cooldown <= 0)
-      cooldown = dbr_get_float_fast(data, INT_refreshTime, shard_index);
-
-    if(cooldown > 0)
-      buf_write(w, "<span color='%s'>%.1f Second(s) Recharge</span>\n", color, cooldown);
-  }
-
-  // Skill parameters: life restored (e.g. Regrowth heal)
+  // Skill parameters: life restored (e.g. Regrowth heal).  Energy cost and
+  // recharge render at the top of the card (see the skill-mechanics block).
   {
     float life = dbr_get_float_fast(data, INT_skillLifeBonus, shard_index);
 
     if(life > 0)
       buf_write(w, "<span color='%s'>+%d Health Restored</span>\n", color, (int)round(life));
-  }
-
-  // Skill parameters: energy cost to cast
-  {
-    float cost = dbr_get_float_fast(data, INT_skillManaCost, shard_index);
-
-    if(cost > 0)
-      buf_write(w, "<span color='%s'>%d Energy Cost</span>\n", color, (int)round(cost));
   }
 
   // Skill parameters: target number

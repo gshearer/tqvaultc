@@ -1,5 +1,6 @@
 #include "item_stats.h"
 #include "asset_lookup.h"
+#include "compat.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -404,13 +405,111 @@ static const struct { const char **interned; const char *eq_suffix; } req_slots[
   {&INT_strengthRequirement,     "StrengthEquation"},
 };
 
-// Compute the level/dex/int/str requirements for a single DBR record.
+// Count the attribute groups on an item record, the game's "totalAttCount"
+// variable in the itemCost requirement equations.  One count per displayed
+// stat group: a Min/Max pair counts once via its Min side, and a pair whose
+// Min is zero or absent (e.g. a lone offensiveBaseFireMax) is hidden by the
+// game and not counted.  Chance/Duration qualifiers, Global/XOR routing flags
+// and the item's intrinsics (base attack speed, base armor/block, old-format
+// weapon damage, base pierce ratio) are not attributes.  "+N to <skill>"
+// augments count N; a granted item skill counts one.  Mirrors TQVaultAE's
+// attributeCount, refined by the zero-Min rule -- calibrated against the
+// in-game Scepter of Atlantis (level requirement 47 = itemLevel 72 with 7
+// attributes; TQVaultAE counts the min-less fire damage too and shows 48).
+static int
+count_record_attributes(TQArzRecordData *data)
+{
+  if(!data)
+    return(0);
+
+  static const char *excluded[] = {
+    "characterBaseAttackSpeed", "offensivePhysicalMin", "offensivePhysicalMax",
+    "offensivePierceRatioMin", "offensivePierceRatioMax",
+    "defensiveProtection", "defensiveBlock", "blockRecoveryTime", NULL
+  };
+  static const char *prefixes[] = {
+    "offensive", "retaliation", "defensive", "character", "skill",
+    "augment", "racialBonus", NULL
+  };
+
+  int count = 0;
+
+  for(uint32_t i = 0; i < data->num_vars; i++)
+  {
+    TQVariable *v = &data->vars[i];
+
+    if(!v->name || v->count == 0)
+      continue;
+
+    if(v->type == TQ_VAR_STRING)
+    {
+      // A granted skill is one attribute; every other string is a name/tag.
+      if(strcasecmp(v->name, "itemSkillName") == 0 &&
+          v->value.str && v->value.str[0] && v->value.str[0][0])
+        count++;
+
+      continue;
+    }
+
+    if((v->type != TQ_VAR_INT && v->type != TQ_VAR_FLOAT) || !v->value.i32)
+      continue;
+
+    float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[0] : v->value.f32[0];
+
+    if(fabsf(val) < 0.0001f)
+      continue;
+
+    bool skip = false;
+
+    for(int e = 0; excluded[e] && !skip; e++)
+      skip = (strcasecmp(v->name, excluded[e]) == 0);
+
+    if(skip)
+      continue;
+
+    bool known = false;
+
+    for(int p = 0; prefixes[p] && !known; p++)
+      known = (strncasecmp(v->name, prefixes[p], strlen(prefixes[p])) == 0);
+
+    if(!known)
+      continue;
+
+    if(strcasestr(v->name, "Chance") || strcasestr(v->name, "Duration"))
+      continue;
+
+    size_t len = strlen(v->name);
+
+    if((len >= 3 && strcasecmp(v->name + len - 3, "XOR") == 0) ||
+        (len >= 6 && strcasecmp(v->name + len - 6, "Global") == 0))
+      continue;
+
+    // Min/Max pairs count once, via the Min side.
+    if(len >= 3 && strcasecmp(v->name + len - 3, "Max") == 0)
+      continue;
+
+    if(strncasecmp(v->name, "augmentSkillLevel", 17) == 0)
+    {
+      count += (v->type == TQ_VAR_INT) ? v->value.i32[0] : (int)v->value.f32[0];
+      continue;
+    }
+
+    count++;
+  }
+
+  return(count);
+}
+
+// Core of the requirement computation for one record, with the totalAttCount
+// to feed the itemCost equations supplied by the caller (a full item counts
+// attributes across base + prefix + suffix).
 // record_path: DBR path to a base item or affix record.
+// att_count: totalAttCount value for the equations.
 // out: filled with [level, dexterity, intelligence, strength]; zero where unset.
 // Reads the static requirement fields; for any that remain zero on a gear
 // record, falls back to the itemCost level-scaling equations.
-void
-item_record_requirements(const char *record_path, int out[4])
+static void
+record_requirements_with_count(const char *record_path, int att_count, int out[4])
 {
   out[0] = out[1] = out[2] = out[3] = 0;
 
@@ -489,23 +588,52 @@ item_record_requirements(const char *record_path, int out[4])
     if(!equation || !equation[0])
       continue;
 
-    int val = (int)ceil(eval_equation(equation, item_level, 0.0));
+    // The engine truncates the equation result: the in-game Scepter of
+    // Atlantis shows level 47 from 47.25 and the epic club Blight 34 from
+    // 34.5 (TQVaultAE's ceil overshoots both).
+    int val = (int)floor(eval_equation(equation, item_level, (double)att_count));
 
     if(val > 0)
       out[r] = val;
   }
 }
 
+// Compute the level/dex/int/str requirements for a single DBR record.
+// record_path: DBR path to a base item or affix record.
+// out: filled with [level, dexterity, intelligence, strength]; zero where unset.
+void
+item_record_requirements(const char *record_path, int out[4])
+{
+  TQArzRecordData *data = (record_path && record_path[0])
+                          ? asset_get_dbr(record_path) : NULL;
+
+  record_requirements_with_count(record_path, count_record_attributes(data), out);
+}
+
 // Compute the aggregate requirements of a full item across its base, prefix,
 // suffix and socketed relic/charm records, keeping the maximum per type (the
-// game enforces the highest requirement among an item's components).  Any
-// NULL/empty path is skipped.  out: [level, dexterity, intelligence, strength].
+// game enforces the highest requirement among an item's components).  The
+// equation-driven requirements on the base record scale with the attribute
+// count of base + prefix + suffix combined -- affixes raise the bar the same
+// way they do in-game.  Relics/charms only contribute their static fields.
+// Any NULL/empty path is skipped.  out: [level, dexterity, intelligence, strength].
 void
 item_requirements(const char *base_name, const char *prefix_name,
                   const char *suffix_name, const char *relic_name,
                   const char *relic_name2, int out[4])
 {
   out[0] = out[1] = out[2] = out[3] = 0;
+
+  int att_total = 0;
+  const char *counted[3] = {base_name, prefix_name, suffix_name};
+
+  for(int p = 0; p < 3; p++)
+  {
+    if(!counted[p] || !counted[p][0])
+      continue;
+
+    att_total += count_record_attributes(asset_get_dbr(counted[p]));
+  }
 
   const char *paths[5] = {base_name, prefix_name, suffix_name,
                           relic_name, relic_name2};
@@ -514,7 +642,7 @@ item_requirements(const char *base_name, const char *prefix_name,
   {
     int r[4];
 
-    item_record_requirements(paths[p], r);
+    record_requirements_with_count(paths[p], att_total, r);
 
     for(int i = 0; i < 4; i++)
       if(r[i] > out[i])
@@ -522,26 +650,30 @@ item_requirements(const char *base_name, const char *prefix_name,
   }
 }
 
-// Add item requirements (level, str, dex, int) to the tooltip.
-// When `reduction` is non-NULL, requirement lines whose value is lowered by a
-// gear/skill requirement reduction also show the reduced value in parentheses,
-// e.g. "Required Intelligence: 632 (518 reduction)".
-// record_path: DBR path to the base item.
+// Add item requirements (level, str, dex, int) to the tooltip, aggregated
+// across the whole item (base + affixes + socketed relics) exactly like the
+// equippability check.  When `reduction` is non-NULL, requirement lines whose
+// value is lowered by a gear/skill requirement reduction also show the reduced
+// value in parentheses, e.g. "Required Intelligence: 632 (518 reduction)".
+// base_name..relic_name2: the item's component DBR paths (affixes/relics NULL-ok).
 // reduction: per-attribute reduction percentages, or NULL for none.
 // w: BufWriter to append to.
 static void
-add_requirements(const char *record_path, const ItemReqReduction *reduction,
+add_requirements(const char *base_name, const char *prefix_name,
+                 const char *suffix_name, const char *relic_name,
+                 const char *relic_name2, const ItemReqReduction *reduction,
                  BufWriter *w)
 {
-  if(!record_path || !record_path[0])
+  if(!base_name || !base_name[0])
     return;
 
-  if(!asset_get_dbr(record_path))
+  if(!asset_get_dbr(base_name))
     return;
 
   int vals[4];
 
-  item_record_requirements(record_path, vals);
+  item_requirements(base_name, prefix_name, suffix_name, relic_name,
+                    relic_name2, vals);
 
   static const char *labels[4] = {
     "Required Player Level",
@@ -562,10 +694,15 @@ add_requirements(const char *record_path, const ItemReqReduction *reduction,
     red_pct[3] = reduction->strength;
   }
 
+  // In-game display order: level, strength, dexterity, intelligence.
+  static const int order[4] = {0, 3, 1, 2};
+
   buf_write(w, "\n");
 
-  for(int r = 0; r < 4; r++)
+  for(int o = 0; o < 4; o++)
   {
+    int r = order[o];
+
     if(vals[r] <= 0)
       continue;
 
@@ -684,7 +821,7 @@ append_pet_summon_stats(TQArzRecordData *skill_data, TQTranslation *tr,
     if(dmax == 0 || dmin == dmax)
       buf_write(&ab, "<span color='%s'>%.0f Damage</span>\n", color, dmin);
     else
-      buf_write(&ab, "<span color='%s'>%.0f - %.0f Damage</span>\n", color, dmin, dmax);
+      buf_write(&ab, "<span color='%s'>%.0f ~ %.0f Damage</span>\n", color, dmin, dmax);
   }
 
   // Whether the damage line was written, so the first named ability below can be
@@ -1091,36 +1228,25 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
 
     else
     {
-      if(eb[0])
+      // The header only earns its keep when affix sections follow and the
+      // block needs distinguishing; a plain item's title already names it
+      // (the in-game tooltip shows no such header).
+      bool has_affix = (prefix_name && prefix_name[0]) || (suffix_name && suffix_name[0]);
+
+      if(has_affix && eb[0])
         buf_write(&w, "\n<span color='#FFA500'><b>Base Item Properties : %s</b></span>\n", eb);
 
-      else
+      else if(has_affix)
         buf_write(&w, "\n<span color='#FFA500'><b>Base Item Properties</b></span>\n");
+
+      else
+        buf_write(&w, "\n");
     }
 
     free(eb);
 
-    // Attack speed tag -- only meaningful for weapons and shields
-    if(!standalone_relic_charm && !is_artifact && base_data)
-    {
-      const char *item_class = record_get_string_fast(base_data, INT_Class);
-
-      if(item_class && (strncasecmp(item_class, "WeaponMelee_", 12) == 0 ||
-                         strncasecmp(item_class, "WeaponHunting_", 14) == 0 ||
-                         strncasecmp(item_class, "WeaponMagical_", 14) == 0 ||
-                         strcasecmp(item_class, "WeaponArmor_Shield") == 0))
-      {
-        const char *speed_tag = record_get_string_fast(base_data, INT_characterBaseAttackSpeedTag);
-
-        if(speed_tag)
-        {
-          const char *speed_str = translation_get(tr, speed_tag);
-
-          if(speed_str)
-            buf_write(&w, "<span color='#00FFFF'>%s</span>\n\n", speed_str);
-        }
-      }
-    }
+    // (Weapon/shield attack speed renders inside add_stats_from_record, between
+    // the base damage block and the bonus stats, as the game lays it out.)
 
     g_item_stats_defer_pet_bonus = true;   // grouped at the end of the card
     add_stats_from_record(base_name, tr, &w,
@@ -1180,9 +1306,18 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
       if(!skill_tag && skill_data)
         skill_tag = record_get_string_fast(skill_data, INT_skillDisplayName);
 
+      // skillDisplayName is usually a translation tag, but several skills
+      // (e.g. Atlantis' "Wash Out") store the literal display string instead;
+      // the game falls back to the raw value, so mirror that.
       const char *skill_name = skill_tag ? translation_get(tr, skill_tag) : NULL;
 
-      const char *trigger_text = "";
+      if(!skill_name)
+        skill_name = skill_tag;
+
+      // Activation condition: the controller's triggerType picks one of the
+      // game's xtagAutoSkillCondition01..08 strings, each carrying its own
+      // leading space, e.g. " (Activated on attack)".
+      const char *trigger_text = NULL;
       const char *controller_dbr = base_data ? record_get_string_fast(base_data, INT_itemSkillAutoController) : NULL;
 
       if(controller_dbr && controller_dbr[0])
@@ -1190,25 +1325,28 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
         TQArzRecordData *ctrl_data = asset_get_dbr(controller_dbr);
         const char *trigger_type = ctrl_data ? record_get_string_fast(ctrl_data, INT_triggerType) : NULL;
 
-        if(trigger_type)
+        static const struct { const char *type; const char *xtag; const char *fallback; } trigger_map[] = {
+          {"LowHealth",       "xtagAutoSkillCondition01", " (Activated on low health)"},
+          {"LowMana",         "xtagAutoSkillCondition02", " (Activated on low energy)"},
+          {"HitByEnemy",      "xtagAutoSkillCondition03", " (Activated upon taking damage)"},
+          {"HitByMelee",      "xtagAutoSkillCondition04", " (Activated upon taking melee damage)"},
+          {"HitByProjectile", "xtagAutoSkillCondition05", " (Activated upon taking ranged damage)"},
+          {"CastBuff",        "xtagAutoSkillCondition06", " (Activated upon casting a buff)"},
+          {"AttackEnemy",     "xtagAutoSkillCondition07", " (Activated on attack)"},
+          {"OnEquip",         "xtagAutoSkillCondition08", " (Activated when equipped)"},
+        };
+
+        for(size_t ti = 0; trigger_type && ti < sizeof(trigger_map) / sizeof(trigger_map[0]); ti++)
         {
-          if(strcasecmp(trigger_type, "onAttack") == 0)
-            trigger_text = " (Activated on attack)";
+          if(strcasecmp(trigger_type, trigger_map[ti].type) == 0)
+          {
+            trigger_text = translation_get(tr, trigger_map[ti].xtag);
 
-          else if(strcasecmp(trigger_type, "onHit") == 0)
-            trigger_text = " (Activated on hit)";
+            if(!trigger_text)
+              trigger_text = trigger_map[ti].fallback;
 
-          else if(strcasecmp(trigger_type, "onBeingHit") == 0)
-            trigger_text = " (Activated when hit)";
-
-          else if(strcasecmp(trigger_type, "onEquip") == 0)
-            trigger_text = " (Activated on equip)";
-
-          else if(strcasecmp(trigger_type, "onLowHealth") == 0)
-            trigger_text = " (Activated on low health)";
-
-          else if(strcasecmp(trigger_type, "onKill") == 0)
-            trigger_text = " (Activated on kill)";
+            break;
+          }
         }
       }
 
@@ -1231,9 +1369,14 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
       if(skill_name)
       {
         char *e_name = escape_markup(skill_name);
+        char *e_trig = escape_markup(trigger_text ? trigger_text : "");
 
-        buf_write(&w, "<span color='white'>%s%s</span>\n", e_name, trigger_text);
+        // Name slightly larger, the way the game presents it; the activation
+        // text keeps the regular size on the same line.
+        buf_write(&w, "<span color='white' size='large'>%s</span><span color='white'>%s</span>\n",
+                  e_name, e_trig);
         free(e_name);
+        free(e_trig);
       }
 
       const char *desc_tag = effect_data ? record_get_string_fast(effect_data, INT_skillBaseDescription) : NULL;
@@ -1253,6 +1396,10 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
           free(e_desc);
         }
       }
+
+      // Blank separator between the skill's name block and its stat lines,
+      // matching the in-game layout.
+      buf_write(&w, "\n");
 
       add_stats_from_record(effect_dbr, tr, &w, "#DAA520", skill_index);
 
@@ -1340,7 +1487,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   {
     float seed_pct = ((float)seed / 65536.0f) * 100.0f;
 
-    buf_write(&w, "\nitemSeed: %u (0x%08X) (%.3f %%)\n", seed, seed, seed_pct);
+    buf_write(&w, "\n<span color='#8890A0'>itemSeed: %u (0x%08X) (%.3f %%)</span>\n", seed, seed, seed_pct);
   }
 
   // Expansion indicator based on item path
@@ -1445,7 +1592,8 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   }
 
   // Requirements
-  add_requirements(base_name, reduction, &w);
+  add_requirements(base_name, prefix_name, suffix_name, relic_name,
+                   relic_name2, reduction, &w);
 }
 
 // resistance lookup (used by UI resistance table)

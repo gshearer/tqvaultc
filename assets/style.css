@@ -111,11 +111,19 @@
   padding: 2px 6px; min-width: 40px; border-radius: 2px; color: #d0d4dc; }
 .dmg-total-pos { color: #66dd88; }
 
-/* Instant item tooltip */
-popover.item-tooltip { background: #1a1a2e; }
-/* No side/top padding (kept tight), but a few px at the bottom so the last
-   line's descenders aren't clipped by the popover's bottom edge. */
-popover.item-tooltip > contents { padding: 0; padding-bottom: 3px; }
+/* Instant item tooltip.  The popover node itself must stay transparent: it
+   also spans the surface's shadow margin, and painting it dark reads as a
+   thick ugly frame around the card.  The visible card is the contents node --
+   dark panel with a thin Titan-Quest-style frame line.  A few px of bottom
+   padding keep the last line's descenders off the border. */
+popover.item-tooltip { background: transparent; }
+popover.item-tooltip > contents {
+  background: #1a1a2e;
+  border: 1px solid #4d4d80;
+  border-radius: 5px;
+  box-shadow: 0 3px 12px rgba(0, 0, 0, 0.55);
+  padding: 2px 2px 3px 2px;
+}
 popover.item-tooltip label { color: #e0e4ec; }
 
 /* Transient in-app toast (bottom-centre feedback, e.g. "copied to clipboard") */
