@@ -1239,6 +1239,7 @@ ui_app_activate(GtkApplication *app, gpointer user_data)
 
   GtkWidget *tip_scroll = gtk_scrolled_window_new();
 
+  widgets->tooltip_scroll = tip_scroll;
   gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tip_scroll),
                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
   gtk_scrolled_window_set_max_content_height(GTK_SCROLLED_WINDOW(tip_scroll), tooltip_max_h);

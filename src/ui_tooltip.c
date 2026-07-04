@@ -468,11 +468,68 @@ show_toast(AppWidgets *widgets, const char *message)
     g_timeout_add(2000, toast_hide_cb, widgets);
 }
 
+// Load an item's icon and wrap it in a GdkTexture for compositing into the
+// clipboard image.  Item textures are small, so the drawn size is scaled up to
+// ~2x with the longest edge capped at 128px; the texture itself keeps the
+// natural pixel size (the renderer scales it into the drawn rectangle).
+//
+// widgets:        application state.
+// base_name:      item DBR path used for icon resolution.
+// var1:           shard count / variant for icon resolution.
+// draw_w, draw_h: out parameters; receive the drawn size in pixels.
+// Returns a new GdkTexture (caller unrefs), or NULL if no icon resolves.
+static GdkTexture *
+tooltip_icon_texture(AppWidgets *widgets, const char *base_name, uint32_t var1,
+                     int *draw_w, int *draw_h)
+{
+  *draw_w = 0;
+  *draw_h = 0;
+
+  if(!base_name)
+    return(NULL);
+
+  GdkPixbuf *icon = load_item_texture(widgets, base_name, var1);
+
+  if(!icon)
+    return(NULL);
+
+  int nw = gdk_pixbuf_get_width(icon);
+  int nh = gdk_pixbuf_get_height(icon);
+  GdkTexture *tex = NULL;
+
+  if(nw > 0 && nh > 0)
+  {
+    double scale = 2.0;
+    double longest = (nw > nh ? nw : nh) * scale;
+
+    if(longest > 128.0)
+      scale = 128.0 / (nw > nh ? nw : nh);
+
+    *draw_w = (int)(nw * scale);
+    *draw_h = (int)(nh * scale);
+
+    // Build a texture from the pixbuf without the deprecated
+    // gdk_texture_new_for_pixbuf (mirrors set_bag_btn_image in ui_io.c).
+    GBytes *bytes = g_bytes_new(gdk_pixbuf_get_pixels(icon),
+                                (gsize)nh * gdk_pixbuf_get_rowstride(icon));
+
+    tex = gdk_memory_texture_new(
+      nw, nh,
+      gdk_pixbuf_get_has_alpha(icon) ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8,
+      bytes, gdk_pixbuf_get_rowstride(icon));
+    g_bytes_unref(bytes);
+  }
+
+  g_object_unref(icon);
+  return(tex);
+}
+
 // Render the currently-visible tooltip popover to a GdkTexture and copy it to
 // the system clipboard, so the user can paste the item card into Discord and
-// other apps.  The item's icon is composited at the top-centre, above a
-// snapshot of the popover's content widget (main card plus the compare column
-// when shown), all over the tooltip's dark background colour.
+// other apps.  Each visible card gets its item's icon composited above it:
+// the hovered item above the main card and, when the Ctrl+click compare
+// column is shown, the marked item above the compare card.  Icons are centred
+// on their own card, all over the tooltip's dark background colour.
 //
 // widgets: application state.
 // Returns TRUE if a tooltip was visible and an image was copied.
@@ -495,54 +552,70 @@ tooltip_copy_to_clipboard(AppWidgets *widgets)
   if(cw <= 0 || ch <= 0)
     return(FALSE);
 
-  // Load the hovered item's icon and decide its drawn size.  Item textures are
-  // small, so scale up to ~2x but cap the longest edge at 128px.
-  GdkTexture *icon_tex = NULL;
-  int icon_w = 0, icon_h = 0;
+  // One icon per visible card, each anchored to its card's horizontal centre.
+  struct
+  {
+    GdkTexture *tex;
+    int w, h;      // drawn size
+    float cx;      // card centre x in content coordinates
+  } icons[2];
+  int n_icons = 0;
   const int icon_gap = 6;
 
-  if(widgets->tooltip_item_base)
+  GtkWidget *cards[2] = { widgets->tooltip_scroll, NULL };
+  const char *bases[2] = { widgets->tooltip_item_base, NULL };
+  uint32_t vars[2] = { widgets->tooltip_item_var1, 0 };
+
+  if(widgets->compare_active && widgets->compare_scroll &&
+     gtk_widget_get_visible(widgets->compare_scroll))
   {
-    GdkPixbuf *icon = load_item_texture(widgets, widgets->tooltip_item_base,
-                                        widgets->tooltip_item_var1);
+    cards[1] = widgets->compare_scroll;
+    bases[1] = widgets->compare_item.base_name;
+    vars[1] = widgets->compare_item.var1;
+  }
 
-    if(icon)
-    {
-      int nw = gdk_pixbuf_get_width(icon);
-      int nh = gdk_pixbuf_get_height(icon);
+  for(int i = 0; i < 2; i++)
+  {
+    if(!cards[i])
+      continue;
 
-      if(nw > 0 && nh > 0)
-      {
-        double scale = 2.0;
-        double longest = (nw > nh ? nw : nh) * scale;
+    int iw, ih;
+    GdkTexture *tex = tooltip_icon_texture(widgets, bases[i], vars[i], &iw, &ih);
 
-        if(longest > 128.0)
-          scale = 128.0 / (nw > nh ? nw : nh);
+    if(!tex)
+      continue;
 
-        icon_w = (int)(nw * scale);
-        icon_h = (int)(nh * scale);
+    // Centre the icon on its card.  Falls back to the content centre if the
+    // bounds can't be computed (shouldn't happen while the popover is mapped).
+    graphene_rect_t cb;
+    float cx = cw / 2.0f;
 
-        // Build a texture from the pixbuf without the deprecated
-        // gdk_texture_new_for_pixbuf (mirrors set_bag_btn_image in ui_io.c).
-        GBytes *bytes = g_bytes_new(gdk_pixbuf_get_pixels(icon),
-                                    (gsize)nh * gdk_pixbuf_get_rowstride(icon));
+    if(gtk_widget_compute_bounds(cards[i], content, &cb))
+      cx = cb.origin.x + cb.size.width / 2.0f;
 
-        icon_tex = gdk_memory_texture_new(
-          nw, nh,
-          gdk_pixbuf_get_has_alpha(icon) ? GDK_MEMORY_R8G8B8A8 : GDK_MEMORY_R8G8B8,
-          bytes, gdk_pixbuf_get_rowstride(icon));
-        g_bytes_unref(bytes);
-      }
+    icons[n_icons].tex = tex;
+    icons[n_icons].w = iw;
+    icons[n_icons].h = ih;
+    icons[n_icons].cx = cx;
+    n_icons++;
+  }
 
-      g_object_unref(icon);
-    }
+  int band_h = 0;
+  int max_icon_w = 0;
+
+  for(int i = 0; i < n_icons; i++)
+  {
+    if(icons[i].h > band_h)
+      band_h = icons[i].h;
+    if(icons[i].w > max_icon_w)
+      max_icon_w = icons[i].w;
   }
 
   // Pad around everything so the content isn't flush against the image edge,
   // matching the look of the on-screen popover.
   const int pad = 8;
-  int top_band = icon_tex ? icon_h + icon_gap : 0;
-  int inner_w = cw > icon_w ? cw : icon_w;
+  int top_band = band_h ? band_h + icon_gap : 0;
+  int inner_w = cw > max_icon_w ? cw : max_icon_w;
   int tw = inner_w + pad * 2;
   int th = top_band + ch + pad * 2;
 
@@ -556,19 +629,29 @@ tooltip_copy_to_clipboard(AppWidgets *widgets)
   gdk_rgba_parse(&bg, "#1a1a2e");
   gtk_snapshot_append_color(snapshot, &bg, &full);
 
-  // Icon centred horizontally in the top band (absolute coords, before any
-  // transform is pushed for the card below).
-  if(icon_tex)
-  {
-    graphene_rect_t irect =
-      GRAPHENE_RECT_INIT((tw - icon_w) / 2.0f, pad, icon_w, icon_h);
+  // The card content is drawn centred horizontally at card_x, so icon centres
+  // shift by the same amount.  Icons sit bottom-aligned in the top band so each
+  // ends the same gap above its card (absolute coords, before any transform is
+  // pushed for the content below).
+  float card_x = (tw - cw) / 2.0f;
 
-    gtk_snapshot_append_texture(snapshot, icon_tex, &irect);
+  for(int i = 0; i < n_icons; i++)
+  {
+    float ix = card_x + icons[i].cx - icons[i].w / 2.0f;
+
+    if(ix < pad)
+      ix = pad;
+    if(ix + icons[i].w > tw - pad)
+      ix = tw - pad - icons[i].w;
+
+    graphene_rect_t irect =
+      GRAPHENE_RECT_INIT(ix, pad + band_h - icons[i].h, icons[i].w, icons[i].h);
+
+    gtk_snapshot_append_texture(snapshot, icons[i].tex, &irect);
   }
 
   // Card content, centred horizontally, below the icon band.
-  graphene_point_t off =
-    GRAPHENE_POINT_INIT((tw - cw) / 2.0f, pad + top_band);
+  graphene_point_t off = GRAPHENE_POINT_INIT(card_x, pad + top_band);
 
   gtk_snapshot_translate(snapshot, &off);
 
@@ -579,11 +662,11 @@ tooltip_copy_to_clipboard(AppWidgets *widgets)
 
   GskRenderNode *node = gtk_snapshot_free_to_node(snapshot);
 
+  for(int i = 0; i < n_icons; i++)
+    g_clear_object(&icons[i].tex);
+
   if(!node)
-  {
-    g_clear_object(&icon_tex);
     return(FALSE);
-  }
 
   GtkNative *native = gtk_widget_get_native(content);
   GskRenderer *renderer = native ? gtk_native_get_renderer(native) : NULL;
@@ -593,7 +676,6 @@ tooltip_copy_to_clipboard(AppWidgets *widgets)
     texture = gsk_renderer_render_texture(renderer, node, &full);
 
   gsk_render_node_unref(node);
-  g_clear_object(&icon_tex);
 
   if(!texture)
     return(FALSE);

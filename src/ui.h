@@ -237,6 +237,7 @@ typedef struct {
     // Instant tooltip (replaces GTK4 built-in 500ms delayed tooltips)
     GtkWidget *tooltip_popover;
     GtkWidget *tooltip_label;
+    GtkWidget *tooltip_scroll;       // scrolled window holding tooltip_label
     GtkWidget *tooltip_parent;       // current parent drawing area
 
     // Transient in-app toast (bottom-centre overlay; cross-platform feedback)
