@@ -25,6 +25,11 @@ mark_bag_dirty(AppWidgets *widgets, ContainerType ct)
 {
   if(ct == CONTAINER_VAULT)
     widgets->vault_dirty = true;
+  else if(ct == CONTAINER_PLAYER_STASH)
+  {
+    if(widgets->player_stash)
+      widgets->player_stash->dirty = true;
+  }
   else
     widgets->char_dirty = true;
 }
@@ -83,6 +88,16 @@ resolve_sack(AppWidgets *widgets, ContainerType ct, int idx,
     return(&widgets->current_character->inv_sacks[si]);
   }
 
+  if(ct == CONTAINER_PLAYER_STASH)
+  {
+    if(!widgets->player_stash)
+      return(NULL);
+
+    *out_cols = widgets->player_stash->sack_width;
+    *out_rows = widgets->player_stash->sack_height;
+    return(&widgets->player_stash->sack);
+  }
+
   return(NULL);
 }
 
@@ -103,9 +118,10 @@ parse_dest(const char *s, ContainerType *ct, int *idx)
 
   switch(s[0])
   {
-    case 'v': *ct = CONTAINER_VAULT; return(true);
-    case 'i': *ct = CONTAINER_INV;   return(true);
-    case 'b': *ct = CONTAINER_BAG;   return(true);
+    case 'v': *ct = CONTAINER_VAULT;        return(true);
+    case 'i': *ct = CONTAINER_INV;          return(true);
+    case 'b': *ct = CONTAINER_BAG;          return(true);
+    case 's': *ct = CONTAINER_PLAYER_STASH; return(true);
     default:  return(false);
   }
 }
@@ -216,6 +232,11 @@ build_dest_submenu(AppWidgets *widgets, const char *action_prefix,
       g_menu_append(menu, label, action);
     }
   }
+
+  // Character storage area (per-character Storage / player stash)
+  if(widgets->player_stash && src_ct != CONTAINER_PLAYER_STASH)
+    g_menu_append(menu, "Character Storage",
+                  g_strdup_printf("app.%s::s:0", action_prefix));
 
   return(menu);
 }
