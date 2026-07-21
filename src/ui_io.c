@@ -323,10 +323,16 @@ repopulate_character_combo(AppWidgets *widgets, const char *select_name)
 
     if(count >= cap)
     {
-      cap = cap ? cap * 2 : 16;
-      names = realloc(names, (size_t)cap * sizeof(char *));
-      if(!names)
+      int newcap = cap ? cap * 2 : 16;
+      char **grown = realloc(names, (size_t)newcap * sizeof(char *));
+
+      // On OOM keep the names gathered so far (grown==NULL would orphan them and
+      // leave qsort() below with a NULL base and count>0 — undefined behaviour).
+      if(!grown)
         break;
+
+      names = grown;
+      cap = newcap;
     }
     names[count++] = strdup(name);
   }
@@ -877,10 +883,15 @@ repopulate_vault_combo(AppWidgets *widgets, const char *select_name)
 
       if(vault_count >= vault_cap)
       {
-        vault_cap = vault_cap ? vault_cap * 2 : 16;
-        vault_names = realloc(vault_names, (size_t)vault_cap * sizeof(char *));
-        if(!vault_names)
+        int newcap = vault_cap ? vault_cap * 2 : 16;
+        char **grown = realloc(vault_names, (size_t)newcap * sizeof(char *));
+
+        // Keep the names gathered so far on OOM (see the character loop above).
+        if(!grown)
           break;
+
+        vault_names = grown;
+        vault_cap = newcap;
       }
       vault_names[vault_count] = strndup(dir_name, base_len);
       vault_count++;

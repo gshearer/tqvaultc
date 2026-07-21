@@ -144,6 +144,7 @@ typedef struct
   uint8_t *data;
   size_t size;
   size_t cap;
+  bool oom;   // sticky: set on any allocation/overflow failure, checked before use
 } ByteBuf;
 
 // Initialize a ByteBuf with the given initial capacity.
@@ -155,21 +156,52 @@ bb_init(ByteBuf *b, size_t cap)
   b->data = malloc(cap);
   b->size = 0;
   b->cap  = cap;
+  b->oom  = (b->data == NULL);
 }
 
-// Ensure the buffer has room for at least need more bytes.
+// Ensure the buffer has room for at least need more bytes.  On allocation
+// failure or size overflow the buffer is marked oom and left unchanged; all
+// subsequent writes become no-ops so callers can bail after building the blob.
 // b: the buffer.
 // need: number of additional bytes required.
 static void
 bb_ensure(ByteBuf *b, size_t need)
 {
+  if(b->oom)
+    return;
+
+  if(need > SIZE_MAX - b->size)
+  {
+    b->oom = true;
+    return;
+  }
+
   if(b->size + need <= b->cap)
     return;
 
-  while(b->cap < b->size + need)
-    b->cap *= 2;
+  size_t newcap = b->cap ? b->cap : 1;
 
-  b->data = realloc(b->data, b->cap);
+  while(newcap < b->size + need)
+  {
+    if(newcap > SIZE_MAX / 2)
+    {
+      newcap = b->size + need;   // final doubling would overflow; use exact size
+      break;
+    }
+
+    newcap *= 2;
+  }
+
+  uint8_t *grown = realloc(b->data, newcap);
+
+  if(!grown)
+  {
+    b->oom = true;
+    return;
+  }
+
+  b->data = grown;
+  b->cap  = newcap;
 }
 
 // Append len bytes from src to the buffer.
@@ -180,6 +212,10 @@ static void
 bb_write(ByteBuf *b, const void *src, size_t len)
 {
   bb_ensure(b, len);
+
+  if(b->oom)
+    return;
+
   memcpy(b->data + b->size, src, len);
   b->size += len;
 }
@@ -238,9 +274,10 @@ bb_write_key_u32(ByteBuf *b, const char *key, uint32_t val)
 
 // Encode the character's inventory sacks into a binary blob.
 // chr: the character whose inventory to encode.
-// out: receives the allocated blob data.
+// out: receives the allocated blob data (NULL on failure).
 // out_size: receives the blob size in bytes.
-static void
+// Returns: true on success, false if the buffer ran out of memory.
+static bool
 encode_inventory_blob(TQCharacter *chr, uint8_t **out, size_t *out_size)
 {
   ByteBuf b;
@@ -328,17 +365,27 @@ encode_inventory_blob(TQCharacter *chr, uint8_t **out, size_t *out_size)
     bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
   }
 
+  if(b.oom)
+  {
+    free(b.data);
+    *out = NULL;
+    *out_size = 0;
+    return(false);
+  }
+
   *out = b.data;
   *out_size = b.size;
+  return(true);
 }
 
 // ── Encode equipment blob ───────────────────────────────────────────────
 
 // Encode the character's equipment slots into a binary blob.
 // chr: the character whose equipment to encode.
-// out: receives the allocated blob data.
+// out: receives the allocated blob data (NULL on failure).
 // out_size: receives the blob size in bytes.
-static void
+// Returns: true on success, false if the buffer ran out of memory.
+static bool
 encode_equipment_blob(TQCharacter *chr, uint8_t **out, size_t *out_size)
 {
   ByteBuf b;
@@ -395,8 +442,17 @@ encode_equipment_blob(TQCharacter *chr, uint8_t **out, size_t *out_size)
   // Final equipment end_block
   bb_write_key_u32(&b, "end_block", TQ_END_BLOCK);
 
+  if(b.oom)
+  {
+    free(b.data);
+    *out = NULL;
+    *out_size = 0;
+    return(false);
+  }
+
   *out = b.data;
   *out_size = b.size;
+  return(true);
 }
 
 // ── Parser state for character_load sub-parsers ─────────────────────────
@@ -530,23 +586,46 @@ parse_end_block(ParseState *ps)
           TQVaultItem *prev = &sk->items[sk->num_items - 1];
           int idx = prev->stack_seed_count;
 
-          prev->stack_seeds = realloc(prev->stack_seeds,
-            (idx + 1) * sizeof(uint32_t));
-          prev->stack_var2 = realloc(prev->stack_var2,
-            (idx + 1) * sizeof(uint32_t));
-          prev->stack_seeds[idx] = ps->cur_inv_item->seed;
-          prev->stack_var2[idx] = ps->cur_inv_item->var2;
-          prev->stack_seed_count++;
-          prev->stack_size++;
+          // Store each grown pointer back only on success (realloc may free the
+          // old block), and record the new slot / bump counts only if both grew.
+          uint32_t *ns = realloc(prev->stack_seeds, (idx + 1) * sizeof(uint32_t));
+
+          if(ns)
+            prev->stack_seeds = ns;
+
+          uint32_t *nv = realloc(prev->stack_var2, (idx + 1) * sizeof(uint32_t));
+
+          if(nv)
+            prev->stack_var2 = nv;
+
+          if(ns && nv)
+          {
+            prev->stack_seeds[idx] = ps->cur_inv_item->seed;
+            prev->stack_var2[idx] = ps->cur_inv_item->var2;
+            prev->stack_seed_count++;
+            prev->stack_size++;
+          }
+
           vault_item_free_strings(ps->cur_inv_item);
         }
 
         else
         {
-          ps->cur_inv_item->stack_size = 1;
-          sk->items = realloc(sk->items,
+          TQVaultItem *grown = realloc(sk->items,
                               (sk->num_items + 1) * sizeof(TQVaultItem));
-          sk->items[sk->num_items++] = *ps->cur_inv_item;
+
+          if(grown)
+          {
+            ps->cur_inv_item->stack_size = 1;
+            sk->items = grown;
+            sk->items[sk->num_items++] = *ps->cur_inv_item;
+          }
+
+          else
+          {
+            // OOM: drop this item rather than deref a wild pointer.
+            vault_item_free_strings(ps->cur_inv_item);
+          }
         }
       }
 
@@ -686,9 +765,19 @@ parse_item_strings(ParseState *ps, const char *key)
     {
       if(val && *val && ps->cur_equip_slot < 12)
       {
-        free(ps->chr->equipment[ps->cur_equip_slot]);
-        ps->chr->equipment[ps->cur_equip_slot] = calloc(1, sizeof(TQItem));
-        ps->chr->equipment[ps->cur_equip_slot]->base_name = val;
+        TQItem *slot = calloc(1, sizeof(TQItem));
+
+        if(slot)
+        {
+          free(ps->chr->equipment[ps->cur_equip_slot]);
+          ps->chr->equipment[ps->cur_equip_slot] = slot;
+          slot->base_name = val;
+        }
+
+        else
+        {
+          free(val);
+        }
       }
 
       else
@@ -1136,14 +1225,20 @@ parse_skills(ParseState *ps, const char *key)
     {
       int idx = ps->chr->num_skills;
 
-      ps->chr->skills = realloc(ps->chr->skills,
+      TQCharSkill *grown = realloc(ps->chr->skills,
         (idx + 1) * sizeof(TQCharSkill));
-      memset(&ps->chr->skills[idx], 0, sizeof(TQCharSkill));
-      ps->chr->skills[idx].skill_name = ps->pending_skill_name;
-      ps->chr->skills[idx].skill_level = v;
-      ps->chr->skills[idx].off_skill_level = *ps->offset;
-      ps->chr->num_skills++;
-      ps->pending_skill_name = NULL; // ownership transferred
+
+      if(grown)
+      {
+        ps->chr->skills = grown;
+        memset(&ps->chr->skills[idx], 0, sizeof(TQCharSkill));
+        ps->chr->skills[idx].skill_name = ps->pending_skill_name;
+        ps->chr->skills[idx].skill_level = v;
+        ps->chr->skills[idx].off_skill_level = *ps->offset;
+        ps->chr->num_skills++;
+        ps->pending_skill_name = NULL; // ownership transferred
+      }
+      // else OOM: pending_skill_name stays owned by ps, freed by parser cleanup
     }
 
     *ps->offset += 4;
@@ -1713,6 +1808,12 @@ character_save_skills_ex(TQCharacter *character,
       bb_write_key_u32(&nb, "end_block",       TQ_END_BLOCK);
     }
 
+    if(nb.oom)
+    {
+      free(nb.data);
+      return(-1);
+    }
+
     size_t   at      = character->skill_list_end_off;
     size_t   newsize = character->data_size + nb.size;
     uint8_t *buf     = malloc(newsize);
@@ -1817,8 +1918,15 @@ character_save(TQCharacter *character, const char *filepath)
   uint8_t *inv_blob = NULL, *equip_blob = NULL;
   size_t inv_size = 0, equip_size = 0;
 
-  encode_inventory_blob(character, &inv_blob, &inv_size);
-  encode_equipment_blob(character, &equip_blob, &equip_size);
+  if(!encode_inventory_blob(character, &inv_blob, &inv_size)
+      || !encode_equipment_blob(character, &equip_blob, &equip_size))
+  {
+    // Out of memory building a blob: bail before writing a truncated save
+    // (the .bak, if any, is untouched).
+    free(inv_blob);
+    free(equip_blob);
+    return(-1);
+  }
 
   // Splice: prefix + inv_blob + middle + equip_blob + suffix
   size_t prefix_size = character->inv_block_start;

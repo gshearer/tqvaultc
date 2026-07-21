@@ -294,8 +294,13 @@ arz_load(const char *filepath)
     if(r_off + 8 > file_size)
       break;
 
+    uint32_t raw_off = read_u32(data, r_off);
+    size_t rec_off = (size_t)raw_off + 24;   // size_t: don't wrap +24 mod 2^32
+
     arz->records[i].path = (name_idx < arz->num_strings) ? arz->string_table[name_idx] : NULL;
-    arz->records[i].offset = read_u32(data, r_off) + 24;
+    // Clamp a corrupt offset to UINT32_MAX so arz_read_record_at's bounds check
+    // rejects it, rather than letting a wrap land on a small in-range value.
+    arz->records[i].offset = (rec_off <= file_size) ? (uint32_t)rec_off : UINT32_MAX;
     arz->records[i].compressed_size = read_u32(data, r_off + 4);
     r_off += 16;
   }

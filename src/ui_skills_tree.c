@@ -1132,9 +1132,12 @@ show_skills_dialog(AppWidgets *widgets)
 
   st->widgets = widgets;
   st->num_chr_skills = chr->num_skills;
-  st->work_levels = malloc((size_t)chr->num_skills * sizeof(uint32_t));
+  // A character with no skills is a valid edge (brand-new char): malloc(0) may
+  // return NULL, which is not an error here — only bail on a real OOM (n>0).
+  st->work_levels = chr->num_skills > 0
+                    ? malloc((size_t)chr->num_skills * sizeof(uint32_t)) : NULL;
 
-  if(!st->work_levels)
+  if(chr->num_skills > 0 && !st->work_levels)
   {
     g_free(st);
     return;

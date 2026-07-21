@@ -1862,8 +1862,18 @@ cmd_compare(const char *path_a, const char *path_b)
       diffs++;
     }
 
-    // Match items by base_name + position
-    int matched_b[2048] = {0};  // track which B items were matched
+    // Match items by base_name + position. Heap-allocate sized to the actual
+    // B item count — a fixed stack array overflowed on large sacks (a single
+    // sack of stacked potions expands well past any fixed cap).
+    int *matched_b = calloc((size_t)(sb->actual_count > 0 ? sb->actual_count : 1),
+                            sizeof(int));
+
+    if(!matched_b)
+    {
+      fprintf(stderr, "error: out of memory comparing sack %d\n", s);
+      continue;
+    }
+
     int max_items = sa->actual_count > sb->actual_count ?
                     sa->actual_count : sb->actual_count;
 
@@ -1963,6 +1973,7 @@ cmd_compare(const char *path_a, const char *path_b)
     }
 
     (void)max_items;
+    free(matched_b);
   }
 
   // ── Pass 4: Equipment comparison ──

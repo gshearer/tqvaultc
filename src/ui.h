@@ -677,7 +677,8 @@ vault_item_deep_copy(TQVaultItem *dst, const TQVaultItem *src);
 // Add an item to a sack (appends to the item array).
 // sack: the sack to add to.
 // item: the item to add (deep copied).
-void
+// Returns: true if appended, false on OOM (the sack is left unchanged).
+bool
 sack_add_item(TQVaultSack *sack, const TQVaultItem *item);
 
 // Check if two vault items can stack together.

@@ -179,6 +179,7 @@ typedef struct {
   uint8_t *data;
   size_t size;
   size_t cap;
+  bool oom;   // sticky: set on any allocation/overflow failure, checked before use
 } ByteBuf;
 
 // Initialize a byte buffer with the given initial capacity.
@@ -190,20 +191,52 @@ bb_init(ByteBuf *b, size_t cap)
   b->data = malloc(cap);
   b->size = 0;
   b->cap  = cap;
+  b->oom  = (b->data == NULL);
 }
 
-// Ensure the buffer has room for 'need' more bytes, growing if necessary.
+// Ensure the buffer has room for 'need' more bytes, growing if necessary.  On
+// allocation failure or size overflow the buffer is marked oom and left
+// unchanged; subsequent writes become no-ops so callers can bail after building.
 // b: buffer to check/grow
 // need: number of additional bytes required
 static void
 bb_ensure(ByteBuf *b, size_t need)
 {
+  if(b->oom)
+    return;
+
+  if(need > SIZE_MAX - b->size)
+  {
+    b->oom = true;
+    return;
+  }
+
   if(b->size + need <= b->cap)
     return;
 
-  while(b->cap < b->size + need)
-    b->cap *= 2;
-  b->data = realloc(b->data, b->cap);
+  size_t newcap = b->cap ? b->cap : 1;
+
+  while(newcap < b->size + need)
+  {
+    if(newcap > SIZE_MAX / 2)
+    {
+      newcap = b->size + need;   // final doubling would overflow; use exact size
+      break;
+    }
+
+    newcap *= 2;
+  }
+
+  uint8_t *grown = realloc(b->data, newcap);
+
+  if(!grown)
+  {
+    b->oom = true;
+    return;
+  }
+
+  b->data = grown;
+  b->cap  = newcap;
 }
 
 // Append raw bytes to the buffer.
@@ -214,6 +247,10 @@ static void
 bb_write(ByteBuf *b, const void *src, size_t len)
 {
   bb_ensure(b, len);
+
+  if(b->oom)
+    return;
+
   memcpy(b->data + b->size, src, len);
   b->size += len;
 }
@@ -757,6 +794,14 @@ stash_save(TQStash *stash)
   else
     bb_write_key_u32(&b, "end_block", 0);
 
+  // Bail before touching b.data if any write ran out of memory — never write a
+  // truncated stash over a good one.
+  if(b.oom)
+  {
+    free(b.data);
+    return(-1);
+  }
+
   // Compute CRC32 over entire buffer (including the zero placeholder)
   uint32_t crc = compute_crc32(b.data, b.size);
 
@@ -771,7 +816,17 @@ stash_save(TQStash *stash)
     free(b.data);
     return(-1);
   }
-  fwrite(b.data, 1, b.size, f);
+
+  // A short write (e.g. disk full) must fail loudly, not report success — the
+  // .dxg backup below still holds the previous good copy.
+  if(fwrite(b.data, 1, b.size, f) != b.size)
+  {
+    fprintf(stderr, "stash_save: short write to %s\n", stash->filepath);
+    fclose(f);
+    free(b.data);
+    return(-1);
+  }
+
   fclose(f);
 
   // Write .dxg backup: change the extension in fName from 'b' to 'g'

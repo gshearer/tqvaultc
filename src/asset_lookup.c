@@ -138,7 +138,14 @@ builder_process_arz(IndexBuilder *b, const char *path, int file_id)
     return;
   }
 
-  char **strings = malloc(num_strings * sizeof(char *));
+  // Sanity-cap a corrupt on-disk count before it drives an allocation.
+  if(num_strings > 10000000)
+  {
+    fclose(fp);
+    return;
+  }
+
+  char **strings = malloc((size_t)num_strings * sizeof(char *));
 
   if(!strings)
   {
@@ -156,7 +163,9 @@ builder_process_arz(IndexBuilder *b, const char *path, int file_id)
       continue;
     }
 
-    strings[i] = malloc(len + 1);
+    // (size_t) cast: len==0xFFFFFFFF must not wrap len+1 to a 0-byte malloc
+    // that the fread below would then overflow.
+    strings[i] = malloc((size_t)len + 1);
 
     if(!strings[i])
       continue;
@@ -201,11 +210,17 @@ builder_process_arz(IndexBuilder *b, const char *path, int file_id)
 
     if(b->num_entries >= b->max_entries)
     {
-      b->max_entries *= 2;
-      b->entries = realloc(b->entries, b->max_entries * sizeof(TQAssetEntry));
+      int newmax = b->max_entries * 2;
+      TQAssetEntry *grown = realloc(b->entries,
+                                    (size_t)newmax * sizeof(TQAssetEntry));
 
-      if(!b->entries)
+      // On OOM keep the existing array/count intact (realloc into self would
+      // orphan it and leave b->entries NULL with b->num_entries>0).
+      if(!grown)
         break;
+
+      b->entries = grown;
+      b->max_entries = newmax;
     }
 
     b->entries[b->num_entries].hash = calculate_hash(strings[name_idx]);
@@ -300,10 +315,17 @@ builder_process_arc(IndexBuilder *b, const char *path, const char *rel_path, int
   uint32_t arc_num_files = header[1];
   uint32_t toc_offset = header[5];
 
-  fseek(fp, toc_offset, SEEK_SET);
-  fseek(fp, header[2] * 12, SEEK_CUR);
+  // Sanity-cap a corrupt file count before it drives an allocation / seek.
+  if(arc_num_files > 10000000)
+  {
+    fclose(fp);
+    return;
+  }
 
-  char **filenames = malloc(arc_num_files * sizeof(char *));
+  fseek(fp, toc_offset, SEEK_SET);
+  fseek(fp, (long)header[2] * 12, SEEK_CUR);
+
+  char **filenames = malloc((size_t)arc_num_files * sizeof(char *));
 
   if(!filenames)
   {
@@ -334,11 +356,15 @@ builder_process_arc(IndexBuilder *b, const char *path, const char *rel_path, int
 
     if(b->num_entries >= b->max_entries)
     {
-      b->max_entries *= 2;
-      b->entries = realloc(b->entries, b->max_entries * sizeof(TQAssetEntry));
+      int newmax = b->max_entries * 2;
+      TQAssetEntry *grown = realloc(b->entries,
+                                    (size_t)newmax * sizeof(TQAssetEntry));
 
-      if(!b->entries)
+      if(!grown)
         break;
+
+      b->entries = grown;
+      b->max_entries = newmax;
     }
 
     char full_internal_path[1024];
@@ -406,14 +432,18 @@ builder_scan_dir(IndexBuilder *b, const char *base_path, const char *sub_path)
       {
         if(b->num_files >= b->max_files)
         {
-          b->max_files *= 2;
-          b->files = realloc(b->files, b->max_files * sizeof(BuildGameFile));
+          int newmax = b->max_files * 2;
+          BuildGameFile *grown = realloc(b->files,
+                                         (size_t)newmax * sizeof(BuildGameFile));
 
-          if(!b->files)
+          if(!grown)
           {
             g_free(full_path);
             break;
           }
+
+          b->files = grown;
+          b->max_files = newmax;
         }
 
         char *rel_path = g_build_filename(sub_path, name, NULL);

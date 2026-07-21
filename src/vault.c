@@ -67,6 +67,14 @@ vault_load_json_ex(const char *filepath, char **err_out)
   long size = ftell(fp);
   fseek(fp, 0, SEEK_SET);
 
+  if(size < 0)
+  {
+    fclose(fp);
+    set_err(err_out, "The vault file size could not be determined. It may be "
+                     "locked or on an unreadable filesystem.");
+    return(NULL);
+  }
+
   char *buffer = malloc((size_t)size + 1);
 
   if(!buffer)
@@ -122,8 +130,21 @@ vault_load_json_ex(const char *filepath, char **err_out)
   {
     int num_sacks = json_object_array_length(sacks_arr);
 
+    if(num_sacks < 0)
+      num_sacks = 0;
+
     vault->num_sacks = num_sacks;
-    vault->sacks = calloc((size_t)num_sacks, sizeof(TQVaultSack));
+    vault->sacks = num_sacks > 0
+                   ? calloc((size_t)num_sacks, sizeof(TQVaultSack)) : NULL;
+
+    if(num_sacks > 0 && !vault->sacks)
+    {
+      vault->num_sacks = 0;
+      json_object_put(parsed_json);
+      vault_free(vault);
+      set_err(err_out, "Out of memory while loading the vault.");
+      return(NULL);
+    }
 
     for(int s = 0; s < num_sacks; s++)
     {
@@ -140,8 +161,23 @@ vault_load_json_ex(const char *filepath, char **err_out)
 
       int num_items = json_object_array_length(items_arr);
 
+      if(num_items <= 0)
+      {
+        vault->sacks[s].num_items = 0;
+        continue;
+      }
+
       vault->sacks[s].num_items = num_items;
       vault->sacks[s].items = calloc((size_t)num_items, sizeof(TQVaultItem));
+
+      if(!vault->sacks[s].items)
+      {
+        vault->sacks[s].num_items = 0;
+        json_object_put(parsed_json);
+        vault_free(vault);
+        set_err(err_out, "Out of memory while loading the vault.");
+        return(NULL);
+      }
 
       for(int i = 0; i < num_items; i++)
       {

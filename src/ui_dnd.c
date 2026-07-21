@@ -48,12 +48,20 @@ vault_item_deep_copy(TQVaultItem *dst, const TQVaultItem *src)
 // Append a copy of item to the end of sack->items[].
 // sack: target sack (items array is reallocated)
 // item: item to append
-void
+// Returns: true if appended, false on OOM (the sack is left unchanged).
+bool
 sack_add_item(TQVaultSack *sack, const TQVaultItem *item)
 {
-  sack->items = realloc(sack->items, (size_t)(sack->num_items + 1) * sizeof(TQVaultItem));
+  TQVaultItem *grown = realloc(sack->items,
+    (size_t)(sack->num_items + 1) * sizeof(TQVaultItem));
+
+  if(!grown)
+    return(false);
+
+  sack->items = grown;
   sack->items[sack->num_items] = *item;
   sack->num_items++;
+  return(true);
 }
 
 // Return true if s is NULL or points to an empty string.

@@ -19,7 +19,7 @@
 
 // -- ByteBuf: growable byte buffer ------------------------------------------------
 
-typedef struct { uint8_t *data; size_t size; size_t cap; } ByteBuf;
+typedef struct { uint8_t *data; size_t size; size_t cap; bool oom; } ByteBuf;
 
 // Initialize a ByteBuf with the given initial capacity.
 // b: pointer to ByteBuf to initialize
@@ -30,26 +30,49 @@ bb_init(ByteBuf *b, size_t cap)
   b->data = malloc(cap);
   b->size = 0;
   b->cap  = b->data ? cap : 0;   // keep fields defined even if malloc failed
+  b->oom  = (b->data == NULL);
 }
 
-// Ensure the ByteBuf has room for at least `need` more bytes, doubling as needed.
+// Ensure the ByteBuf has room for at least `need` more bytes, doubling as
+// needed.  On failure the buffer is marked oom and left intact; bb_write then
+// drops writes so the caller can detect truncation via bb.oom before saving.
 // b: pointer to ByteBuf
 // need: number of additional bytes required
 static void
 bb_ensure(ByteBuf *b, size_t need)
 {
+  if(b->oom)
+    return;
+
+  if(need > SIZE_MAX - b->size)
+  {
+    b->oom = true;
+    return;
+  }
+
   if(b->size + need <= b->cap)
     return;
 
   size_t newcap = b->cap ? b->cap : 64;   // avoid an infinite loop when cap == 0
 
   while(newcap < b->size + need)
+  {
+    if(newcap > SIZE_MAX / 2)
+    {
+      newcap = b->size + need;   // final doubling would overflow; use exact size
+      break;
+    }
+
     newcap *= 2;
+  }
 
   uint8_t *grown = realloc(b->data, newcap);
 
   if(!grown)
+  {
+    b->oom = true;
     return;   // leave the buffer intact; bb_write drops the write rather than overflow
+  }
 
   b->data = grown;
   b->cap = newcap;
@@ -64,7 +87,7 @@ bb_write(ByteBuf *b, const void *src, size_t len)
 {
   bb_ensure(b, len);
 
-  if(b->size + len > b->cap)
+  if(b->oom || b->size + len > b->cap)
     return;   // ensure couldn't grow (OOM): drop the write instead of overflowing
 
   memcpy(b->data + b->size, src, len);
@@ -210,8 +233,15 @@ quest_token_set_add(QuestTokenSet *set, const char *token)
 
   if(set->count >= set->capacity)
   {
-    set->capacity = set->capacity ? set->capacity * 2 : 64;
-    set->tokens = realloc(set->tokens, set->capacity * sizeof(char *));
+    int newcap = set->capacity ? set->capacity * 2 : 64;
+    char **grown = realloc(set->tokens, (size_t)newcap * sizeof(char *));
+
+    // On OOM keep the set unchanged rather than deref a NULL tokens array.
+    if(!grown)
+      return;
+
+    set->tokens = grown;
+    set->capacity = newcap;
   }
 
   set->tokens[set->count++] = strdup(token);
@@ -434,6 +464,14 @@ quest_tokens_save(const char *filepath, const QuestTokenSet *set)
   bb_write_str(&bb, "end_block");
   bb_write_u32(&bb, 0xDEADC0DE);
 
+  // A dropped write (OOM) left the buffer truncated: fail loudly rather than
+  // overwrite the (already backed-up) save with a short, corrupt file.
+  if(bb.oom)
+  {
+    free(bb.data);
+    return(-1);
+  }
+
   FILE *f = fopen(filepath, "wb");
 
   if(!f)
@@ -523,13 +561,20 @@ quest_backup_file(const char *filepath)
 
   char buf[4096];
   size_t n;
+  int rc = 0;
 
   while((n = fread(buf, 1, sizeof(buf), src)) > 0)
-    fwrite(buf, 1, n, dst);
+  {
+    if(fwrite(buf, 1, n, dst) != n)
+    {
+      rc = -1;   // short write (e.g. disk full): the backup is incomplete
+      break;
+    }
+  }
 
   fclose(src);
   fclose(dst);
-  return(0);
+  return(rc);
 }
 
 // -- Copy file helper -------------------------------------------------------------
@@ -681,9 +726,17 @@ quest_que_clear_all(const char *quest_dir)
 
       if(f)
       {
-        fwrite(data, 1, fsize, f);
+        size_t nw = fwrite(data, 1, (size_t)fsize, f);
+
         fclose(f);
-        modified++;
+
+        // Only count a fully written file as modified; a short write leaves the
+        // (backed-up) original recoverable rather than falsely reporting success.
+        if(nw == (size_t)fsize)
+          modified++;
+        else
+          fprintf(stderr, "quest_tokens: short write to %s (backup preserved)\n",
+                  filepath);
       }
     }
 
@@ -727,6 +780,15 @@ quest_myw_clear(const char *quest_dir)
   bb_write_u32(&bb, 0);
   bb_write_str(&bb, "end_block");
   bb_write_u32(&bb, 0xDEADC0DE);
+
+  // A dropped write (OOM) truncated the buffer: fail rather than overwrite the
+  // (backed-up) Quest.myw with a short, corrupt file.
+  if(bb.oom)
+  {
+    free(bb.data);
+    g_free(filepath);
+    return(-1);
+  }
 
   FILE *f = fopen(filepath, "wb");
 

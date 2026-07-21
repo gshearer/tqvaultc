@@ -50,7 +50,14 @@ load_from_file(const char *path)
   long size = ftell(fp);
   fseek(fp, 0, SEEK_SET);
 
-  char *buffer = malloc(size + 1);
+  if(size < 0)
+  {
+    fprintf(stderr, "load_from_file: ftell(%s) failed: %s\n", path, strerror(errno));
+    fclose(fp);
+    return;
+  }
+
+  char *buffer = malloc((size_t)size + 1);
 
   if(!buffer)
   {
