@@ -1248,6 +1248,512 @@ search_query_free(SearchQuery *q)
   g_free(q);
 }
 
+// Shared state for the item_bonus_stat_summary collectors: each appends up to
+// the three-fragment cap into buf; found tracks how many have been written.
+typedef struct {
+  TQArzRecordData *data;
+  TQTranslation *tr;
+  char *buf;
+  size_t bufsz;
+  int found;
+} SummaryCtx;
+
+static void
+ibss_attributes(SummaryCtx *s)
+{
+  TQArzRecordData *data = s->data;
+  char *buf = s->buf;
+
+for(int a = 0; attr_maps[a].variable && s->found < 3; a++)
+{
+  float val = dbr_get_float_fast(data, attr_maps[a].interned, 0);
+
+  if(val == 0.0f)
+    continue;
+
+  if(s->found > 0)
+  {
+    size_t len = strlen(buf);
+
+    if(len < s->bufsz - 3)
+    {
+      buf[len] = ',';
+      buf[len+1] = ' ';
+      buf[len+2] = '\0';
+    }
+  }
+
+  char part[80];
+  const char *pct = strchr(attr_maps[a].format, '%');
+  bool fmt_is_float = false;
+
+  if(pct)
+  {
+    const char *pp = pct + 1;
+
+    while(*pp == '+' || *pp == '-' || *pp == '0' || *pp == ' ' || *pp == '#')
+      pp++;
+
+    while((*pp >= '0' && *pp <= '9') || *pp == '.')
+      pp++;
+
+    if(*pp == 'f')
+      fmt_is_float = true;
+  }
+
+  if(attr_maps[a].is_percent || !fmt_is_float)
+    snprintf(part, sizeof(part), attr_maps[a].format, (int)roundf(val));
+
+  else
+    snprintf(part, sizeof(part), attr_maps[a].format, val);
+
+  size_t cur = strlen(buf);
+  size_t plen = strlen(part);
+
+  if(cur + plen < s->bufsz - 1)
+    memcpy(buf + cur, part, plen + 1);
+
+  s->found++;
+}
+
+// Also check stats handled in dedicated blocks (resistances, damage ranges)
+static const struct { const char **val; const char *fmt; } extra_simple[] = {
+  {&INT_defensiveFire, "%+d%% Fire Resistance"},
+  {&INT_defensiveCold, "%+d%% Cold Resistance"},
+  {&INT_defensiveLightning, "%+d%% Lightning Resistance"},
+  {&INT_defensivePoison, "%+d%% Poison Resistance"},
+  {&INT_defensivePierce, "%+d%% Pierce Resistance"},
+  {&INT_defensiveLife, "%+d%% Vitality Resistance"},
+  {&INT_defensiveBleeding, "%+d%% Bleeding Resistance"},
+  {&INT_defensivePhysical, "%+d%% Physical Resistance"},
+  {&INT_defensiveElementalResistance, "%+d%% Elemental Resistance"},
+  {&INT_defensiveDisruption, "%+d%% Skill Disruption Protection"},
+  {&INT_offensiveTotalResistanceReductionAbsoluteMin, "%+d Reduced Resistances"},
+};
+
+for(int e = 0; e < (int)(sizeof extra_simple / sizeof extra_simple[0]) && s->found < 3; e++)
+{
+  float val = dbr_get_float_fast(data, *extra_simple[e].val, 0);
+
+  if(fabs(val) < 0.001f)
+    continue;
+
+  if(s->found > 0)
+  {
+    size_t len = strlen(buf);
+
+    if(len < s->bufsz - 3)
+    {
+      buf[len] = ',';
+      buf[len+1] = ' ';
+      buf[len+2] = '\0';
+    }
+  }
+
+  char part[80];
+
+  snprintf(part, sizeof(part), extra_simple[e].fmt, (int)roundf(val));
+
+  size_t cur = strlen(buf), plen = strlen(part);
+
+  if(cur + plen < s->bufsz - 1)
+    memcpy(buf + cur, part, plen + 1);
+
+  s->found++;
+}
+}
+
+static void
+ibss_retaliation_and_damage(SummaryCtx *s)
+{
+  TQArzRecordData *data = s->data;
+  char *buf = s->buf;
+
+// Flat retaliation (may have chance)
+static const struct { const char **val; const char **chance; const char *label; } extra_retal[] = {
+  {&INT_retaliationPhysicalMin,  &INT_retaliationPhysicalChance,  "Physical Retaliation"},
+  {&INT_retaliationFireMin,      &INT_retaliationFireChance,      "Fire Retaliation"},
+  {&INT_retaliationColdMin,      &INT_retaliationColdChance,      "Cold Retaliation"},
+  {&INT_retaliationLightningMin, &INT_retaliationLightningChance, "Lightning Retaliation"},
+  {&INT_retaliationPierceMin,    &INT_retaliationPierceChance,    "Pierce Retaliation"},
+};
+
+for(int e = 0; e < (int)(sizeof extra_retal / sizeof extra_retal[0]) && s->found < 3; e++)
+{
+  float val = dbr_get_float_fast(data, *extra_retal[e].val, 0);
+
+  if(val < 0.001f)
+    continue;
+
+  float chance = dbr_get_float_fast(data, *extra_retal[e].chance, 0);
+
+  if(s->found > 0)
+  {
+    size_t len = strlen(buf);
+
+    if(len < s->bufsz - 3)
+    {
+      buf[len] = ',';
+      buf[len+1] = ' ';
+      buf[len+2] = '\0';
+    }
+  }
+
+  char part[80];
+
+  if(chance > 0)
+    snprintf(part, sizeof(part), "%.1f%% Chance of %d %s", chance, (int)roundf(val), extra_retal[e].label);
+
+  else
+    snprintf(part, sizeof(part), "%d %s", (int)roundf(val), extra_retal[e].label);
+
+  size_t cur = strlen(buf), plen = strlen(part);
+
+  if(cur + plen < s->bufsz - 1)
+    memcpy(buf + cur, part, plen + 1);
+
+  s->found++;
+}
+
+// Damage ranges (min-max pairs from dedicated blocks), with optional chance
+static const struct { const char **mn; const char **mx; const char **chance; const char *label; } extra_dmg[] = {
+  {&INT_offensivePhysicalMin,     &INT_offensivePhysicalMax,     NULL,                      "Physical Damage"},
+  {&INT_offensiveFireMin,         &INT_offensiveFireMax,         NULL,                      "Fire Damage"},
+  {&INT_offensiveColdMin,         &INT_offensiveColdMax,         NULL,                      "Cold Damage"},
+  {&INT_offensiveLightningMin,    &INT_offensiveLightningMax,    NULL,                      "Lightning Damage"},
+  {&INT_offensivePoisonMin,       &INT_offensivePoisonMax,       NULL,                      "Poison Damage"},
+  {&INT_offensivePierceMin,       &INT_offensivePierceMax,       &INT_offensivePierceChance, "Pierce Damage"},
+  {&INT_offensiveElementalMin,    &INT_offensiveElementalMax,    NULL,                      "Elemental Damage"},
+  {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL,                      "Physical Damage"},
+  {&INT_offensiveBaseLifeMin,     &INT_offensiveBaseLifeMax,     NULL,                      "Vitality Damage"},
+  {&INT_offensiveLifeMin,         &INT_offensiveLifeMax,         &INT_offensiveLifeChance,  "Vitality Damage"},
+};
+
+for(int e = 0; e < (int)(sizeof extra_dmg / sizeof extra_dmg[0]) && s->found < 3; e++)
+{
+  float mn = dbr_get_float_fast(data, *extra_dmg[e].mn, 0);
+
+  if(mn < 0.001f)
+    continue;
+
+  float mx = dbr_get_float_fast(data, *extra_dmg[e].mx, 0);
+  float chance = extra_dmg[e].chance ? dbr_get_float_fast(data, *extra_dmg[e].chance, 0) : 0;
+
+  if(s->found > 0)
+  {
+    size_t len = strlen(buf);
+
+    if(len < s->bufsz - 3)
+    {
+      buf[len] = ',';
+      buf[len+1] = ' ';
+      buf[len+2] = '\0';
+    }
+  }
+
+  char part[80];
+
+  if(chance > 0)
+  {
+    if(mx > mn)
+      snprintf(part, sizeof(part), "%.0f%% Chance of %.0f-%.0f %s", chance, mn, mx, extra_dmg[e].label);
+
+    else
+      snprintf(part, sizeof(part), "%.0f%% Chance of %.0f %s", chance, mn, extra_dmg[e].label);
+  }
+
+  else
+  {
+    if(mx > mn)
+      snprintf(part, sizeof(part), "%.0f-%.0f %s", mn, mx, extra_dmg[e].label);
+
+    else
+      snprintf(part, sizeof(part), "%.0f %s", mn, extra_dmg[e].label);
+  }
+
+  size_t cur = strlen(buf), plen = strlen(part);
+
+  if(cur + plen < s->bufsz - 1)
+    memcpy(buf + cur, part, plen + 1);
+
+  s->found++;
+}
+}
+
+static void
+ibss_energy_and_racial(SummaryCtx *s)
+{
+  TQArzRecordData *data = s->data;
+  char *buf = s->buf;
+
+// Energy drain (both DrainMin and DrainRatioMin are percentages)
+if(s->found < 3)
+{
+  float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, 0);
+  float drain_max = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMax, 0);
+  float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, 0);
+  float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, 0);
+  float val = (drain > 0.001f) ? drain : drain_ratio;
+
+  if(val > 0.001f)
+  {
+    if(s->found > 0)
+    {
+      size_t len = strlen(buf);
+
+      if(len < s->bufsz - 3)
+      {
+        buf[len] = ',';
+        buf[len+1] = ' ';
+        buf[len+2] = '\0';
+      }
+    }
+
+    char part[80];
+    char val_str[32];
+
+    if(drain_max > val)
+      snprintf(val_str, sizeof(val_str), "%.0f-%.0f", val, drain_max);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f", val);
+
+    if(dmg_ratio > 0.001f)
+      snprintf(part, sizeof(part), "%s%% Energy Drain (%.0f%% as damage)", val_str, dmg_ratio);
+
+    else
+      snprintf(part, sizeof(part), "%s%% Energy Drain", val_str);
+
+    size_t cur = strlen(buf), plen = strlen(part);
+
+    if(cur + plen < s->bufsz - 1)
+      memcpy(buf + cur, part, plen + 1);
+
+    s->found++;
+  }
+}
+
+// Racial bonus — requires a named race (see the item-card path for the full
+// rationale). Skill/aura records carrying a racialBonus value but no
+// racialBonusRace render nothing, matching the game and TQVaultAE.
+if(s->found < 3)
+{
+  TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
+  const char *race = (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
+                       ? rv->value.str[0] : NULL;
+
+  float rdmg = race ? dbr_get_float_fast(data, INT_racialBonusPercentDamage, 0) : 0.0f;
+
+  if(fabs(rdmg) > 0.001f && s->found < 3)
+  {
+    if(s->found > 0)
+    {
+      size_t len = strlen(buf);
+
+      if(len < s->bufsz - 3)
+      {
+        buf[len] = ',';
+        buf[len+1] = ' ';
+        buf[len+2] = '\0';
+      }
+    }
+
+    char part[80];
+
+    snprintf(part, sizeof(part), "%+d%% Damage to %s", (int)roundf(rdmg), race);
+
+    size_t cur = strlen(buf), plen = strlen(part);
+
+    if(cur + plen < s->bufsz - 1)
+      memcpy(buf + cur, part, plen + 1);
+
+    s->found++;
+  }
+
+  float rdef = race ? dbr_get_float_fast(data, INT_racialBonusPercentDefense, 0) : 0.0f;
+
+  if(fabs(rdef) > 0.001f && s->found < 3)
+  {
+    if(s->found > 0)
+    {
+      size_t len = strlen(buf);
+
+      if(len < s->bufsz - 3)
+      {
+        buf[len] = ',';
+        buf[len+1] = ' ';
+        buf[len+2] = '\0';
+      }
+    }
+
+    char part[80];
+
+    snprintf(part, sizeof(part), "%d%% less damage from %s", (int)roundf(rdef), race);
+
+    size_t cur = strlen(buf), plen = strlen(part);
+
+    if(cur + plen < s->bufsz - 1)
+      memcpy(buf + cur, part, plen + 1);
+
+    s->found++;
+  }
+}
+}
+
+static void
+ibss_offensive_skill_pet(SummaryCtx *s)
+{
+  TQArzRecordData *data = s->data;
+  TQTranslation *tr = s->tr;
+  char *buf = s->buf;
+
+// Offensive damage modifiers (may have chance qualifier)
+{
+  static const struct { const char **val; const char **chance; const char *label; } off_mod[] = {
+    {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage"},
+    {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage"},
+    {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage"},
+    {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage"},
+    {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage"},
+    {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage"},
+    {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage"},
+    {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damages"},
+    {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage"},
+  };
+
+  for(int e = 0; e < (int)(sizeof off_mod / sizeof off_mod[0]) && s->found < 3; e++)
+  {
+    float val = dbr_get_float_fast(data, *off_mod[e].val, 0);
+
+    if(fabs(val) < 0.001f)
+      continue;
+
+    float chance = dbr_get_float_fast(data, *off_mod[e].chance, 0);
+
+    if(s->found > 0)
+    {
+      size_t len = strlen(buf);
+
+      if(len < s->bufsz - 3)
+      {
+        buf[len] = ',';
+        buf[len+1] = ' ';
+        buf[len+2] = '\0';
+      }
+    }
+
+    char part[80];
+
+    if(chance > 0 && chance < 100)
+      snprintf(part, sizeof(part), "%.0f%% Chance of %+d%% %s", chance, (int)roundf(val), off_mod[e].label);
+    else
+      snprintf(part, sizeof(part), "%+d%% %s", (int)roundf(val), off_mod[e].label);
+
+    size_t cur = strlen(buf), plen = strlen(part);
+
+    if(cur + plen < s->bufsz - 1)
+      memcpy(buf + cur, part, plen + 1);
+
+    s->found++;
+  }
+}
+
+// Mastery augmentation: "+N to all skills in X Mastery"
+for(uint32_t i = 0; i < data->num_vars && s->found < 3; i++)
+{
+  if(!data->vars[i].name)
+    continue;
+
+  if(strncasecmp(data->vars[i].name, "augmentMasteryLevel", 19) == 0)
+  {
+    float val = (data->vars[i].type == TQ_VAR_INT && data->vars[i].count > 0)
+                ? (float)data->vars[i].value.i32[0]
+                : (data->vars[i].type == TQ_VAR_FLOAT && data->vars[i].count > 0)
+                  ? data->vars[i].value.f32[0] : 0;
+
+    if(fabs(val) < 0.001f)
+      continue;
+
+    char mastery_var[64];
+
+    snprintf(mastery_var, sizeof(mastery_var), "augmentMasteryName%s", data->vars[i].name + 19);
+
+    const char *mastery_var_int = arz_intern(mastery_var);
+    TQVariable *mv = arz_record_get_var(data, mastery_var_int);
+    const char *mastery_path = (mv && mv->type == TQ_VAR_STRING && mv->count > 0) ? mv->value.str[0] : NULL;
+
+    if(!mastery_path || !mastery_path[0])
+      continue;
+
+    const char *mastery_name = NULL;
+    const char *name_tag = get_record_variable_string(mastery_path, INT_skillDisplayName);
+
+    if(name_tag && tr)
+    {
+      const char *translated = translation_get(tr, name_tag);
+
+      if(translated)
+        mastery_name = translated;
+    }
+
+    if(s->found > 0)
+    {
+      size_t len = strlen(buf);
+
+      if(len < s->bufsz - 3)
+      {
+        buf[len] = ',';
+        buf[len+1] = ' ';
+        buf[len+2] = '\0';
+      }
+    }
+
+    char part[128];
+
+    if(mastery_name)
+      snprintf(part, sizeof(part), "+%d to all skills in %s", (int)roundf(val), mastery_name);
+    else
+      snprintf(part, sizeof(part), "+%d to a Mastery", (int)roundf(val));
+
+    size_t cur = strlen(buf), plen = strlen(part);
+
+    if(cur + plen < s->bufsz - 1)
+      memcpy(buf + cur, part, plen + 1);
+
+    s->found++;
+  }
+}
+
+// Pet bonus
+if(s->found == 0)
+{
+  // Depth-guard the petBonusName self-recursion against cyclic/modded chains.
+  static int pet_depth = 0;
+  const char *pet = record_get_string_fast(data, INT_petBonusName);
+
+  if(pet && pet[0] && pet_depth < 8)
+  {
+    char *pet_summary;
+
+    pet_depth++;
+    pet_summary = item_bonus_stat_summary(pet, tr);
+    pet_depth--;
+
+    if(pet_summary)
+    {
+      snprintf(buf, s->bufsz, "Pets: %s", pet_summary);
+      free(pet_summary);
+      s->found = 1;
+    }
+
+    else
+    {
+      snprintf(buf, s->bufsz, "Bonus to All Pets");
+      s->found = 1;
+    }
+  }
+}
+}
+
 // Build a short stat summary string from a bonus DBR record.
 // record_path: DBR path to the bonus record.
 // Returns: malloc'd summary string, or NULL if no stats found.
@@ -1263,481 +1769,1591 @@ item_bonus_stat_summary(const char *record_path, TQTranslation *tr)
     return(NULL);
 
   char buf[256];
-  int found = 0;
 
   buf[0] = '\0';
 
-  for(int a = 0; attr_maps[a].variable && found < 3; a++)
+  SummaryCtx sc = { .data = data, .tr = tr, .buf = buf, .bufsz = sizeof(buf), .found = 0 };
+
+  ibss_attributes(&sc);
+  ibss_retaliation_and_damage(&sc);
+  ibss_energy_and_racial(&sc);
+  ibss_offensive_skill_pet(&sc);
+
+  if(sc.found == 0)
+    return(NULL);
+
+  return(strdup(buf));
+}
+
+// Shared state threaded through the add_stats_from_record category emitters.
+// The sub-buffers route stats to their in-game grouping: ow/rw wrap the
+// offensive / retaliation "X% Chance of:" sections (each == w when no global
+// chance is in play), and skill collects the deferred "+N to skill / mastery"
+// augments that render last.  indent / retal_indent are the leading pad used
+// inside those wrapped sections.
+typedef struct {
+  TQArzRecordData *data;
+  TQTranslation *tr;
+  const char *cls;            // record Class string (may be NULL)
+  BufWriter *w;               // main card
+  BufWriter *ow;              // offensive global-chance sub-buffer
+  BufWriter *rw;              // retaliation global-chance sub-buffer
+  BufWriter *skill;           // deferred skill / mastery augment buffer
+  const char *color;
+  const char *skill_color;
+  const char *indent;
+  const char *retal_indent;
+  int shard_index;
+  float global_chance;
+} StatEmitCtx;
+
+static void
+emit_skill_mechanics(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  const char *color = c->color;
+  int shard_index = c->shard_index;
+
+// Skill mechanics lead the card -- energy cost, recharge, then projectile
+// behaviour -- matching the in-game skill tooltip layout.  These fields only
+// exist on skill records, so item renders are unaffected.  The game colours
+// the cost/recharge lines teal (the ^a code in its CooldownTime/SkillManaCost
+// format tags) independent of the surrounding block colour; mirror that.
+{
+  float mana_cost = dbr_get_float_fast(data, INT_skillManaCost, shard_index);
+
+  if(mana_cost > 0)
+    buf_write(w, "<span color='#00E5E5'>%d Energy Cost</span>\n", (int)round(mana_cost));
+
+  float cooldown = dbr_get_float_fast(data, INT_skillCooldownTime, shard_index);
+
+  if(cooldown <= 0)
+    cooldown = dbr_get_float_fast(data, INT_refreshTime, shard_index);
+
+  if(cooldown > 0)
+    buf_write(w, "<span color='#00E5E5'>%.1f Second(s) Recharge</span>\n", cooldown);
+
+  float projectiles = dbr_get_float_fast(data, INT_projectileLaunchNumber, shard_index);
+
+  if(projectiles > 0)
+    buf_write(w, "<span color='%s'>%d Projectile(s)</span>\n", color, (int)projectiles);
+
+  float pierce_chance = dbr_get_float_fast(data, INT_projectilePiercingChance, shard_index);
+
+  if(pierce_chance > 0)
+    buf_write(w, "<span color='%s'>%.0f%% Chance to pass through Enemies</span>\n", color, pierce_chance);
+
+  // The game's own MinMax tag uses "-" here, not the "~" of damage ranges.
+  float frag_min = dbr_get_float_fast(data, INT_projectileFragmentsLaunchNumberMin, shard_index);
+  float frag_max = dbr_get_float_fast(data, INT_projectileFragmentsLaunchNumberMax, shard_index);
+
+  if(frag_min > 0)
   {
-    float val = dbr_get_float_fast(data, attr_maps[a].interned, 0);
+    if(frag_max > frag_min)
+      buf_write(w, "<span color='%s'>%d - %d Fragments</span>\n", color, (int)frag_min, (int)frag_max);
+    else
+      buf_write(w, "<span color='%s'>%d Fragments</span>\n", color, (int)frag_min);
+  }
+}
+}
 
-    if(val == 0.0f)
-      continue;
+static void
+emit_armor_and_shield(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  const char *color = c->color;
+  int shard_index = c->shard_index;
 
-    if(found > 0)
+// Armor first -- matches in-game tooltip ordering for armor pieces.
+{
+  float armor = dbr_get_float_fast(data, arz_intern("defensiveProtection"), shard_index);
+
+  if(armor > 0)
+    buf_write(w, "<span color='%s'>%d Armor</span>\n", color, (int)round(armor));
+}
+
+// Shield block leads the shield's base block, in the game's single-line
+// format ("11% Chance to block 94 damage", tagShieldBlockInfo); odd records
+// carrying only one half keep a standalone line.  defensiveAbsorption is
+// only meaningful on shields (paired with block); non-shield items (e.g.
+// greaves) sometimes carry a stray value that the game engine ignores --
+// suppress it here too.
+{
+  float blk_val = dbr_get_float_fast(data, INT_defensiveBlock, shard_index);
+  float blk_ch = dbr_get_float_fast(data, INT_defensiveBlockChance, shard_index);
+  float blk_abs = dbr_get_float_fast(data, INT_defensiveAbsorption, shard_index);
+
+  if(blk_ch > 0 && blk_val > 0)
+    buf_write(w, "<span color='%s'>%.0f%% Chance to block %.0f damage</span>\n", color, blk_ch, blk_val);
+
+  else if(blk_ch > 0)
+    buf_write(w, "<span color='%s'>%.0f%% Shield Block Chance</span>\n", color, blk_ch);
+
+  else if(blk_val > 0)
+    buf_write(w, "<span color='%s'>%.0f Damage Blocked</span>\n", color, blk_val);
+
+  if(blk_abs > 0 && (blk_val > 0 || blk_ch > 0))
+    buf_write(w, "<span color='%s'>%.0f%% Damage Absorption</span>\n", color, blk_abs);
+}
+}
+
+static void
+emit_weapon_base_damage(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  TQTranslation *tr = c->tr;
+  const char *cls = c->cls;
+  BufWriter *w = c->w;
+  BufWriter *ow = c->ow;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  int shard_index = c->shard_index;
+  float global_chance = c->global_chance;
+
+// Flat damage ranges (min-max), with optional chance qualifier.  Weapon base
+// damage renders first, then the pierce ratio and attack-speed lines, then
+// bonus damage -- the in-game weapon tooltip layout.
+{
+  // prefix: stat name segment used to look up offensive<Prefix>Global.
+  // is_base: weapon base damage (always top-level).  NULL prefix on
+  // non-base entries means "no Global lookup" (treat like top-level).
+  typedef struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; bool is_base; const char *prefix; } DamageRow;
+
+  // The game labels base physical damage plainly "Damage" (DamageBasePhysical).
+  static const DamageRow base_damage_types[] = {
+    {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Damage", true, NULL},
+    {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage", true, NULL},
+    {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage", true, NULL},
+    {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage", true, NULL},
+    {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage", true, NULL},
+    {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage", true, NULL},
+    {NULL, NULL, NULL, NULL, false, NULL}
+  };
+  static const DamageRow bonus_damage_types[] = {
+    {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, &INT_offensivePhysicalChance, "Physical Damage", false, "Physical"},
+    {&INT_offensiveFireMin, &INT_offensiveFireMax, &INT_offensiveFireChance, "Fire Damage", false, "Fire"},
+    {&INT_offensiveColdMin, &INT_offensiveColdMax, &INT_offensiveColdChance, "Cold Damage", false, "Cold"},
+    {&INT_offensiveLightningMin, &INT_offensiveLightningMax, &INT_offensiveLightningChance, "Lightning Damage", false, "Lightning"},
+    {&INT_offensivePoisonMin, &INT_offensivePoisonMax, &INT_offensivePoisonChance, "Poison Damage", false, "Poison"},
+    {&INT_offensivePierceMin, &INT_offensivePierceMax, &INT_offensivePierceChance, "Piercing Damage", false, "Pierce"},
+    {&INT_offensiveElementalMin, &INT_offensiveElementalMax, &INT_offensiveElementalChance, "Elemental Damage", false, "Elemental"},
+    {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech", false, NULL},
+    {&INT_offensiveLifeMin, &INT_offensiveLifeMax, &INT_offensiveLifeChance, "Vitality Damage", false, "Life"},
+    {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, &INT_offensiveBonusPhysicalChance, "Bonus Damage", false, "BonusPhysical"},
+    {NULL, NULL, NULL, NULL, false, NULL}
+  };
+  const DamageRow *tables[2] = {base_damage_types, bonus_damage_types};
+
+  // Old-format weapons (original TQ records) store their base swing damage
+  // in offensivePhysicalMin/Max rather than offensiveBase*; the engine
+  // treats it as base damage on any Weapon* class.  Pull it into the base
+  // phase (labelled plainly "Damage") unless real offensiveBase physical
+  // damage exists or a chance qualifier marks it as a proc bonus.
+  bool weapon_base_physical = cls && strncasecmp(cls, "Weapon", 6) == 0
+      && dbr_get_float_fast(data, INT_offensivePhysicalMin, shard_index) > 0
+      && dbr_get_float_fast(data, INT_offensiveBasePhysicalMin, shard_index) <= 0
+      && dbr_get_float_fast(data, INT_offensivePhysicalChance, shard_index) <= 0;
+
+  for(int t = 0; t < 2; t++)
+  {
+    const DamageRow *damage_types = tables[t];
+
+    if(t == 0 && weapon_base_physical)
     {
-      size_t len = strlen(buf);
+      float mn = dbr_get_float_fast(data, INT_offensivePhysicalMin, shard_index);
+      float mx = dbr_get_float_fast(data, INT_offensivePhysicalMax, shard_index);
 
-      if(len < sizeof(buf) - 3)
+      if(mx > mn)
+        buf_write(w, "<span color='%s'>%d ~ %d Damage</span>\n", color, (int)round(mn), (int)round(mx));
+      else
+        buf_write(w, "<span color='%s'>%d Damage</span>\n", color, (int)round(mn));
+    }
+
+    for(int d = 0; damage_types[d].min_int; d++)
+    {
+      if(t > 0 && weapon_base_physical && damage_types[d].min_int == &INT_offensivePhysicalMin)
+        continue;
+
+      float mn = dbr_get_float_fast(data, *damage_types[d].min_int, shard_index);
+      float mx = dbr_get_float_fast(data, *damage_types[d].max_int, shard_index);
+
+      if(mn > 0)
       {
-        buf[len] = ',';
-        buf[len+1] = ' ';
-        buf[len+2] = '\0';
+        float chance = damage_types[d].chance_int ? dbr_get_float_fast(data, *damage_types[d].chance_int, shard_index) : 0;
+        const char *dmg_label = damage_types[d].label;
+
+        if(chance > 0)
+        {
+          if(mx > mn)
+            buf_write(w, "<span color='%s'>%.1f%% Chance of %d ~ %d %s</span>\n", color, chance, (int)round(mn), (int)round(mx), dmg_label);
+
+          else
+            buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n", color, chance, (int)round(mn), dmg_label);
+        }
+
+        else
+        {
+          // Base weapon damage and stats whose Global flag is false stay
+          // outside the chance block; only stats with Global=true go inside.
+          bool in_chance = !damage_types[d].is_base
+                           && global_chance > 0
+                           && offensive_proc_in_chance(data, damage_types[d].prefix, shard_index);
+          BufWriter *target = in_chance ? ow : w;
+          const char *target_indent = in_chance ? indent : "";
+
+          if(mx > mn)
+            buf_write(target, "<span color='%s'>%s%d ~ %d %s</span>\n", color, target_indent, (int)round(mn), (int)round(mx), dmg_label);
+
+          else
+            buf_write(target, "<span color='%s'>%s%d %s</span>\n", color, target_indent, (int)round(mn), dmg_label);
+        }
       }
     }
 
-    char part[80];
-    const char *pct = strchr(attr_maps[a].format, '%');
-    bool fmt_is_float = false;
+    if(t > 0)
+      continue;
 
-    if(pct)
+    // Between the weapon's base damage and its bonus stats: the pierce ratio
+    // ("x% Pierce Ratio", part of the DamageBase* family in-game) and the
+    // attack-speed line, followed by a blank separator -- the in-game weapon
+    // header block.  Weapons and shields only; skill/affix records lack the
+    // speed tag and item class, so this is a no-op for them.
     {
-      const char *pp = pct + 1;
+      float pr_min = dbr_get_float_fast(data, INT_offensivePierceRatioMin, shard_index);
+      float pr_max = dbr_get_float_fast(data, INT_offensivePierceRatioMax, shard_index);
 
-      while(*pp == '+' || *pp == '-' || *pp == '0' || *pp == ' ' || *pp == '#')
-        pp++;
+      if(pr_min > 0)
+      {
+        char val_str[64];
 
-      while((*pp >= '0' && *pp <= '9') || *pp == '.')
-        pp++;
+        if(pr_max > pr_min)
+          snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", pr_min, pr_max);
+        else
+          snprintf(val_str, sizeof(val_str), "%.0f%%", pr_min);
 
-      if(*pp == 'f')
-        fmt_is_float = true;
+        float pr_chance = dbr_get_float_fast(data, INT_offensivePierceRatioChance, shard_index);
+
+        if(pr_chance > 0 && pr_chance < 100)
+          buf_write(w, "<span color='%s'>%.1f%% Chance of %s Pierce Ratio</span>\n", color, pr_chance, val_str);
+        else
+          buf_write(w, "<span color='%s'>%s Pierce Ratio</span>\n", color, val_str);
+      }
+
+      const char *speed_tag = record_get_string_fast(data, INT_characterBaseAttackSpeedTag);
+
+      if(speed_tag && cls && (strncasecmp(cls, "WeaponMelee_", 12) == 0 ||
+                              strncasecmp(cls, "WeaponHunting_", 14) == 0 ||
+                              strncasecmp(cls, "WeaponMagical_", 14) == 0 ||
+                              strcasecmp(cls, "WeaponArmor_Shield") == 0))
+      {
+        const char *speed_str = tr ? translation_get(tr, speed_tag) : NULL;
+
+        if(speed_str)
+          buf_write(w, "<span color='%s'>%s</span>\n\n", color, speed_str);
+      }
     }
+  }
+}
+}
 
-    if(attr_maps[a].is_percent || !fmt_is_float)
-      snprintf(part, sizeof(part), attr_maps[a].format, (int)roundf(val));
+static void
+emit_leech_and_dots(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  BufWriter *ow = c->ow;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  int shard_index = c->shard_index;
+  float global_chance = c->global_chance;
+
+// ADCTH: attack damage converted to health
+{
+  float mn = dbr_get_float_fast(data, INT_offensiveLifeLeechMin, shard_index);
+  float mx = dbr_get_float_fast(data, INT_offensiveLifeLeechMax, shard_index);
+
+  if(mn > 0)
+  {
+    bool in_chance = global_chance > 0 && offensive_proc_in_chance(data, "LifeLeech", shard_index);
+    BufWriter *target = in_chance ? ow : w;
+    const char *target_indent = in_chance ? indent : "";
+
+    if(mx > mn)
+      buf_write(target, "<span color='%s'>%s%d%% ~ %d%% of Attack damage converted to Health</span>\n", color, target_indent, (int)round(mn), (int)round(mx));
 
     else
-      snprintf(part, sizeof(part), attr_maps[a].format, val);
-
-    size_t cur = strlen(buf);
-    size_t plen = strlen(part);
-
-    if(cur + plen < sizeof(buf) - 1)
-      memcpy(buf + cur, part, plen + 1);
-
-    found++;
+      buf_write(target, "<span color='%s'>%s%d%% of Attack damage converted to Health</span>\n", color, target_indent, (int)round(mn));
   }
+}
 
-  // Also check stats handled in dedicated blocks (resistances, damage ranges)
-  static const struct { const char **val; const char *fmt; } extra_simple[] = {
-    {&INT_defensiveFire, "%+d%% Fire Resistance"},
-    {&INT_defensiveCold, "%+d%% Cold Resistance"},
-    {&INT_defensiveLightning, "%+d%% Lightning Resistance"},
-    {&INT_defensivePoison, "%+d%% Poison Resistance"},
-    {&INT_defensivePierce, "%+d%% Pierce Resistance"},
-    {&INT_defensiveLife, "%+d%% Vitality Resistance"},
-    {&INT_defensiveBleeding, "%+d%% Bleeding Resistance"},
-    {&INT_defensivePhysical, "%+d%% Physical Resistance"},
-    {&INT_defensiveElementalResistance, "%+d%% Elemental Resistance"},
-    {&INT_defensiveDisruption, "%+d%% Skill Disruption Protection"},
-    {&INT_offensiveTotalResistanceReductionAbsoluteMin, "%+d Reduced Resistances"},
+// DoT: all damage-over-time types with optional chance
+{
+  static struct { const char **min_int; const char **max_int; const char **dur_int; const char **chance_int; const char *label; } dot_types[] = {
+    {&INT_offensiveSlowFireMin,      &INT_offensiveSlowFireMax,      &INT_offensiveSlowFireDurationMin,      &INT_offensiveSlowFireChance,      "Burn Damage"},
+    {&INT_offensiveSlowLightningMin, &INT_offensiveSlowLightningMax, &INT_offensiveSlowLightningDurationMin, &INT_offensiveSlowLightningChance, "Electrical Burn Damage"},
+    {&INT_offensiveSlowColdMin,      &INT_offensiveSlowColdMax,      &INT_offensiveSlowColdDurationMin,      &INT_offensiveSlowColdChance,      "Frostburn Damage"},
+    {&INT_offensiveSlowPoisonMin,    &INT_offensiveSlowPoisonMax,    &INT_offensiveSlowPoisonDurationMin,    &INT_offensiveSlowPoisonChance,    "Poison Damage"},
+    {&INT_offensiveSlowLifeLeachMin, &INT_offensiveSlowLifeLeachMax, &INT_offensiveSlowLifeLeachDurationMin, &INT_offensiveSlowLifeLeachChance, "Life Leech"},
+    {&INT_offensiveSlowLifeMin,      &INT_offensiveSlowLifeMax,      &INT_offensiveSlowLifeDurationMin,      &INT_offensiveSlowLifeChance,      "Vitality Decay"},
+    {&INT_offensiveSlowManaLeachMin, &INT_offensiveSlowManaLeachMax, &INT_offensiveSlowManaLeachDurationMin, &INT_offensiveSlowManaLeachChance, "Energy Leech"},
+    {&INT_offensiveSlowBleedingMin,  &INT_offensiveSlowBleedingMax,  &INT_offensiveSlowBleedingDurationMin,  &INT_offensiveSlowBleedingChance,  "Bleeding Damage"},
+    {&INT_offensiveSlowPhysicalMin,  &INT_offensiveSlowPhysicalMax,  &INT_offensiveSlowPhysicalDurationMin,  &INT_offensiveSlowPhysicalChance,  "Physical Damage"},
+    {NULL, NULL, NULL, NULL, NULL}
   };
 
-  for(int e = 0; e < (int)(sizeof extra_simple / sizeof extra_simple[0]) && found < 3; e++)
+  for(int d = 0; dot_types[d].min_int; d++)
   {
-    float val = dbr_get_float_fast(data, *extra_simple[e].val, 0);
+    float mn = dbr_get_float_fast(data, *dot_types[d].min_int, shard_index);
+    float mx = dbr_get_float_fast(data, *dot_types[d].max_int, shard_index);
+    float dur = dbr_get_float_fast(data, *dot_types[d].dur_int, shard_index);
+
+    if(mn > 0 && dur > 0)
+    {
+      float chance = dbr_get_float_fast(data, *dot_types[d].chance_int, shard_index);
+      const char *lbl = dot_types[d].label;
+
+      if(chance > 0)
+      {
+        if(mx > mn)
+          buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f ~ %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, mx * dur, lbl, dur);
+
+        else
+          buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, lbl, dur);
+      }
+
+      else
+      {
+        if(mx > mn)
+          buf_write(ow, "<span color='%s'>%s%.0f ~ %.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, mx * dur, lbl, dur);
+
+        else
+          buf_write(ow, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, lbl, dur);
+      }
+    }
+  }
+}
+
+// DoT damage modifiers (may have chance).  Each routes to the chance
+// block only when its corresponding offensiveSlow*Global flag is set;
+// otherwise it stays top-level.
+{
+  static const struct { const char **val; const char **chance; const char *label; const char *prefix; } slow_mod_defs[] = {
+    {&INT_offensiveSlowFireModifier,      &INT_offensiveSlowFireModifierChance,      "Burn Damage",            "SlowFire"},
+    {&INT_offensiveSlowColdModifier,      &INT_offensiveSlowColdModifierChance,      "Frostburn Damage",       "SlowCold"},
+    {&INT_offensiveSlowLightningModifier, &INT_offensiveSlowLightningModifierChance, "Electrical Burn Damage", "SlowLightning"},
+    {&INT_offensiveSlowPoisonModifier,    &INT_offensiveSlowPoisonModifierChance,    "Poison Damage",          "SlowPoison"},
+    {&INT_offensiveSlowLifeModifier,      &INT_offensiveSlowLifeModifierChance,      "Vitality Decay",         "SlowLife"},
+    {&INT_offensiveSlowLifeLeachModifier, &INT_offensiveSlowLifeLeachModifierChance, "Life Leech",             "SlowLifeLeach"},
+    {&INT_offensiveSlowBleedingModifier,  &INT_offensiveSlowBleedingModifierChance,  "Bleeding Damage",        "SlowBleeding"},
+  };
+
+  for(int mi = 0; mi < (int)(sizeof slow_mod_defs / sizeof slow_mod_defs[0]); mi++)
+  {
+    float mv = dbr_get_float_fast(data, *slow_mod_defs[mi].val, shard_index);
+
+    if(fabs(mv) < 0.001f)
+      continue;
+
+    float mc = dbr_get_float_fast(data, *slow_mod_defs[mi].chance, shard_index);
+
+    bool in_chance = global_chance > 0
+                     && offensive_proc_in_chance(data, slow_mod_defs[mi].prefix, shard_index);
+    BufWriter *target = in_chance ? ow : w;
+    const char *target_indent = in_chance ? indent : "";
+
+    if(mc > 0 && mc < 100)
+      buf_write(target, "<span color='%s'>%s%.1f%% Chance of %+d%% %s</span>\n", color, target_indent, mc, (int)round(mv), slow_mod_defs[mi].label);
+
+    else
+      buf_write(target, "<span color='%s'>%s%+d%% %s</span>\n", color, target_indent, (int)round(mv), slow_mod_defs[mi].label);
+  }
+}
+}
+
+static void
+emit_retaliation(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  BufWriter *rw = c->rw;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  const char *retal_indent = c->retal_indent;
+  int shard_index = c->shard_index;
+
+// Retaliation DoTs (damage over time triggered on retaliation, may have chance)
+{
+  static const struct {
+    const char **val; const char **max; const char **dur; const char **chance; const char *label;
+  } retal_dots[] = {
+    {&INT_retaliationSlowFireMin,      &INT_retaliationSlowFireMax,      &INT_retaliationSlowFireDurationMin,      &INT_retaliationSlowFireChance,      "Burn Retaliation"},
+    {&INT_retaliationSlowColdMin,      &INT_retaliationSlowColdMax,      &INT_retaliationSlowColdDurationMin,      &INT_retaliationSlowColdChance,      "Frostburn Retaliation"},
+    {&INT_retaliationSlowLightningMin, &INT_retaliationSlowLightningMax, &INT_retaliationSlowLightningDurationMin, &INT_retaliationSlowLightningChance, "Electrical Burn Retaliation"},
+    {&INT_retaliationSlowPoisonMin,    &INT_retaliationSlowPoisonMax,    &INT_retaliationSlowPoisonDurationMin,    &INT_retaliationSlowPoisonChance,    "Poison Retaliation"},
+    {&INT_retaliationSlowLifeMin,      &INT_retaliationSlowLifeMax,      &INT_retaliationSlowLifeDurationMin,      &INT_retaliationSlowLifeChance,      "Vitality Decay Retaliation"},
+    {&INT_retaliationSlowBleedingMin,  &INT_retaliationSlowBleedingMax,  &INT_retaliationSlowBleedingDurationMin,  &INT_retaliationSlowBleedingChance,  "Bleeding Retaliation"},
+    {&INT_retaliationSlowLifeLeachMin, &INT_retaliationSlowLifeLeachMax, &INT_retaliationSlowLifeLeachDurationMin, &INT_retaliationSlowLifeLeachChance, "Life Leech Retaliation"},
+    {&INT_retaliationSlowManaLeachMin, &INT_retaliationSlowManaLeachMax, &INT_retaliationSlowManaLeachDurationMin, &INT_retaliationSlowManaLeachChance, "Energy Leech Retaliation"},
+    {&INT_retaliationSlowAttackSpeedMin, NULL,                           &INT_retaliationSlowAttackSpeedDurationMin, NULL,                               "Reduced Attack Speed Retaliation"},
+  };
+
+  for(int ri = 0; ri < (int)(sizeof retal_dots / sizeof retal_dots[0]); ri++)
+  {
+    float mn = dbr_get_float_fast(data, *retal_dots[ri].val, shard_index);
+    float dur = dbr_get_float_fast(data, *retal_dots[ri].dur, shard_index);
+
+    if(mn <= 0 || dur <= 0)
+      continue;
+
+    float mx = retal_dots[ri].max ? dbr_get_float_fast(data, *retal_dots[ri].max, shard_index) : 0;
+    float ch = retal_dots[ri].chance ? dbr_get_float_fast(data, *retal_dots[ri].chance, shard_index) : 0;
+
+    if(ch > 0 && ch < 100)
+    {
+      if(mx > mn)
+        buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f ~ %.0f %s over %.1f Seconds</span>\n",
+                  color, indent, ch, mn * dur, mx * dur, retal_dots[ri].label, dur);
+      else
+        buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f %s over %.1f Seconds</span>\n",
+                  color, indent, ch, mn * dur, retal_dots[ri].label, dur);
+    }
+
+    else
+    {
+      if(mx > mn)
+        buf_write(rw, "<span color='%s'>%s%.0f ~ %.0f %s over %.1f Seconds</span>\n",
+                  color, retal_indent, mn * dur, mx * dur, retal_dots[ri].label, dur);
+      else
+        buf_write(rw, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n",
+                  color, retal_indent, mn * dur, retal_dots[ri].label, dur);
+    }
+  }
+}
+
+// Flat retaliation (may have chance and/or max range)
+{
+  static const struct {
+    const char **val; const char **max; const char **chance; const char *label;
+  } retal_flat[] = {
+    {&INT_retaliationPhysicalMin,  &INT_retaliationPhysicalMax,  &INT_retaliationPhysicalChance,  "Physical Retaliation"},
+    {&INT_retaliationFireMin,      &INT_retaliationFireMax,      &INT_retaliationFireChance,      "Fire Retaliation"},
+    {&INT_retaliationColdMin,      &INT_retaliationColdMax,      &INT_retaliationColdChance,      "Cold Retaliation"},
+    {&INT_retaliationLightningMin, &INT_retaliationLightningMax, &INT_retaliationLightningChance, "Lightning Retaliation"},
+    {&INT_retaliationPierceMin,    &INT_retaliationPierceMax,    &INT_retaliationPierceChance,    "Pierce Retaliation"},
+    {&INT_retaliationLifeMin,      &INT_retaliationLifeMax,      &INT_retaliationLifeChance,      "Vitality Retaliation"},
+    {&INT_retaliationPoisonMin,    &INT_retaliationPoisonMax,    &INT_retaliationPoisonChance,    "Poison Retaliation"},
+    {&INT_retaliationElementalMin, &INT_retaliationElementalMax, &INT_retaliationElementalChance, "Elemental Retaliation"},
+  };
+
+  for(int ri = 0; ri < (int)(sizeof retal_flat / sizeof retal_flat[0]); ri++)
+  {
+    float mn = dbr_get_float_fast(data, *retal_flat[ri].val, shard_index);
+
+    if(mn <= 0)
+      continue;
+
+    float mx = retal_flat[ri].max ? dbr_get_float_fast(data, *retal_flat[ri].max, shard_index) : 0;
+    float ch = dbr_get_float_fast(data, *retal_flat[ri].chance, shard_index);
+
+    if(ch > 0 && ch < 100)
+    {
+      if(mx > mn)
+        buf_write(w, "<span color='%s'>%.1f%% Chance of %d ~ %d %s</span>\n",
+                  color, ch, (int)round(mn), (int)round(mx), retal_flat[ri].label);
+      else
+        buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n",
+                  color, ch, (int)round(mn), retal_flat[ri].label);
+    }
+
+    else
+    {
+      if(mx > mn)
+        buf_write(rw, "<span color='%s'>%s%d ~ %d %s</span>\n",
+                  color, retal_indent, (int)round(mn), (int)round(mx), retal_flat[ri].label);
+      else
+        buf_write(rw, "<span color='%s'>%s%d %s</span>\n",
+                  color, retal_indent, (int)round(mn), retal_flat[ri].label);
+    }
+  }
+}
+
+// Stun Retaliation (seconds, may have chance + max range)
+{
+  float mn = dbr_get_float_fast(data, INT_retaliationStunMin, shard_index);
+
+  if(mn > 0)
+  {
+    float mx = dbr_get_float_fast(data, INT_retaliationStunMax, shard_index);
+    float ch = dbr_get_float_fast(data, INT_retaliationStunChance, shard_index);
+
+    if(ch > 0 && ch < 100)
+    {
+      if(mx > mn)
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f ~ %.1f Second Stun Retaliation</span>\n", color, ch, mn, mx);
+      else
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second Stun Retaliation</span>\n", color, ch, mn);
+    }
+    else
+    {
+      if(mx > mn)
+        buf_write(rw, "<span color='%s'>%s%.1f ~ %.1f Second Stun Retaliation</span>\n", color, retal_indent, mn, mx);
+      else
+        buf_write(rw, "<span color='%s'>%s%.1f Second Stun Retaliation</span>\n", color, retal_indent, mn);
+    }
+  }
+}
+
+// % of Current Life Retaliation (may have chance + max range)
+{
+  float mn = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeMin, shard_index);
+
+  if(mn > 0)
+  {
+    float mx = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeMax, shard_index);
+    float ch = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeChance, shard_index);
+
+    if(ch > 0 && ch < 100)
+    {
+      if(mx > mn)
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% ~ %.0f%% of Current Life Retaliation</span>\n", color, ch, mn, mx);
+      else
+        buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% of Current Life Retaliation</span>\n", color, ch, mn);
+    }
+    else
+    {
+      if(mx > mn)
+        buf_write(rw, "<span color='%s'>%s%.0f%% ~ %.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn, mx);
+      else
+        buf_write(rw, "<span color='%s'>%s%.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn);
+    }
+  }
+}
+}
+
+static void
+emit_retaliation_debuffs(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  BufWriter *ow = c->ow;
+  BufWriter *rw = c->rw;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  const char *retal_indent = c->retal_indent;
+  int shard_index = c->shard_index;
+
+// Slow / ability / damage-reduction retaliation debuffs (rate, not damage * duration)
+{
+  static const struct {
+    const char **min; const char **max; const char **dur; const char **chance;
+    const char *label; bool is_percent;
+  } retal_debuffs[] = {
+    {&INT_retaliationSlowRunSpeedMin,         &INT_retaliationSlowRunSpeedMax,         &INT_retaliationSlowRunSpeedDurationMin,         &INT_retaliationSlowRunSpeedChance,         "Slow Retaliation",                          true},
+    {&INT_retaliationSlowDefensiveAbilityMin, &INT_retaliationSlowDefensiveAbilityMax, &INT_retaliationSlowDefensiveAbilityDurationMin, &INT_retaliationSlowDefensiveAbilityChance, "Reduced Defensive Ability Retaliation",     false},
+    {&INT_retaliationSlowOffensiveAbilityMin, &INT_retaliationSlowOffensiveAbilityMax, &INT_retaliationSlowOffensiveAbilityDurationMin, &INT_retaliationSlowOffensiveAbilityChance, "Reduced Offensive Ability Retaliation",     false},
+    {&INT_retaliationSlowOffensiveReductionMin, &INT_retaliationSlowOffensiveReductionMax, &INT_retaliationSlowOffensiveReductionDurationMin, &INT_retaliationSlowOffensiveReductionChance, "Reduced Damage Retaliation",            true},
+  };
+
+  for(int ri = 0; ri < (int)(sizeof retal_debuffs / sizeof retal_debuffs[0]); ri++)
+  {
+    float mn = dbr_get_float_fast(data, *retal_debuffs[ri].min, shard_index);
+    float dur = dbr_get_float_fast(data, *retal_debuffs[ri].dur, shard_index);
+
+    if(mn <= 0 || dur <= 0)
+      continue;
+
+    float mx = dbr_get_float_fast(data, *retal_debuffs[ri].max, shard_index);
+    float ch = dbr_get_float_fast(data, *retal_debuffs[ri].chance, shard_index);
+
+    char val_str[64];
+    const char *pct = retal_debuffs[ri].is_percent ? "%" : "";
+
+    if(mx > mn)
+      snprintf(val_str, sizeof(val_str), "%.0f%s - %.0f%s", mn, pct, mx, pct);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f%s", mn, pct);
+
+    if(ch > 0 && ch < 100)
+      buf_write(w, "<span color='%s'>%.0f%% Chance of %s %s for %.1f Seconds</span>\n",
+                color, ch, val_str, retal_debuffs[ri].label, dur);
+    else
+      buf_write(rw, "<span color='%s'>%s%s %s for %.1f Seconds</span>\n",
+                color, retal_indent, val_str, retal_debuffs[ri].label, dur);
+  }
+}
+
+// Reduced Armor (value + duration)
+{
+  float val = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionMin, shard_index);
+  float dur = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionDurationMin, shard_index);
+
+  if(val > 0 && dur > 0)
+    buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor for %.1f Seconds</span>\n", color, indent, val, dur);
+
+  else if(val > 0)
+    buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor</span>\n", color, indent, val);
+}
+
+// Reduced Resistances (value + duration, may have chance and max range)
+{
+  float val = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteMin, shard_index);
+  float val_max = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteMax, shard_index);
+  float dur = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteDurationMin, shard_index);
+  float ch = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteChance, shard_index);
+
+  if(val > 0)
+  {
+    char val_str[64];
+
+    if(val_max > val)
+      snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", val, val_max);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f", val);
+
+    if(ch > 0 && ch < 100 && dur > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Reduced Resistances for %.1f Seconds</span>\n", color, indent, ch, val_str, dur);
+    else if(dur > 0)
+      buf_write(ow, "<span color='%s'>%s%s Reduced Resistances for %.1f Seconds</span>\n", color, indent, val_str, dur);
+    else
+      buf_write(ow, "<span color='%s'>%s%s Reduced Resistances</span>\n", color, indent, val_str);
+  }
+}
+
+// Reduced Resistances (percent variant: e.g. "30% Reduced Resistances for 3 Sec")
+{
+  float val = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentMin, shard_index);
+  float dur = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentDurationMin, shard_index);
+  float ch = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentChance, shard_index);
+
+  if(val > 0)
+  {
+    if(ch > 0 && ch < 100 && dur > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Resistances for %.1f Seconds</span>\n", color, indent, ch, val, dur);
+    else if(dur > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances for %.1f Seconds</span>\n", color, indent, val, dur);
+    else
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances</span>\n", color, indent, val);
+  }
+}
+
+// Skill disruption protection (defensive, no duration) / offensive skill disruption (with duration)
+{
+  float val = dbr_get_float_fast(data, INT_defensiveDisruption, shard_index);
+  float dur = dbr_get_float_fast(data, INT_defensiveDisruptionDuration, shard_index);
+
+  if(val > 0 && dur > 0)
+    buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.1f second(s) of Skill Disruption</span>\n", color, indent, val, dur);
+
+  else if(val > 0)
+    buf_write(w, "<span color='%s'>%.0f%% Skill Disruption Protection</span>\n", color, val);
+}
+
+// Offensive skill disruption (offensiveDisruptionMin -- seconds of disruption)
+{
+  float val = dbr_get_float_fast(data, INT_offensiveDisruptionMin, shard_index);
+  float val_max = dbr_get_float_fast(data, INT_offensiveDisruptionMax, shard_index);
+  float ch = dbr_get_float_fast(data, INT_offensiveDisruptionChance, shard_index);
+
+  if(val > 0)
+  {
+    char val_str[64];
+
+    if(val_max > val)
+      snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", val, val_max);
+    else
+      snprintf(val_str, sizeof(val_str), "%.1f", val);
+
+    if(ch > 0 && ch < 100)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Skill Disruption</span>\n", color, indent, ch, val_str);
+    else
+      buf_write(ow, "<span color='%s'>%s%s second(s) of Skill Disruption</span>\n", color, indent, val_str);
+  }
+}
+
+// Reduced Attack Speed (value + duration)
+{
+  float val = dbr_get_float_fast(data, INT_offensiveSlowAttackSpeedMin, shard_index);
+  float dur = dbr_get_float_fast(data, INT_offensiveSlowAttackSpeedDurationMin, shard_index);
+
+  if(val > 0 && dur > 0)
+    buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed for %.1f Seconds</span>\n", color, indent, val, dur);
+
+  else if(val > 0)
+    buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed</span>\n", color, indent, val);
+}
+
+// Reduced Run Speed (value + duration, may have max range)
+{
+  float val = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedMin, shard_index);
+  float val_max = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedMax, shard_index);
+  float dur = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedDurationMin, shard_index);
+
+  if(val > 0)
+  {
+    char val_str[64];
+
+    if(val_max > val)
+      snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", val, val_max);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f%%", val);
+
+    if(dur > 0)
+      buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed for %.1f Seconds</span>\n", color, indent, val_str, dur);
+    else
+      buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed</span>\n", color, indent, val_str);
+  }
+}
+}
+
+static void
+emit_offensive_modifiers(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  BufWriter *ow = c->ow;
+  BufWriter *rw = c->rw;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  const char *retal_indent = c->retal_indent;
+  int shard_index = c->shard_index;
+  float global_chance = c->global_chance;
+
+// Offensive damage modifiers (may have chance).  Each routes to the
+// chance block only when its corresponding offensive*Global flag is
+// set; otherwise it stays top-level.  TotalDamage has no Global
+// partner and always renders top-level.
+{
+  static const struct { const char **val; const char **chance; const char *label; const char *prefix; } off_mod_defs[] = {
+    {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage",  "Physical"},
+    {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage",      "Fire"},
+    {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage",      "Cold"},
+    {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage", "Lightning"},
+    {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage",    "Poison"},
+    {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage",  "Life"},
+    {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage",    "Pierce"},
+    {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damages", "Elemental"},
+    {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage", NULL},
+  };
+
+  for(int mi = 0; mi < (int)(sizeof off_mod_defs / sizeof off_mod_defs[0]); mi++)
+  {
+    float mv = dbr_get_float_fast(data, *off_mod_defs[mi].val, shard_index);
+
+    if(fabs(mv) < 0.001f)
+      continue;
+
+    float mc = dbr_get_float_fast(data, *off_mod_defs[mi].chance, shard_index);
+
+    bool in_chance = global_chance > 0
+                     && off_mod_defs[mi].prefix
+                     && offensive_proc_in_chance(data, off_mod_defs[mi].prefix, shard_index);
+    BufWriter *target = in_chance ? ow : w;
+    const char *target_indent = in_chance ? indent : "";
+
+    if(mc > 0 && mc < 100)
+      buf_write(target, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, target_indent, mc, (int)round(mv), off_mod_defs[mi].label);
+
+    else
+      buf_write(target, "<span color='%s'>%s%+d%% %s</span>\n", color, target_indent, (int)round(mv), off_mod_defs[mi].label);
+  }
+}
+
+// Retaliation %-modifiers (may have chance)
+{
+  static const struct { const char **val; const char **chance; const char *label; } retal_mod_defs[] = {
+    {&INT_retaliationPhysicalModifier,  &INT_retaliationPhysicalModifierChance,  "Physical Retaliation"},
+    {&INT_retaliationColdModifier,      &INT_retaliationColdModifierChance,      "Cold Retaliation"},
+    {&INT_retaliationFireModifier,      &INT_retaliationFireModifierChance,      "Fire Retaliation"},
+    {&INT_retaliationLightningModifier, &INT_retaliationLightningModifierChance, "Lightning Retaliation"},
+    {&INT_retaliationPoisonModifier,    &INT_retaliationPoisonModifierChance,    "Poison Retaliation"},
+    {&INT_retaliationPierceModifier,    &INT_retaliationPierceModifierChance,    "Pierce Retaliation"},
+    {&INT_retaliationLifeModifier,      &INT_retaliationLifeModifierChance,      "Vitality Retaliation"},
+    {&INT_retaliationStunModifier,      &INT_retaliationStunModifierChance,      "Stun Retaliation"},
+    {&INT_retaliationElementalModifier, &INT_retaliationElementalModifierChance, "Elemental Retaliation"},
+  };
+
+  for(int mi = 0; mi < (int)(sizeof retal_mod_defs / sizeof retal_mod_defs[0]); mi++)
+  {
+    float mv = dbr_get_float_fast(data, *retal_mod_defs[mi].val, shard_index);
+
+    if(fabs(mv) < 0.001f)
+      continue;
+
+    float mc = dbr_get_float_fast(data, *retal_mod_defs[mi].chance, shard_index);
+
+    if(mc > 0 && mc < 100)
+      buf_write(rw, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, retal_indent, mc, (int)round(mv), retal_mod_defs[mi].label);
+
+    else
+      buf_write(rw, "<span color='%s'>%s%+d%% %s</span>\n", color, retal_indent, (int)round(mv), retal_mod_defs[mi].label);
+  }
+}
+
+// Percent current life reduction (may have chance, may have max range)
+{
+  float pcl = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMin, shard_index);
+
+  if(fabs(pcl) > 0.001f)
+  {
+    float pcl_max = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMax, shard_index);
+    float pcl_chance = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeChance, shard_index);
+    bool in_chance = global_chance > 0 && offensive_proc_in_chance(data, "PercentCurrentLife", shard_index);
+    BufWriter *target = in_chance ? ow : w;
+    const char *target_indent = in_chance ? indent : "";
+
+    if(pcl_chance > 0 && pcl_chance < 100)
+    {
+      if(pcl_max > pcl)
+        buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% ~ %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl, pcl_max);
+      else
+        buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl);
+    }
+
+    else
+    {
+      if(pcl_max > pcl)
+        buf_write(target, "<span color='%s'>%s%.0f%% ~ %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl, pcl_max);
+      else
+        buf_write(target, "<span color='%s'>%s%.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl);
+    }
+  }
+}
+
+// Energy drain / energy burn (both DrainMin and DrainRatioMin are percentages)
+{
+  float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, shard_index);
+  float drain_max = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMax, shard_index);
+  float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, shard_index);
+  float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, shard_index);
+  float chance = dbr_get_float_fast(data, INT_offensiveManaBurnChance, shard_index);
+  float val = (drain > 0.001f) ? drain : drain_ratio;
+
+  if(val > 0.001f)
+  {
+    char val_str[64];
+
+    if(drain_max > val)
+      snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", val, drain_max);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f", val);
+
+    const char *prefix = (chance > 0 && chance < 100) ? "Chance of " : "";
+    char chance_buf[32] = "";
+
+    if(chance > 0 && chance < 100)
+      snprintf(chance_buf, sizeof(chance_buf), "%.0f%% ", chance);
+
+    if(dmg_ratio > 0.001f)
+      buf_write(ow, "<span color='%s'>%s%s%s%s%% Energy Drain (%.0f%% of lost energy as damage)</span>\n", color, indent, chance_buf, prefix, val_str, dmg_ratio);
+
+    else
+      buf_write(ow, "<span color='%s'>%s%s%s%s%% Energy Drain</span>\n", color, indent, chance_buf, prefix, val_str);
+  }
+
+  // Damage to Burning Energy (RatioAdder is +X% damage modifier)
+  float ratio_adder = dbr_get_float_fast(data, INT_offensiveManaBurnRatioAdder, shard_index);
+
+  if(fabs(ratio_adder) > 0.001f)
+  {
+    float ra_chance = dbr_get_float_fast(data, INT_offensiveManaBurnRatioAdderChance, shard_index);
+
+    if(ra_chance > 0 && ra_chance < 100)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %+d%% Damage to Burning Energy</span>\n", color, indent, ra_chance, (int)round(ratio_adder));
+    else
+      buf_write(ow, "<span color='%s'>%s%+d%% Damage to Burning Energy</span>\n", color, indent, (int)round(ratio_adder));
+  }
+}
+}
+
+static void
+emit_offensive_cc(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *ow = c->ow;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  int shard_index = c->shard_index;
+
+// Offensive stun (may have range, chance, modifier)
+{
+  float stun_min = dbr_get_float_fast(data, INT_offensiveStunMin, shard_index);
+  float stun_max = dbr_get_float_fast(data, INT_offensiveStunMax, shard_index);
+  float stun_dur_min = dbr_get_float_fast(data, INT_offensiveStunDurationMin, shard_index);
+  float stun_lo = (stun_dur_min > 0) ? stun_dur_min : stun_min;
+  float stun_hi = (stun_max > stun_lo) ? stun_max : 0;
+
+  if(stun_lo > 0)
+  {
+    char val_str[64];
+
+    if(stun_hi > stun_lo)
+      snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", stun_lo, stun_hi);
+    else
+      snprintf(val_str, sizeof(val_str), "%.1f", stun_lo);
+
+    float stun_chance = dbr_get_float_fast(data, INT_offensiveStunChance, shard_index);
+
+    if(stun_chance > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Stun</span>\n", color, indent, stun_chance, val_str);
+    else
+      buf_write(ow, "<span color='%s'>%s%s second(s) of Stun</span>\n", color, indent, val_str);
+  }
+
+  float stun_mod = dbr_get_float_fast(data, INT_offensiveStunModifier, shard_index);
+
+  if(fabs(stun_mod) > 0.001f)
+    buf_write(ow, "<span color='%s'>%s%+d%% Stun Duration</span>\n", color, indent, (int)round(stun_mod));
+}
+
+// Offensive fumble (melee) and projectile fumble (Impaired Aim -- ranged).
+// The stat's Min value IS the fumble chance percentage (the game's
+// DamageDurationFumble tag: "{value}% Chance to Fumble attacks"); the
+// separate *FumbleChance field is the usual chance-of-effect wrapper.
+{
+  static const struct { const char **min_int; const char **max_int; const char **dur_int; const char **chance_int; const char *label; } fumble_types[] = {
+    {&INT_offensiveFumbleMin, &INT_offensiveFumbleMax, &INT_offensiveFumbleDurationMin, &INT_offensiveFumbleChance, "Chance to Fumble attacks"},
+    {&INT_offensiveProjectileFumbleMin, &INT_offensiveProjectileFumbleMax, &INT_offensiveProjectileFumbleDurationMin, &INT_offensiveProjectileFumbleChance, "Chance of Impaired Aim"},
+    {NULL, NULL, NULL, NULL, NULL}
+  };
+
+  for(int f = 0; fumble_types[f].min_int; f++)
+  {
+    float mn = dbr_get_float_fast(data, *fumble_types[f].min_int, shard_index);
+
+    if(mn <= 0)
+      continue;
+
+    float mx = dbr_get_float_fast(data, *fumble_types[f].max_int, shard_index);
+    float dur = dbr_get_float_fast(data, *fumble_types[f].dur_int, shard_index);
+    float ch = dbr_get_float_fast(data, *fumble_types[f].chance_int, shard_index);
+    char val_str[64];
+
+    if(mx > mn)
+      snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", mn, mx);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f%%", mn);
+
+    char dur_str[48] = "";
+
+    if(dur > 0)
+      snprintf(dur_str, sizeof(dur_str), " for %.1f Seconds", dur);
+
+    if(ch > 0 && ch < 100)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s%s</span>\n", color, indent, ch, val_str, fumble_types[f].label, dur_str);
+    else
+      buf_write(ow, "<span color='%s'>%s%s %s%s</span>\n", color, indent, val_str, fumble_types[f].label, dur_str);
+  }
+}
+
+// Offensive freeze (may have range)
+{
+  float freeze_min = dbr_get_float_fast(data, INT_offensiveFreezeMin, shard_index);
+  float freeze_max = dbr_get_float_fast(data, INT_offensiveFreezeMax, shard_index);
+  float freeze_dur_min = dbr_get_float_fast(data, INT_offensiveFreezeDurationMin, shard_index);
+  float lo = (freeze_dur_min > 0) ? freeze_dur_min : freeze_min;
+  float hi = (freeze_max > lo) ? freeze_max : 0;
+
+  if(lo > 0)
+  {
+    char val_str[64];
+
+    if(hi > lo)
+      snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", lo, hi);
+    else
+      snprintf(val_str, sizeof(val_str), "%.1f", lo);
+
+    float freeze_chance = dbr_get_float_fast(data, INT_offensiveFreezeChance, shard_index);
+
+    if(freeze_chance > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Freeze</span>\n", color, indent, freeze_chance, val_str);
+    else
+      buf_write(ow, "<span color='%s'>%s%s second(s) of Freeze</span>\n", color, indent, val_str);
+  }
+}
+
+// Offensive sleep (range, chance, modifier — Atlantis content)
+{
+  float sleep_min = dbr_get_float_fast(data, INT_offensiveSleepMin, shard_index);
+  float sleep_max = dbr_get_float_fast(data, INT_offensiveSleepMax, shard_index);
+  float sleep_dur_min = dbr_get_float_fast(data, INT_offensiveSleepDurationMin, shard_index);
+  float lo = (sleep_dur_min > 0) ? sleep_dur_min : sleep_min;
+  float hi = (sleep_max > lo) ? sleep_max : 0;
+
+  if(lo > 0)
+  {
+    char val_str[64];
+
+    if(hi > lo)
+      snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", lo, hi);
+    else
+      snprintf(val_str, sizeof(val_str), "%.1f", lo);
+
+    float sleep_chance = dbr_get_float_fast(data, INT_offensiveSleepChance, shard_index);
+
+    if(sleep_chance > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Sleep</span>\n", color, indent, sleep_chance, val_str);
+    else
+      buf_write(ow, "<span color='%s'>%s%s second(s) of Sleep</span>\n", color, indent, val_str);
+  }
+
+  float sleep_mod = dbr_get_float_fast(data, INT_offensiveSleepModifier, shard_index);
+
+  if(fabs(sleep_mod) > 0.001f)
+    buf_write(ow, "<span color='%s'>%s%+d%% Sleep Duration</span>\n", color, indent, (int)round(sleep_mod));
+}
+}
+
+static void
+emit_offensive_debuffs(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  BufWriter *ow = c->ow;
+  const char *color = c->color;
+  const char *indent = c->indent;
+  int shard_index = c->shard_index;
+
+// Pierce Ratio modifier ("of Piercing" affixes).  The raw ratio renders in
+// the weapon-base block above, next to base damage, as the game does.
+{
+  float pr_mod = dbr_get_float_fast(data, INT_offensivePierceRatioModifier, shard_index);
+  float pr_mod_chance = dbr_get_float_fast(data, INT_offensivePierceRatioModifierChance, shard_index);
+
+  if(fabs(pr_mod) > 0.001f)
+  {
+    if(pr_mod_chance > 0 && pr_mod_chance < 100)
+      buf_write(w, "<span color='%s'>%.1f%% Chance of %+d%% increased Pierce Ratio</span>\n", color, pr_mod_chance, (int)round(pr_mod));
+    else
+      buf_write(w, "<span color='%s'>%+d%% increased Pierce Ratio</span>\n", color, (int)round(pr_mod));
+  }
+}
+
+// Offensive petrify
+{
+  float petrify_min = dbr_get_float_fast(data, INT_offensivePetrifyMin, shard_index);
+  float petrify_dur = dbr_get_float_fast(data, INT_offensivePetrifyDurationMin, shard_index);
+
+  if(petrify_dur <= 0)
+    petrify_dur = petrify_min;
+
+  if(petrify_dur > 0)
+  {
+    float petrify_chance = dbr_get_float_fast(data, INT_offensivePetrifyChance, shard_index);
+
+    if(petrify_chance > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f second(s) of Petrify</span>\n", color, indent, petrify_chance, petrify_dur);
+
+    else
+      buf_write(ow, "<span color='%s'>%s%.1f second(s) of Petrify</span>\n", color, indent, petrify_dur);
+  }
+}
+
+// Mind control (offensiveConvertMin -- duration-based conversion of enemies)
+{
+  float convert_min = dbr_get_float_fast(data, INT_offensiveConvertMin, shard_index);
+
+  if(convert_min > 0)
+  {
+    float convert_chance = dbr_get_float_fast(data, INT_offensiveConvertChance, shard_index);
+
+    if(convert_chance > 0 && convert_chance < 100)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f Seconds of Mind Control</span>\n", color, indent, convert_chance, convert_min);
+    else
+      buf_write(ow, "<span color='%s'>%s%.1f Seconds of Mind Control</span>\n", color, indent, convert_min);
+  }
+}
+
+// Offensive confusion
+{
+  float confuse_min = dbr_get_float_fast(data, INT_offensiveConfusionMin, shard_index);
+  float confuse_max = dbr_get_float_fast(data, INT_offensiveConfusionMax, shard_index);
+  float confuse_dur = dbr_get_float_fast(data, INT_offensiveConfusionDurationMin, shard_index);
+
+  if(confuse_min > 0)
+  {
+    float confuse_chance = dbr_get_float_fast(data, INT_offensiveConfusionChance, shard_index);
+    float val = confuse_dur > 0 ? confuse_dur : confuse_min;
+    float val_max = confuse_max > val ? confuse_max : 0;
+
+    if(confuse_chance > 0)
+    {
+      if(val_max > 0)
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f ~ %.1f second(s) of Confusion</span>\n", color, indent, confuse_chance, val, val_max);
+      else
+        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f second(s) of Confusion</span>\n", color, indent, confuse_chance, val);
+    }
+
+    else
+    {
+      if(val_max > 0)
+        buf_write(ow, "<span color='%s'>%s%.1f ~ %.1f second(s) of Confusion</span>\n", color, indent, val, val_max);
+      else
+        buf_write(ow, "<span color='%s'>%s%.1f second(s) of Confusion</span>\n", color, indent, val);
+    }
+  }
+}
+
+// Fear
+{
+  float fear_min = dbr_get_float_fast(data, INT_offensiveFearMin, shard_index);
+  float fear_max = dbr_get_float_fast(data, INT_offensiveFearMax, shard_index);
+
+  if(fear_min > 0)
+  {
+    if(fear_max > fear_min)
+      buf_write(ow, "<span color='%s'>%s%.1f ~ %.1f second(s) of Fear</span>\n", color, indent, fear_min, fear_max);
+
+    else
+      buf_write(ow, "<span color='%s'>%s%.1f second(s) of Fear</span>\n", color, indent, fear_min);
+  }
+}
+
+// Total damage reduction (debuff applied to enemies)
+{
+  float tdmg_min = dbr_get_float_fast(data, INT_offensiveTotalDamageReductionPercentMin, shard_index);
+  float tdmg_dur = dbr_get_float_fast(data, INT_offensiveTotalDamageReductionPercentDurationMin, shard_index);
+
+  if(tdmg_min > 0)
+  {
+    if(tdmg_dur > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage for %.1f Seconds</span>\n", color, indent, tdmg_min, tdmg_dur);
+
+    else
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage</span>\n", color, indent, tdmg_min);
+  }
+}
+
+// Reduced Offensive Ability debuff (applied to enemies)
+{
+  float oa_mod = dbr_get_float_fast(data, INT_offensiveSlowOffensiveAbilityModifier, shard_index);
+  float oa_dur = dbr_get_float_fast(data, INT_offensiveSlowOffensiveAbilityDurationMin, shard_index);
+
+  if(fabs(oa_mod) > 0.001f && oa_dur > 0)
+    buf_write(ow, "<span color='%s'>%s%+d%% Offensive Ability for %.1f Seconds</span>\n", color, indent, (int)round(-oa_mod), oa_dur);
+}
+
+// Reduced Defensive Ability debuff (applied to enemies)
+{
+  float da_mod = dbr_get_float_fast(data, INT_offensiveSlowOffensiveReductionModifier, shard_index);
+  float da_dur = dbr_get_float_fast(data, INT_offensiveSlowOffensiveReductionDurationMin, shard_index);
+
+  if(fabs(da_mod) > 0.001f && da_dur > 0)
+    buf_write(ow, "<span color='%s'>%s%+d%% Defensive Ability for %.1f Seconds</span>\n", color, indent, (int)round(-da_mod), da_dur);
+}
+
+// Reduced Defensive/Offensive Ability proc-style (Min/Max/Chance, applied to enemies)
+{
+  static const struct {
+    const char **min; const char **max; const char **dur; const char **chance; const char *label;
+  } ability_debuffs[] = {
+    {&INT_offensiveSlowDefensiveAbilityMin, &INT_offensiveSlowDefensiveAbilityMax, &INT_offensiveSlowDefensiveAbilityDurationMin, &INT_offensiveSlowDefensiveAbilityChance, "Reduced Defensive Ability"},
+    {&INT_offensiveSlowOffensiveAbilityMin, &INT_offensiveSlowOffensiveAbilityMax, &INT_offensiveSlowOffensiveAbilityDurationMin, &INT_offensiveSlowOffensiveAbilityChance, "Reduced Offensive Ability"},
+  };
+
+  for(int ad = 0; ad < (int)(sizeof ability_debuffs / sizeof ability_debuffs[0]); ad++)
+  {
+    float mn = dbr_get_float_fast(data, *ability_debuffs[ad].min, shard_index);
+    float dur = dbr_get_float_fast(data, *ability_debuffs[ad].dur, shard_index);
+
+    if(mn <= 0 || dur <= 0)
+      continue;
+
+    float mx = dbr_get_float_fast(data, *ability_debuffs[ad].max, shard_index);
+    float ch = dbr_get_float_fast(data, *ability_debuffs[ad].chance, shard_index);
+
+    char val_str[64];
+
+    if(mx > mn)
+      snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", mn, mx);
+    else
+      snprintf(val_str, sizeof(val_str), "%.0f", mn);
+
+    if(ch > 0 && ch < 100)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s for %.1f Seconds</span>\n",
+                color, indent, ch, val_str, ability_debuffs[ad].label, dur);
+    else
+      buf_write(ow, "<span color='%s'>%s%s %s for %.1f Seconds</span>\n",
+                color, indent, val_str, ability_debuffs[ad].label, dur);
+  }
+}
+
+// Slow total speed (with optional chance and duration)
+{
+  float slow_min = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedMin, shard_index);
+
+  if(slow_min > 0)
+  {
+    float slow_ch = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedChance, shard_index);
+    float slow_dur = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedDurationMin, shard_index);
+
+    if(slow_ch > 0 && slow_dur > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Total Speed for %.1f Seconds</span>\n", color, indent, slow_ch, slow_min, slow_dur);
+    else if(slow_dur > 0)
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed for %.1f Seconds</span>\n", color, indent, slow_min, slow_dur);
+    else
+      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed</span>\n", color, indent, slow_min);
+  }
+}
+}
+
+static void
+emit_petrify_and_racial(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  const char *color = c->color;
+  int shard_index = c->shard_index;
+
+// -- End of offensive sections --
+// (non-offensive sections follow below, then chance group is flushed at the end)
+
+// (Shield block renders in the weapon/shield base block near the top.)
+
+// Petrify resistance (% reduced petrify duration)
+{
+  float val = dbr_get_float_fast(data, INT_defensivePetrify, shard_index);
+
+  if(val > 0)
+    buf_write(w, "<span color='%s'>%.0f%% Reduced Petrify Duration</span>\n", color, val);
+}
+
+// Racial bonus — only meaningful with a named race. The game format spec is
+// "...{%s1}" with the race substituted in; with no racialBonusRace the engine
+// (and TQVaultAE's GetRacialBonus) emit nothing. Some skill/aura records carry
+// an internal racialBonus value with no race (e.g. Dream's Trance of Wrath has
+// racialBonusPercentDefense=100 and no race) — it must NOT be rendered as
+// "100% less damage from Enemies".
+{
+  TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
+  const char *race = (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
+                       ? rv->value.str[0] : NULL;
+
+  if(race)
+  {
+    float dmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
+
+    if(fabs(dmg) > 0.001f)
+      buf_write(w, "<span color='%s'>%+d%% Damage to %s</span>\n", color, (int)round(dmg), race);
+
+    float abs_dmg = dbr_get_float_fast(data, INT_racialBonusAbsoluteDamage, shard_index);
+
+    if(fabs(abs_dmg) > 0.001f)
+      buf_write(w, "<span color='%s'>%+d Damage to %s</span>\n", color, (int)round(abs_dmg), race);
+
+    float def = dbr_get_float_fast(data, INT_racialBonusPercentDefense, shard_index);
+
+    if(fabs(def) > 0.001f)
+      buf_write(w, "<span color='%s'>%d%% less damage from %s</span>\n", color, (int)round(def), race);
+
+    float abs_def = dbr_get_float_fast(data, INT_racialBonusAbsoluteDefense, shard_index);
+
+    if(fabs(abs_def) > 0.001f)
+      buf_write(w, "<span color='%s'>%d Less Damage from %s</span>\n", color, (int)round(abs_def), race);
+  }
+}
+}
+
+static void
+emit_skill_augments(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  TQTranslation *tr = c->tr;
+  BufWriter *w = c->w;
+  const char *color = c->color;
+  const char *skill_color = c->skill_color;
+  int shard_index = c->shard_index;
+
+// Mastery augmentation: "+N to all skills in X Mastery"
+for(uint32_t i = 0; i < data->num_vars; i++)
+{
+  if(!data->vars[i].name)
+    continue;
+
+  if(strncasecmp(data->vars[i].name, "augmentMasteryLevel", 19) == 0)
+  {
+    TQVariable *v = &data->vars[i];
+    int idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
+
+    if(idx < 0)
+      idx = 0;
+
+    float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx];
 
     if(fabs(val) < 0.001f)
       continue;
 
-    if(found > 0)
-    {
-      size_t len = strlen(buf);
+    char mastery_var[64];
 
-      if(len < sizeof(buf) - 3)
-      {
-        buf[len] = ',';
-        buf[len+1] = ' ';
-        buf[len+2] = '\0';
-      }
-    }
+    snprintf(mastery_var, sizeof(mastery_var), "augmentMasteryName%s", data->vars[i].name + 19);
 
-    char part[80];
+    const char *mastery_var_int = arz_intern(mastery_var);
+    TQVariable *mv = arz_record_get_var(data, mastery_var_int);
+    const char *mastery_path = (mv && mv->type == TQ_VAR_STRING && mv->count > 0) ? mv->value.str[0] : NULL;
 
-    snprintf(part, sizeof(part), extra_simple[e].fmt, (int)roundf(val));
-
-    size_t cur = strlen(buf), plen = strlen(part);
-
-    if(cur + plen < sizeof(buf) - 1)
-      memcpy(buf + cur, part, plen + 1);
-
-    found++;
-  }
-
-  // Flat retaliation (may have chance)
-  static const struct { const char **val; const char **chance; const char *label; } extra_retal[] = {
-    {&INT_retaliationPhysicalMin,  &INT_retaliationPhysicalChance,  "Physical Retaliation"},
-    {&INT_retaliationFireMin,      &INT_retaliationFireChance,      "Fire Retaliation"},
-    {&INT_retaliationColdMin,      &INT_retaliationColdChance,      "Cold Retaliation"},
-    {&INT_retaliationLightningMin, &INT_retaliationLightningChance, "Lightning Retaliation"},
-    {&INT_retaliationPierceMin,    &INT_retaliationPierceChance,    "Pierce Retaliation"},
-  };
-
-  for(int e = 0; e < (int)(sizeof extra_retal / sizeof extra_retal[0]) && found < 3; e++)
-  {
-    float val = dbr_get_float_fast(data, *extra_retal[e].val, 0);
-
-    if(val < 0.001f)
+    if(!mastery_path || !mastery_path[0])
       continue;
 
-    float chance = dbr_get_float_fast(data, *extra_retal[e].chance, 0);
+    const char *mastery_name = "Unknown Mastery";
+    const char *name_tag = get_record_variable_string(mastery_path, INT_skillDisplayName);
 
-    if(found > 0)
+    if(name_tag)
     {
-      size_t len = strlen(buf);
+      const char *translated = translation_get(tr, name_tag);
 
-      if(len < sizeof(buf) - 3)
-      {
-        buf[len] = ',';
-        buf[len+1] = ' ';
-        buf[len+2] = '\0';
-      }
+      if(translated)
+        mastery_name = translated;
     }
 
-    char part[80];
-
-    if(chance > 0)
-      snprintf(part, sizeof(part), "%.1f%% Chance of %d %s", chance, (int)roundf(val), extra_retal[e].label);
-
-    else
-      snprintf(part, sizeof(part), "%d %s", (int)roundf(val), extra_retal[e].label);
-
-    size_t cur = strlen(buf), plen = strlen(part);
-
-    if(cur + plen < sizeof(buf) - 1)
-      memcpy(buf + cur, part, plen + 1);
-
-    found++;
+    buf_write(c->skill, "<span color='%s'>+%d to all skills in %s</span>\n", skill_color, (int)round(val), mastery_name);
   }
+}
 
-  // Damage ranges (min-max pairs from dedicated blocks), with optional chance
-  static const struct { const char **mn; const char **mx; const char **chance; const char *label; } extra_dmg[] = {
-    {&INT_offensivePhysicalMin,     &INT_offensivePhysicalMax,     NULL,                      "Physical Damage"},
-    {&INT_offensiveFireMin,         &INT_offensiveFireMax,         NULL,                      "Fire Damage"},
-    {&INT_offensiveColdMin,         &INT_offensiveColdMax,         NULL,                      "Cold Damage"},
-    {&INT_offensiveLightningMin,    &INT_offensiveLightningMax,    NULL,                      "Lightning Damage"},
-    {&INT_offensivePoisonMin,       &INT_offensivePoisonMax,       NULL,                      "Poison Damage"},
-    {&INT_offensivePierceMin,       &INT_offensivePierceMax,       &INT_offensivePierceChance, "Pierce Damage"},
-    {&INT_offensiveElementalMin,    &INT_offensiveElementalMax,    NULL,                      "Elemental Damage"},
-    {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL,                      "Physical Damage"},
-    {&INT_offensiveBaseLifeMin,     &INT_offensiveBaseLifeMax,     NULL,                      "Vitality Damage"},
-    {&INT_offensiveLifeMin,         &INT_offensiveLifeMax,         &INT_offensiveLifeChance,  "Vitality Damage"},
-  };
+// Skill augmentation: "+N to [Skill Name]"
+for(uint32_t i = 0; i < data->num_vars; i++)
+{
+  if(!data->vars[i].name)
+    continue;
 
-  for(int e = 0; e < (int)(sizeof extra_dmg / sizeof extra_dmg[0]) && found < 3; e++)
+  if(strncasecmp(data->vars[i].name, "augmentSkillLevel", 17) == 0)
   {
-    float mn = dbr_get_float_fast(data, *extra_dmg[e].mn, 0);
+    TQVariable *v = &data->vars[i];
+    int idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
 
-    if(mn < 0.001f)
+    if(idx < 0)
+      idx = 0;
+
+    float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx];
+
+    if(fabs(val) < 0.001f)
       continue;
 
-    float mx = dbr_get_float_fast(data, *extra_dmg[e].mx, 0);
-    float chance = extra_dmg[e].chance ? dbr_get_float_fast(data, *extra_dmg[e].chance, 0) : 0;
+    char skill_var[64];
 
-    if(found > 0)
+    snprintf(skill_var, sizeof(skill_var), "augmentSkillName%s", data->vars[i].name + 17);
+
+    const char *skill_var_int = arz_intern(skill_var);
+    TQVariable *sv = arz_record_get_var(data, skill_var_int);
+    const char *skill_path = (sv && sv->type == TQ_VAR_STRING && sv->count > 0) ? sv->value.str[0] : NULL;
+
+    const char *skill_name = "Unknown Skill";
+
+    if(skill_path)
     {
-      size_t len = strlen(buf);
+      // Follow petSkillName if present (e.g. PetModifier skills)
+      const char *pet_path = get_record_variable_string(skill_path, INT_petSkillName);
+      const char *base_path = (pet_path && pet_path[0]) ? pet_path : skill_path;
+      const char *buff_path = get_record_variable_string(base_path, INT_buffSkillName);
+      const char *lookup_path = (buff_path && buff_path[0]) ? buff_path : base_path;
+      const char *name_tag = get_record_variable_string(lookup_path, INT_skillDisplayName);
 
-      if(len < sizeof(buf) - 3)
-      {
-        buf[len] = ',';
-        buf[len+1] = ' ';
-        buf[len+2] = '\0';
-      }
-    }
-
-    char part[80];
-
-    if(chance > 0)
-    {
-      if(mx > mn)
-        snprintf(part, sizeof(part), "%.0f%% Chance of %.0f-%.0f %s", chance, mn, mx, extra_dmg[e].label);
-
-      else
-        snprintf(part, sizeof(part), "%.0f%% Chance of %.0f %s", chance, mn, extra_dmg[e].label);
-    }
-
-    else
-    {
-      if(mx > mn)
-        snprintf(part, sizeof(part), "%.0f-%.0f %s", mn, mx, extra_dmg[e].label);
-
-      else
-        snprintf(part, sizeof(part), "%.0f %s", mn, extra_dmg[e].label);
-    }
-
-    size_t cur = strlen(buf), plen = strlen(part);
-
-    if(cur + plen < sizeof(buf) - 1)
-      memcpy(buf + cur, part, plen + 1);
-
-    found++;
-  }
-
-  // Energy drain (both DrainMin and DrainRatioMin are percentages)
-  if(found < 3)
-  {
-    float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, 0);
-    float drain_max = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMax, 0);
-    float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, 0);
-    float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, 0);
-    float val = (drain > 0.001f) ? drain : drain_ratio;
-
-    if(val > 0.001f)
-    {
-      if(found > 0)
-      {
-        size_t len = strlen(buf);
-
-        if(len < sizeof(buf) - 3)
-        {
-          buf[len] = ',';
-          buf[len+1] = ' ';
-          buf[len+2] = '\0';
-        }
-      }
-
-      char part[80];
-      char val_str[32];
-
-      if(drain_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f-%.0f", val, drain_max);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f", val);
-
-      if(dmg_ratio > 0.001f)
-        snprintf(part, sizeof(part), "%s%% Energy Drain (%.0f%% as damage)", val_str, dmg_ratio);
-
-      else
-        snprintf(part, sizeof(part), "%s%% Energy Drain", val_str);
-
-      size_t cur = strlen(buf), plen = strlen(part);
-
-      if(cur + plen < sizeof(buf) - 1)
-        memcpy(buf + cur, part, plen + 1);
-
-      found++;
-    }
-  }
-
-  // Racial bonus — requires a named race (see the item-card path for the full
-  // rationale). Skill/aura records carrying a racialBonus value but no
-  // racialBonusRace render nothing, matching the game and TQVaultAE.
-  if(found < 3)
-  {
-    TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
-    const char *race = (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
-                         ? rv->value.str[0] : NULL;
-
-    float rdmg = race ? dbr_get_float_fast(data, INT_racialBonusPercentDamage, 0) : 0.0f;
-
-    if(fabs(rdmg) > 0.001f && found < 3)
-    {
-      if(found > 0)
-      {
-        size_t len = strlen(buf);
-
-        if(len < sizeof(buf) - 3)
-        {
-          buf[len] = ',';
-          buf[len+1] = ' ';
-          buf[len+2] = '\0';
-        }
-      }
-
-      char part[80];
-
-      snprintf(part, sizeof(part), "%+d%% Damage to %s", (int)roundf(rdmg), race);
-
-      size_t cur = strlen(buf), plen = strlen(part);
-
-      if(cur + plen < sizeof(buf) - 1)
-        memcpy(buf + cur, part, plen + 1);
-
-      found++;
-    }
-
-    float rdef = race ? dbr_get_float_fast(data, INT_racialBonusPercentDefense, 0) : 0.0f;
-
-    if(fabs(rdef) > 0.001f && found < 3)
-    {
-      if(found > 0)
-      {
-        size_t len = strlen(buf);
-
-        if(len < sizeof(buf) - 3)
-        {
-          buf[len] = ',';
-          buf[len+1] = ' ';
-          buf[len+2] = '\0';
-        }
-      }
-
-      char part[80];
-
-      snprintf(part, sizeof(part), "%d%% less damage from %s", (int)roundf(rdef), race);
-
-      size_t cur = strlen(buf), plen = strlen(part);
-
-      if(cur + plen < sizeof(buf) - 1)
-        memcpy(buf + cur, part, plen + 1);
-
-      found++;
-    }
-  }
-
-  // Offensive damage modifiers (may have chance qualifier)
-  {
-    static const struct { const char **val; const char **chance; const char *label; } off_mod[] = {
-      {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage"},
-      {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage"},
-      {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage"},
-      {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage"},
-      {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage"},
-      {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage"},
-      {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage"},
-      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damages"},
-      {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage"},
-    };
-
-    for(int e = 0; e < (int)(sizeof off_mod / sizeof off_mod[0]) && found < 3; e++)
-    {
-      float val = dbr_get_float_fast(data, *off_mod[e].val, 0);
-
-      if(fabs(val) < 0.001f)
-        continue;
-
-      float chance = dbr_get_float_fast(data, *off_mod[e].chance, 0);
-
-      if(found > 0)
-      {
-        size_t len = strlen(buf);
-
-        if(len < sizeof(buf) - 3)
-        {
-          buf[len] = ',';
-          buf[len+1] = ' ';
-          buf[len+2] = '\0';
-        }
-      }
-
-      char part[80];
-
-      if(chance > 0 && chance < 100)
-        snprintf(part, sizeof(part), "%.0f%% Chance of %+d%% %s", chance, (int)roundf(val), off_mod[e].label);
-      else
-        snprintf(part, sizeof(part), "%+d%% %s", (int)roundf(val), off_mod[e].label);
-
-      size_t cur = strlen(buf), plen = strlen(part);
-
-      if(cur + plen < sizeof(buf) - 1)
-        memcpy(buf + cur, part, plen + 1);
-
-      found++;
-    }
-  }
-
-  // Mastery augmentation: "+N to all skills in X Mastery"
-  for(uint32_t i = 0; i < data->num_vars && found < 3; i++)
-  {
-    if(!data->vars[i].name)
-      continue;
-
-    if(strncasecmp(data->vars[i].name, "augmentMasteryLevel", 19) == 0)
-    {
-      float val = (data->vars[i].type == TQ_VAR_INT && data->vars[i].count > 0)
-                  ? (float)data->vars[i].value.i32[0]
-                  : (data->vars[i].type == TQ_VAR_FLOAT && data->vars[i].count > 0)
-                    ? data->vars[i].value.f32[0] : 0;
-
-      if(fabs(val) < 0.001f)
-        continue;
-
-      char mastery_var[64];
-
-      snprintf(mastery_var, sizeof(mastery_var), "augmentMasteryName%s", data->vars[i].name + 19);
-
-      const char *mastery_var_int = arz_intern(mastery_var);
-      TQVariable *mv = arz_record_get_var(data, mastery_var_int);
-      const char *mastery_path = (mv && mv->type == TQ_VAR_STRING && mv->count > 0) ? mv->value.str[0] : NULL;
-
-      if(!mastery_path || !mastery_path[0])
-        continue;
-
-      const char *mastery_name = NULL;
-      const char *name_tag = get_record_variable_string(mastery_path, INT_skillDisplayName);
-
-      if(name_tag && tr)
+      if(name_tag)
       {
         const char *translated = translation_get(tr, name_tag);
 
         if(translated)
-          mastery_name = translated;
+          skill_name = translated;
       }
-
-      if(found > 0)
-      {
-        size_t len = strlen(buf);
-
-        if(len < sizeof(buf) - 3)
-        {
-          buf[len] = ',';
-          buf[len+1] = ' ';
-          buf[len+2] = '\0';
-        }
-      }
-
-      char part[128];
-
-      if(mastery_name)
-        snprintf(part, sizeof(part), "+%d to all skills in %s", (int)roundf(val), mastery_name);
-      else
-        snprintf(part, sizeof(part), "+%d to a Mastery", (int)roundf(val));
-
-      size_t cur = strlen(buf), plen = strlen(part);
-
-      if(cur + plen < sizeof(buf) - 1)
-        memcpy(buf + cur, part, plen + 1);
-
-      found++;
     }
-  }
 
-  // Pet bonus
-  if(found == 0)
+    buf_write(c->skill, "<span color='%s'>+%d to %s</span>\n", skill_color, (int)round(val), skill_name);
+  }
+}
+
+// Skill cost/cooldown reductions: merge value + chance into one line.
+// "X% Chance of -Y% Recharge" is one effect; the standalone Chance and
+// value fields should not render as separate lines.
+{
+  static const struct { const char **val; const char **chance; const char *label; } skill_red[] = {
+    {&INT_skillCooldownReduction, &INT_skillCooldownReductionChance, "Recharge"},
+    {&INT_skillManaCostReduction, &INT_skillManaCostReductionChance, "Energy Cost"},
+  };
+
+  for(int s = 0; s < (int)(sizeof skill_red / sizeof skill_red[0]); s++)
   {
-    // Depth-guard the petBonusName self-recursion against cyclic/modded chains.
-    static int pet_depth = 0;
-    const char *pet = record_get_string_fast(data, INT_petBonusName);
+    float val = dbr_get_float_fast(data, *skill_red[s].val, shard_index);
 
-    if(pet && pet[0] && pet_depth < 8)
-    {
-      char *pet_summary;
+    if(val < 0.001f)
+      continue;
 
-      pet_depth++;
-      pet_summary = item_bonus_stat_summary(pet, tr);
-      pet_depth--;
+    float chance = dbr_get_float_fast(data, *skill_red[s].chance, shard_index);
 
-      if(pet_summary)
-      {
-        snprintf(buf, sizeof(buf), "Pets: %s", pet_summary);
-        free(pet_summary);
-        found = 1;
-      }
+    if(chance > 0 && chance < 100)
+      buf_write(w, "<span color='%s'>%.0f%% Chance of -%.0f%% %s</span>\n", color, chance, val, skill_red[s].label);
 
-      else
-      {
-        snprintf(buf, sizeof(buf), "Bonus to All Pets");
-        found = 1;
-      }
-    }
+    else
+      buf_write(w, "<span color='%s'>-%.0f%% %s</span>\n", color, val, skill_red[s].label);
   }
+}
+}
 
-  if(found == 0)
-    return(NULL);
+static void
+emit_attrs_and_resists(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  const char *color = c->color;
+  int shard_index = c->shard_index;
 
-  return(strdup(buf));
+// Standard attr_maps iteration -- O(num_vars) with O(1) per variable
+for(uint32_t i = 0; i < data->num_vars; i++)
+{
+  TQVariable *v = &data->vars[i];
+
+  if(!v->name)
+    continue;
+
+  const char *interned = arz_intern(v->name);
+
+  // skip already-handled vars
+  if(strncasecmp(v->name, "augmentMastery", 14) == 0)
+    continue;
+
+  if(strncasecmp(v->name, "augmentSkill", 12) == 0)
+    continue;
+
+  if(g_hash_table_contains(g_skip_set, interned))
+    continue;
+
+  // O(1) lookup instead of linear scan
+  AttributeMap *am = g_hash_table_lookup(g_attr_map_ht, interned);
+
+  if(!am)
+    continue;
+
+  int val_idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
+
+  if(val_idx < 0)
+    val_idx = 0;
+
+  float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[val_idx] : v->value.f32[val_idx];
+
+  if(fabs(val) < 0.001f)
+    continue;
+
+  char line[256];
+
+  if(am->is_percent || strstr(am->format, "%d") || strstr(am->format, "%+d"))
+    snprintf(line, sizeof(line), am->format, (int)round(val));
+
+  else
+    snprintf(line, sizeof(line), am->format, val);
+
+  buf_write(w, "<span color='%s'>%s</span>\n", color, line);
+}
+
+// Defensive resistances (may have chance)
+{
+  static const struct { const char **val; const char **chance; const char *label; } resist_defs[] = {
+    {&INT_defensiveFire,      &INT_defensiveFireChance,      "Fire"},
+    {&INT_defensiveCold,      &INT_defensiveColdChance,      "Cold"},
+    {&INT_defensiveLightning, &INT_defensiveLightningChance, "Lightning"},
+    {&INT_defensivePoison,    &INT_defensivePoisonChance,    "Poison"},
+    {&INT_defensivePierce,    &INT_defensivePierceChance,    "Pierce"},
+    {&INT_defensiveLife,      &INT_defensiveLifeChance,      "Vitality"},
+    {&INT_defensiveBleeding,  &INT_defensiveBleedingChance,  "Bleeding"},
+    {&INT_defensivePhysical,  &INT_defensivePhysicalChance,  "Physical"},
+    {&INT_defensiveElementalResistance, &INT_defensiveElementalResistanceChance, "Elemental"},
+  };
+
+  for(int ri = 0; ri < (int)(sizeof resist_defs / sizeof resist_defs[0]); ri++)
+  {
+    float rv = dbr_get_float_fast(data, *resist_defs[ri].val, shard_index);
+
+    if(fabs(rv) < 0.001f)
+      continue;
+
+    float rc = dbr_get_float_fast(data, *resist_defs[ri].chance, shard_index);
+
+    if(rc > 0 && rc < 100)
+      buf_write(w, "<span color='%s'>%.0f%% Chance of %+d%% %s Resistance</span>\n", color, rc, (int)round(rv), resist_defs[ri].label);
+
+    else
+      buf_write(w, "<span color='%s'>%+d%% %s Resistance</span>\n", color, (int)round(rv), resist_defs[ri].label);
+  }
+}
+
+// DoT resistances / duration reductions with optional chance
+{
+  static const struct { const char **val; const char **chance; const char *label; } dot_resist[] = {
+    {&INT_defensiveSlowLifeLeach,  &INT_defensiveSlowLifeLeachChance,  "Vitality Decay Resistance"},
+    {&INT_defensiveSlowManaLeach,  &INT_defensiveSlowManaLeachChance,  "Energy Drain Resistance"},
+    {&INT_defensivePoisonDuration, &INT_defensivePoisonDurationChance, "Reduced Poison Duration"},
+  };
+
+  for(int ri = 0; ri < (int)(sizeof dot_resist / sizeof dot_resist[0]); ri++)
+  {
+    float rv = dbr_get_float_fast(data, *dot_resist[ri].val, shard_index);
+
+    if(fabs(rv) < 0.001f)
+      continue;
+
+    float rc = dbr_get_float_fast(data, *dot_resist[ri].chance, shard_index);
+
+    if(rc > 0 && rc < 100)
+      buf_write(w, "<span color='%s'>%.0f%% Chance of %+d%% %s</span>\n", color, rc, (int)round(rv), dot_resist[ri].label);
+    else
+      buf_write(w, "<span color='%s'>%+d%% %s</span>\n", color, (int)round(rv), dot_resist[ri].label);
+  }
+}
+
+// Damage reflected (may have chance)
+{
+  float rv = dbr_get_float_fast(data, INT_defensiveReflect, shard_index);
+
+  if(rv > 0)
+  {
+    float rc = dbr_get_float_fast(data, INT_defensiveReflectChance, shard_index);
+
+    if(rc > 0 && rc < 100)
+      buf_write(w, "<span color='%s'>%.0f%% Chance of %d%% Damage Reflected</span>\n", color, rc, (int)round(rv));
+    else
+      buf_write(w, "<span color='%s'>%d%% Damage Reflected</span>\n", color, (int)round(rv));
+  }
+}
+}
+
+static void
+emit_skill_params(StatEmitCtx *c)
+{
+  TQArzRecordData *data = c->data;
+  BufWriter *w = c->w;
+  const char *color = c->color;
+  int shard_index = c->shard_index;
+
+// Skill parameters: life restored (e.g. Regrowth heal).  Energy cost and
+// recharge render at the top of the card (see the skill-mechanics block).
+{
+  float life = dbr_get_float_fast(data, INT_skillLifeBonus, shard_index);
+
+  if(life > 0)
+    buf_write(w, "<span color='%s'>+%d Health Restored</span>\n", color, (int)round(life));
+}
+
+// Skill parameters: target number
+{
+  float targets = dbr_get_float_fast(data, INT_skillTargetNumber, shard_index);
+
+  if(targets > 0)
+    buf_write(w, "<span color='%s'>Affects up to %d targets</span>\n", color, (int)targets);
+}
+
+// Skill parameters: active duration
+{
+  float duration = dbr_get_float_fast(data, INT_skillActiveDuration, shard_index);
+
+  if(duration > 0)
+    buf_write(w, "<span color='%s'>%.1f Second Duration</span>\n", color, duration);
+}
+
+// Skill parameters: target radius
+{
+  float radius = dbr_get_float_fast(data, INT_skillTargetRadius, shard_index);
+
+  if(radius > 0)
+    buf_write(w, "<span color='%s'>%.1f Meter Radius</span>\n", color, radius);
+}
 }
 
 // Append all stat lines from a single DBR record to a BufWriter.
@@ -1805,1412 +3421,26 @@ add_stats_from_record(const char *record_path, TQTranslation *tr, BufWriter *w, 
   buf_init(&skill_writer, skill_buffer, sizeof(skill_buffer));
   const char *skill_color = "#FFCC00";
 
-  // Skill mechanics lead the card -- energy cost, recharge, then projectile
-  // behaviour -- matching the in-game skill tooltip layout.  These fields only
-  // exist on skill records, so item renders are unaffected.  The game colours
-  // the cost/recharge lines teal (the ^a code in its CooldownTime/SkillManaCost
-  // format tags) independent of the surrounding block colour; mirror that.
-  {
-    float mana_cost = dbr_get_float_fast(data, INT_skillManaCost, shard_index);
-
-    if(mana_cost > 0)
-      buf_write(w, "<span color='#00E5E5'>%d Energy Cost</span>\n", (int)round(mana_cost));
-
-    float cooldown = dbr_get_float_fast(data, INT_skillCooldownTime, shard_index);
-
-    if(cooldown <= 0)
-      cooldown = dbr_get_float_fast(data, INT_refreshTime, shard_index);
-
-    if(cooldown > 0)
-      buf_write(w, "<span color='#00E5E5'>%.1f Second(s) Recharge</span>\n", cooldown);
-
-    float projectiles = dbr_get_float_fast(data, INT_projectileLaunchNumber, shard_index);
-
-    if(projectiles > 0)
-      buf_write(w, "<span color='%s'>%d Projectile(s)</span>\n", color, (int)projectiles);
-
-    float pierce_chance = dbr_get_float_fast(data, INT_projectilePiercingChance, shard_index);
-
-    if(pierce_chance > 0)
-      buf_write(w, "<span color='%s'>%.0f%% Chance to pass through Enemies</span>\n", color, pierce_chance);
-
-    // The game's own MinMax tag uses "-" here, not the "~" of damage ranges.
-    float frag_min = dbr_get_float_fast(data, INT_projectileFragmentsLaunchNumberMin, shard_index);
-    float frag_max = dbr_get_float_fast(data, INT_projectileFragmentsLaunchNumberMax, shard_index);
-
-    if(frag_min > 0)
-    {
-      if(frag_max > frag_min)
-        buf_write(w, "<span color='%s'>%d - %d Fragments</span>\n", color, (int)frag_min, (int)frag_max);
-      else
-        buf_write(w, "<span color='%s'>%d Fragments</span>\n", color, (int)frag_min);
-    }
-  }
-
-  // Armor first -- matches in-game tooltip ordering for armor pieces.
-  {
-    float armor = dbr_get_float_fast(data, arz_intern("defensiveProtection"), shard_index);
-
-    if(armor > 0)
-      buf_write(w, "<span color='%s'>%d Armor</span>\n", color, (int)round(armor));
-  }
-
-  // Shield block leads the shield's base block, in the game's single-line
-  // format ("11% Chance to block 94 damage", tagShieldBlockInfo); odd records
-  // carrying only one half keep a standalone line.  defensiveAbsorption is
-  // only meaningful on shields (paired with block); non-shield items (e.g.
-  // greaves) sometimes carry a stray value that the game engine ignores --
-  // suppress it here too.
-  {
-    float blk_val = dbr_get_float_fast(data, INT_defensiveBlock, shard_index);
-    float blk_ch = dbr_get_float_fast(data, INT_defensiveBlockChance, shard_index);
-    float blk_abs = dbr_get_float_fast(data, INT_defensiveAbsorption, shard_index);
-
-    if(blk_ch > 0 && blk_val > 0)
-      buf_write(w, "<span color='%s'>%.0f%% Chance to block %.0f damage</span>\n", color, blk_ch, blk_val);
-
-    else if(blk_ch > 0)
-      buf_write(w, "<span color='%s'>%.0f%% Shield Block Chance</span>\n", color, blk_ch);
-
-    else if(blk_val > 0)
-      buf_write(w, "<span color='%s'>%.0f Damage Blocked</span>\n", color, blk_val);
-
-    if(blk_abs > 0 && (blk_val > 0 || blk_ch > 0))
-      buf_write(w, "<span color='%s'>%.0f%% Damage Absorption</span>\n", color, blk_abs);
-  }
-
-  // Flat damage ranges (min-max), with optional chance qualifier.  Weapon base
-  // damage renders first, then the pierce ratio and attack-speed lines, then
-  // bonus damage -- the in-game weapon tooltip layout.
-  {
-    // prefix: stat name segment used to look up offensive<Prefix>Global.
-    // is_base: weapon base damage (always top-level).  NULL prefix on
-    // non-base entries means "no Global lookup" (treat like top-level).
-    typedef struct { const char **min_int; const char **max_int; const char **chance_int; const char *label; bool is_base; const char *prefix; } DamageRow;
-
-    // The game labels base physical damage plainly "Damage" (DamageBasePhysical).
-    static const DamageRow base_damage_types[] = {
-      {&INT_offensiveBasePhysicalMin, &INT_offensiveBasePhysicalMax, NULL, "Damage", true, NULL},
-      {&INT_offensiveBaseColdMin, &INT_offensiveBaseColdMax, &INT_offensiveBaseColdChance, "Cold Damage", true, NULL},
-      {&INT_offensiveBaseFireMin, &INT_offensiveBaseFireMax, &INT_offensiveBaseFireChance, "Fire Damage", true, NULL},
-      {&INT_offensiveBaseLightningMin, &INT_offensiveBaseLightningMax, &INT_offensiveBaseLightningChance, "Lightning Damage", true, NULL},
-      {&INT_offensiveBasePoisonMin, &INT_offensiveBasePoisonMax, NULL, "Poison Damage", true, NULL},
-      {&INT_offensiveBaseLifeMin, &INT_offensiveBaseLifeMax, NULL, "Vitality Damage", true, NULL},
-      {NULL, NULL, NULL, NULL, false, NULL}
-    };
-    static const DamageRow bonus_damage_types[] = {
-      {&INT_offensivePhysicalMin, &INT_offensivePhysicalMax, &INT_offensivePhysicalChance, "Physical Damage", false, "Physical"},
-      {&INT_offensiveFireMin, &INT_offensiveFireMax, &INT_offensiveFireChance, "Fire Damage", false, "Fire"},
-      {&INT_offensiveColdMin, &INT_offensiveColdMax, &INT_offensiveColdChance, "Cold Damage", false, "Cold"},
-      {&INT_offensiveLightningMin, &INT_offensiveLightningMax, &INT_offensiveLightningChance, "Lightning Damage", false, "Lightning"},
-      {&INT_offensivePoisonMin, &INT_offensivePoisonMax, &INT_offensivePoisonChance, "Poison Damage", false, "Poison"},
-      {&INT_offensivePierceMin, &INT_offensivePierceMax, &INT_offensivePierceChance, "Piercing Damage", false, "Pierce"},
-      {&INT_offensiveElementalMin, &INT_offensiveElementalMax, &INT_offensiveElementalChance, "Elemental Damage", false, "Elemental"},
-      {&INT_offensiveManaLeechMin, &INT_offensiveManaLeechMax, NULL, "Mana Leech", false, NULL},
-      {&INT_offensiveLifeMin, &INT_offensiveLifeMax, &INT_offensiveLifeChance, "Vitality Damage", false, "Life"},
-      {&INT_offensiveBonusPhysicalMin, &INT_offensiveBonusPhysicalMax, &INT_offensiveBonusPhysicalChance, "Bonus Damage", false, "BonusPhysical"},
-      {NULL, NULL, NULL, NULL, false, NULL}
-    };
-    const DamageRow *tables[2] = {base_damage_types, bonus_damage_types};
-
-    // Old-format weapons (original TQ records) store their base swing damage
-    // in offensivePhysicalMin/Max rather than offensiveBase*; the engine
-    // treats it as base damage on any Weapon* class.  Pull it into the base
-    // phase (labelled plainly "Damage") unless real offensiveBase physical
-    // damage exists or a chance qualifier marks it as a proc bonus.
-    bool weapon_base_physical = cls && strncasecmp(cls, "Weapon", 6) == 0
-        && dbr_get_float_fast(data, INT_offensivePhysicalMin, shard_index) > 0
-        && dbr_get_float_fast(data, INT_offensiveBasePhysicalMin, shard_index) <= 0
-        && dbr_get_float_fast(data, INT_offensivePhysicalChance, shard_index) <= 0;
-
-    for(int t = 0; t < 2; t++)
-    {
-      const DamageRow *damage_types = tables[t];
-
-      if(t == 0 && weapon_base_physical)
-      {
-        float mn = dbr_get_float_fast(data, INT_offensivePhysicalMin, shard_index);
-        float mx = dbr_get_float_fast(data, INT_offensivePhysicalMax, shard_index);
-
-        if(mx > mn)
-          buf_write(w, "<span color='%s'>%d ~ %d Damage</span>\n", color, (int)round(mn), (int)round(mx));
-        else
-          buf_write(w, "<span color='%s'>%d Damage</span>\n", color, (int)round(mn));
-      }
-
-      for(int d = 0; damage_types[d].min_int; d++)
-      {
-        if(t > 0 && weapon_base_physical && damage_types[d].min_int == &INT_offensivePhysicalMin)
-          continue;
-
-        float mn = dbr_get_float_fast(data, *damage_types[d].min_int, shard_index);
-        float mx = dbr_get_float_fast(data, *damage_types[d].max_int, shard_index);
-
-        if(mn > 0)
-        {
-          float chance = damage_types[d].chance_int ? dbr_get_float_fast(data, *damage_types[d].chance_int, shard_index) : 0;
-          const char *dmg_label = damage_types[d].label;
-
-          if(chance > 0)
-          {
-            if(mx > mn)
-              buf_write(w, "<span color='%s'>%.1f%% Chance of %d ~ %d %s</span>\n", color, chance, (int)round(mn), (int)round(mx), dmg_label);
-
-            else
-              buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n", color, chance, (int)round(mn), dmg_label);
-          }
-
-          else
-          {
-            // Base weapon damage and stats whose Global flag is false stay
-            // outside the chance block; only stats with Global=true go inside.
-            bool in_chance = !damage_types[d].is_base
-                             && global_chance > 0
-                             && offensive_proc_in_chance(data, damage_types[d].prefix, shard_index);
-            BufWriter *target = in_chance ? ow : w;
-            const char *target_indent = in_chance ? indent : "";
-
-            if(mx > mn)
-              buf_write(target, "<span color='%s'>%s%d ~ %d %s</span>\n", color, target_indent, (int)round(mn), (int)round(mx), dmg_label);
-
-            else
-              buf_write(target, "<span color='%s'>%s%d %s</span>\n", color, target_indent, (int)round(mn), dmg_label);
-          }
-        }
-      }
-
-      if(t > 0)
-        continue;
-
-      // Between the weapon's base damage and its bonus stats: the pierce ratio
-      // ("x% Pierce Ratio", part of the DamageBase* family in-game) and the
-      // attack-speed line, followed by a blank separator -- the in-game weapon
-      // header block.  Weapons and shields only; skill/affix records lack the
-      // speed tag and item class, so this is a no-op for them.
-      {
-        float pr_min = dbr_get_float_fast(data, INT_offensivePierceRatioMin, shard_index);
-        float pr_max = dbr_get_float_fast(data, INT_offensivePierceRatioMax, shard_index);
-
-        if(pr_min > 0)
-        {
-          char val_str[64];
-
-          if(pr_max > pr_min)
-            snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", pr_min, pr_max);
-          else
-            snprintf(val_str, sizeof(val_str), "%.0f%%", pr_min);
-
-          float pr_chance = dbr_get_float_fast(data, INT_offensivePierceRatioChance, shard_index);
-
-          if(pr_chance > 0 && pr_chance < 100)
-            buf_write(w, "<span color='%s'>%.1f%% Chance of %s Pierce Ratio</span>\n", color, pr_chance, val_str);
-          else
-            buf_write(w, "<span color='%s'>%s Pierce Ratio</span>\n", color, val_str);
-        }
-
-        const char *speed_tag = record_get_string_fast(data, INT_characterBaseAttackSpeedTag);
-
-        if(speed_tag && cls && (strncasecmp(cls, "WeaponMelee_", 12) == 0 ||
-                                strncasecmp(cls, "WeaponHunting_", 14) == 0 ||
-                                strncasecmp(cls, "WeaponMagical_", 14) == 0 ||
-                                strcasecmp(cls, "WeaponArmor_Shield") == 0))
-        {
-          const char *speed_str = tr ? translation_get(tr, speed_tag) : NULL;
-
-          if(speed_str)
-            buf_write(w, "<span color='%s'>%s</span>\n\n", color, speed_str);
-        }
-      }
-    }
-  }
-
-  // ADCTH: attack damage converted to health
-  {
-    float mn = dbr_get_float_fast(data, INT_offensiveLifeLeechMin, shard_index);
-    float mx = dbr_get_float_fast(data, INT_offensiveLifeLeechMax, shard_index);
-
-    if(mn > 0)
-    {
-      bool in_chance = global_chance > 0 && offensive_proc_in_chance(data, "LifeLeech", shard_index);
-      BufWriter *target = in_chance ? ow : w;
-      const char *target_indent = in_chance ? indent : "";
-
-      if(mx > mn)
-        buf_write(target, "<span color='%s'>%s%d%% ~ %d%% of Attack damage converted to Health</span>\n", color, target_indent, (int)round(mn), (int)round(mx));
-
-      else
-        buf_write(target, "<span color='%s'>%s%d%% of Attack damage converted to Health</span>\n", color, target_indent, (int)round(mn));
-    }
-  }
-
-  // DoT: all damage-over-time types with optional chance
-  {
-    static struct { const char **min_int; const char **max_int; const char **dur_int; const char **chance_int; const char *label; } dot_types[] = {
-      {&INT_offensiveSlowFireMin,      &INT_offensiveSlowFireMax,      &INT_offensiveSlowFireDurationMin,      &INT_offensiveSlowFireChance,      "Burn Damage"},
-      {&INT_offensiveSlowLightningMin, &INT_offensiveSlowLightningMax, &INT_offensiveSlowLightningDurationMin, &INT_offensiveSlowLightningChance, "Electrical Burn Damage"},
-      {&INT_offensiveSlowColdMin,      &INT_offensiveSlowColdMax,      &INT_offensiveSlowColdDurationMin,      &INT_offensiveSlowColdChance,      "Frostburn Damage"},
-      {&INT_offensiveSlowPoisonMin,    &INT_offensiveSlowPoisonMax,    &INT_offensiveSlowPoisonDurationMin,    &INT_offensiveSlowPoisonChance,    "Poison Damage"},
-      {&INT_offensiveSlowLifeLeachMin, &INT_offensiveSlowLifeLeachMax, &INT_offensiveSlowLifeLeachDurationMin, &INT_offensiveSlowLifeLeachChance, "Life Leech"},
-      {&INT_offensiveSlowLifeMin,      &INT_offensiveSlowLifeMax,      &INT_offensiveSlowLifeDurationMin,      &INT_offensiveSlowLifeChance,      "Vitality Decay"},
-      {&INT_offensiveSlowManaLeachMin, &INT_offensiveSlowManaLeachMax, &INT_offensiveSlowManaLeachDurationMin, &INT_offensiveSlowManaLeachChance, "Energy Leech"},
-      {&INT_offensiveSlowBleedingMin,  &INT_offensiveSlowBleedingMax,  &INT_offensiveSlowBleedingDurationMin,  &INT_offensiveSlowBleedingChance,  "Bleeding Damage"},
-      {&INT_offensiveSlowPhysicalMin,  &INT_offensiveSlowPhysicalMax,  &INT_offensiveSlowPhysicalDurationMin,  &INT_offensiveSlowPhysicalChance,  "Physical Damage"},
-      {NULL, NULL, NULL, NULL, NULL}
-    };
-
-    for(int d = 0; dot_types[d].min_int; d++)
-    {
-      float mn = dbr_get_float_fast(data, *dot_types[d].min_int, shard_index);
-      float mx = dbr_get_float_fast(data, *dot_types[d].max_int, shard_index);
-      float dur = dbr_get_float_fast(data, *dot_types[d].dur_int, shard_index);
-
-      if(mn > 0 && dur > 0)
-      {
-        float chance = dbr_get_float_fast(data, *dot_types[d].chance_int, shard_index);
-        const char *lbl = dot_types[d].label;
-
-        if(chance > 0)
-        {
-          if(mx > mn)
-            buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f ~ %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, mx * dur, lbl, dur);
-
-          else
-            buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.0f %s over %.1f Seconds</span>\n", color, indent, chance, mn * dur, lbl, dur);
-        }
-
-        else
-        {
-          if(mx > mn)
-            buf_write(ow, "<span color='%s'>%s%.0f ~ %.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, mx * dur, lbl, dur);
-
-          else
-            buf_write(ow, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n", color, indent, mn * dur, lbl, dur);
-        }
-      }
-    }
-  }
-
-  // DoT damage modifiers (may have chance).  Each routes to the chance
-  // block only when its corresponding offensiveSlow*Global flag is set;
-  // otherwise it stays top-level.
-  {
-    static const struct { const char **val; const char **chance; const char *label; const char *prefix; } slow_mod_defs[] = {
-      {&INT_offensiveSlowFireModifier,      &INT_offensiveSlowFireModifierChance,      "Burn Damage",            "SlowFire"},
-      {&INT_offensiveSlowColdModifier,      &INT_offensiveSlowColdModifierChance,      "Frostburn Damage",       "SlowCold"},
-      {&INT_offensiveSlowLightningModifier, &INT_offensiveSlowLightningModifierChance, "Electrical Burn Damage", "SlowLightning"},
-      {&INT_offensiveSlowPoisonModifier,    &INT_offensiveSlowPoisonModifierChance,    "Poison Damage",          "SlowPoison"},
-      {&INT_offensiveSlowLifeModifier,      &INT_offensiveSlowLifeModifierChance,      "Vitality Decay",         "SlowLife"},
-      {&INT_offensiveSlowLifeLeachModifier, &INT_offensiveSlowLifeLeachModifierChance, "Life Leech",             "SlowLifeLeach"},
-      {&INT_offensiveSlowBleedingModifier,  &INT_offensiveSlowBleedingModifierChance,  "Bleeding Damage",        "SlowBleeding"},
-    };
-
-    for(int mi = 0; mi < (int)(sizeof slow_mod_defs / sizeof slow_mod_defs[0]); mi++)
-    {
-      float mv = dbr_get_float_fast(data, *slow_mod_defs[mi].val, shard_index);
-
-      if(fabs(mv) < 0.001f)
-        continue;
-
-      float mc = dbr_get_float_fast(data, *slow_mod_defs[mi].chance, shard_index);
-
-      bool in_chance = global_chance > 0
-                       && offensive_proc_in_chance(data, slow_mod_defs[mi].prefix, shard_index);
-      BufWriter *target = in_chance ? ow : w;
-      const char *target_indent = in_chance ? indent : "";
-
-      if(mc > 0 && mc < 100)
-        buf_write(target, "<span color='%s'>%s%.1f%% Chance of %+d%% %s</span>\n", color, target_indent, mc, (int)round(mv), slow_mod_defs[mi].label);
-
-      else
-        buf_write(target, "<span color='%s'>%s%+d%% %s</span>\n", color, target_indent, (int)round(mv), slow_mod_defs[mi].label);
-    }
-  }
-
-  // Retaliation DoTs (damage over time triggered on retaliation, may have chance)
-  {
-    static const struct {
-      const char **val; const char **max; const char **dur; const char **chance; const char *label;
-    } retal_dots[] = {
-      {&INT_retaliationSlowFireMin,      &INT_retaliationSlowFireMax,      &INT_retaliationSlowFireDurationMin,      &INT_retaliationSlowFireChance,      "Burn Retaliation"},
-      {&INT_retaliationSlowColdMin,      &INT_retaliationSlowColdMax,      &INT_retaliationSlowColdDurationMin,      &INT_retaliationSlowColdChance,      "Frostburn Retaliation"},
-      {&INT_retaliationSlowLightningMin, &INT_retaliationSlowLightningMax, &INT_retaliationSlowLightningDurationMin, &INT_retaliationSlowLightningChance, "Electrical Burn Retaliation"},
-      {&INT_retaliationSlowPoisonMin,    &INT_retaliationSlowPoisonMax,    &INT_retaliationSlowPoisonDurationMin,    &INT_retaliationSlowPoisonChance,    "Poison Retaliation"},
-      {&INT_retaliationSlowLifeMin,      &INT_retaliationSlowLifeMax,      &INT_retaliationSlowLifeDurationMin,      &INT_retaliationSlowLifeChance,      "Vitality Decay Retaliation"},
-      {&INT_retaliationSlowBleedingMin,  &INT_retaliationSlowBleedingMax,  &INT_retaliationSlowBleedingDurationMin,  &INT_retaliationSlowBleedingChance,  "Bleeding Retaliation"},
-      {&INT_retaliationSlowLifeLeachMin, &INT_retaliationSlowLifeLeachMax, &INT_retaliationSlowLifeLeachDurationMin, &INT_retaliationSlowLifeLeachChance, "Life Leech Retaliation"},
-      {&INT_retaliationSlowManaLeachMin, &INT_retaliationSlowManaLeachMax, &INT_retaliationSlowManaLeachDurationMin, &INT_retaliationSlowManaLeachChance, "Energy Leech Retaliation"},
-      {&INT_retaliationSlowAttackSpeedMin, NULL,                           &INT_retaliationSlowAttackSpeedDurationMin, NULL,                               "Reduced Attack Speed Retaliation"},
-    };
-
-    for(int ri = 0; ri < (int)(sizeof retal_dots / sizeof retal_dots[0]); ri++)
-    {
-      float mn = dbr_get_float_fast(data, *retal_dots[ri].val, shard_index);
-      float dur = dbr_get_float_fast(data, *retal_dots[ri].dur, shard_index);
-
-      if(mn <= 0 || dur <= 0)
-        continue;
-
-      float mx = retal_dots[ri].max ? dbr_get_float_fast(data, *retal_dots[ri].max, shard_index) : 0;
-      float ch = retal_dots[ri].chance ? dbr_get_float_fast(data, *retal_dots[ri].chance, shard_index) : 0;
-
-      if(ch > 0 && ch < 100)
-      {
-        if(mx > mn)
-          buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f ~ %.0f %s over %.1f Seconds</span>\n",
-                    color, indent, ch, mn * dur, mx * dur, retal_dots[ri].label, dur);
-        else
-          buf_write(w, "<span color='%s'>%s%.0f%% Chance of %.0f %s over %.1f Seconds</span>\n",
-                    color, indent, ch, mn * dur, retal_dots[ri].label, dur);
-      }
-
-      else
-      {
-        if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%.0f ~ %.0f %s over %.1f Seconds</span>\n",
-                    color, retal_indent, mn * dur, mx * dur, retal_dots[ri].label, dur);
-        else
-          buf_write(rw, "<span color='%s'>%s%.0f %s over %.1f Seconds</span>\n",
-                    color, retal_indent, mn * dur, retal_dots[ri].label, dur);
-      }
-    }
-  }
-
-  // Flat retaliation (may have chance and/or max range)
-  {
-    static const struct {
-      const char **val; const char **max; const char **chance; const char *label;
-    } retal_flat[] = {
-      {&INT_retaliationPhysicalMin,  &INT_retaliationPhysicalMax,  &INT_retaliationPhysicalChance,  "Physical Retaliation"},
-      {&INT_retaliationFireMin,      &INT_retaliationFireMax,      &INT_retaliationFireChance,      "Fire Retaliation"},
-      {&INT_retaliationColdMin,      &INT_retaliationColdMax,      &INT_retaliationColdChance,      "Cold Retaliation"},
-      {&INT_retaliationLightningMin, &INT_retaliationLightningMax, &INT_retaliationLightningChance, "Lightning Retaliation"},
-      {&INT_retaliationPierceMin,    &INT_retaliationPierceMax,    &INT_retaliationPierceChance,    "Pierce Retaliation"},
-      {&INT_retaliationLifeMin,      &INT_retaliationLifeMax,      &INT_retaliationLifeChance,      "Vitality Retaliation"},
-      {&INT_retaliationPoisonMin,    &INT_retaliationPoisonMax,    &INT_retaliationPoisonChance,    "Poison Retaliation"},
-      {&INT_retaliationElementalMin, &INT_retaliationElementalMax, &INT_retaliationElementalChance, "Elemental Retaliation"},
-    };
-
-    for(int ri = 0; ri < (int)(sizeof retal_flat / sizeof retal_flat[0]); ri++)
-    {
-      float mn = dbr_get_float_fast(data, *retal_flat[ri].val, shard_index);
-
-      if(mn <= 0)
-        continue;
-
-      float mx = retal_flat[ri].max ? dbr_get_float_fast(data, *retal_flat[ri].max, shard_index) : 0;
-      float ch = dbr_get_float_fast(data, *retal_flat[ri].chance, shard_index);
-
-      if(ch > 0 && ch < 100)
-      {
-        if(mx > mn)
-          buf_write(w, "<span color='%s'>%.1f%% Chance of %d ~ %d %s</span>\n",
-                    color, ch, (int)round(mn), (int)round(mx), retal_flat[ri].label);
-        else
-          buf_write(w, "<span color='%s'>%.1f%% Chance of %d %s</span>\n",
-                    color, ch, (int)round(mn), retal_flat[ri].label);
-      }
-
-      else
-      {
-        if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%d ~ %d %s</span>\n",
-                    color, retal_indent, (int)round(mn), (int)round(mx), retal_flat[ri].label);
-        else
-          buf_write(rw, "<span color='%s'>%s%d %s</span>\n",
-                    color, retal_indent, (int)round(mn), retal_flat[ri].label);
-      }
-    }
-  }
-
-  // Stun Retaliation (seconds, may have chance + max range)
-  {
-    float mn = dbr_get_float_fast(data, INT_retaliationStunMin, shard_index);
-
-    if(mn > 0)
-    {
-      float mx = dbr_get_float_fast(data, INT_retaliationStunMax, shard_index);
-      float ch = dbr_get_float_fast(data, INT_retaliationStunChance, shard_index);
-
-      if(ch > 0 && ch < 100)
-      {
-        if(mx > mn)
-          buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f ~ %.1f Second Stun Retaliation</span>\n", color, ch, mn, mx);
-        else
-          buf_write(w, "<span color='%s'>%.0f%% Chance of %.1f Second Stun Retaliation</span>\n", color, ch, mn);
-      }
-      else
-      {
-        if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%.1f ~ %.1f Second Stun Retaliation</span>\n", color, retal_indent, mn, mx);
-        else
-          buf_write(rw, "<span color='%s'>%s%.1f Second Stun Retaliation</span>\n", color, retal_indent, mn);
-      }
-    }
-  }
-
-  // % of Current Life Retaliation (may have chance + max range)
-  {
-    float mn = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeMin, shard_index);
-
-    if(mn > 0)
-    {
-      float mx = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeMax, shard_index);
-      float ch = dbr_get_float_fast(data, INT_retaliationPercentCurrentLifeChance, shard_index);
-
-      if(ch > 0 && ch < 100)
-      {
-        if(mx > mn)
-          buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% ~ %.0f%% of Current Life Retaliation</span>\n", color, ch, mn, mx);
-        else
-          buf_write(w, "<span color='%s'>%.0f%% Chance of %.0f%% of Current Life Retaliation</span>\n", color, ch, mn);
-      }
-      else
-      {
-        if(mx > mn)
-          buf_write(rw, "<span color='%s'>%s%.0f%% ~ %.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn, mx);
-        else
-          buf_write(rw, "<span color='%s'>%s%.0f%% of Current Life Retaliation</span>\n", color, retal_indent, mn);
-      }
-    }
-  }
-
-  // Slow / ability / damage-reduction retaliation debuffs (rate, not damage * duration)
-  {
-    static const struct {
-      const char **min; const char **max; const char **dur; const char **chance;
-      const char *label; bool is_percent;
-    } retal_debuffs[] = {
-      {&INT_retaliationSlowRunSpeedMin,         &INT_retaliationSlowRunSpeedMax,         &INT_retaliationSlowRunSpeedDurationMin,         &INT_retaliationSlowRunSpeedChance,         "Slow Retaliation",                          true},
-      {&INT_retaliationSlowDefensiveAbilityMin, &INT_retaliationSlowDefensiveAbilityMax, &INT_retaliationSlowDefensiveAbilityDurationMin, &INT_retaliationSlowDefensiveAbilityChance, "Reduced Defensive Ability Retaliation",     false},
-      {&INT_retaliationSlowOffensiveAbilityMin, &INT_retaliationSlowOffensiveAbilityMax, &INT_retaliationSlowOffensiveAbilityDurationMin, &INT_retaliationSlowOffensiveAbilityChance, "Reduced Offensive Ability Retaliation",     false},
-      {&INT_retaliationSlowOffensiveReductionMin, &INT_retaliationSlowOffensiveReductionMax, &INT_retaliationSlowOffensiveReductionDurationMin, &INT_retaliationSlowOffensiveReductionChance, "Reduced Damage Retaliation",            true},
-    };
-
-    for(int ri = 0; ri < (int)(sizeof retal_debuffs / sizeof retal_debuffs[0]); ri++)
-    {
-      float mn = dbr_get_float_fast(data, *retal_debuffs[ri].min, shard_index);
-      float dur = dbr_get_float_fast(data, *retal_debuffs[ri].dur, shard_index);
-
-      if(mn <= 0 || dur <= 0)
-        continue;
-
-      float mx = dbr_get_float_fast(data, *retal_debuffs[ri].max, shard_index);
-      float ch = dbr_get_float_fast(data, *retal_debuffs[ri].chance, shard_index);
-
-      char val_str[64];
-      const char *pct = retal_debuffs[ri].is_percent ? "%" : "";
-
-      if(mx > mn)
-        snprintf(val_str, sizeof(val_str), "%.0f%s - %.0f%s", mn, pct, mx, pct);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f%s", mn, pct);
-
-      if(ch > 0 && ch < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of %s %s for %.1f Seconds</span>\n",
-                  color, ch, val_str, retal_debuffs[ri].label, dur);
-      else
-        buf_write(rw, "<span color='%s'>%s%s %s for %.1f Seconds</span>\n",
-                  color, retal_indent, val_str, retal_debuffs[ri].label, dur);
-    }
-  }
-
-  // Reduced Armor (value + duration)
-  {
-    float val = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionMin, shard_index);
-    float dur = dbr_get_float_fast(data, INT_offensiveSlowDefensiveReductionDurationMin, shard_index);
-
-    if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor for %.1f Seconds</span>\n", color, indent, val, dur);
-
-    else if(val > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f Reduced Armor</span>\n", color, indent, val);
-  }
-
-  // Reduced Resistances (value + duration, may have chance and max range)
-  {
-    float val = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteMin, shard_index);
-    float val_max = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteMax, shard_index);
-    float dur = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteDurationMin, shard_index);
-    float ch = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionAbsoluteChance, shard_index);
-
-    if(val > 0)
-    {
-      char val_str[64];
-
-      if(val_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", val, val_max);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f", val);
-
-      if(ch > 0 && ch < 100 && dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s Reduced Resistances for %.1f Seconds</span>\n", color, indent, ch, val_str, dur);
-      else if(dur > 0)
-        buf_write(ow, "<span color='%s'>%s%s Reduced Resistances for %.1f Seconds</span>\n", color, indent, val_str, dur);
-      else
-        buf_write(ow, "<span color='%s'>%s%s Reduced Resistances</span>\n", color, indent, val_str);
-    }
-  }
-
-  // Reduced Resistances (percent variant: e.g. "30% Reduced Resistances for 3 Sec")
-  {
-    float val = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentMin, shard_index);
-    float dur = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentDurationMin, shard_index);
-    float ch = dbr_get_float_fast(data, INT_offensiveTotalResistanceReductionPercentChance, shard_index);
-
-    if(val > 0)
-    {
-      if(ch > 0 && ch < 100 && dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Resistances for %.1f Seconds</span>\n", color, indent, ch, val, dur);
-      else if(dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances for %.1f Seconds</span>\n", color, indent, val, dur);
-      else
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Resistances</span>\n", color, indent, val);
-    }
-  }
-
-  // Skill disruption protection (defensive, no duration) / offensive skill disruption (with duration)
-  {
-    float val = dbr_get_float_fast(data, INT_defensiveDisruption, shard_index);
-    float dur = dbr_get_float_fast(data, INT_defensiveDisruptionDuration, shard_index);
-
-    if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.1f%% Chance of %.1f second(s) of Skill Disruption</span>\n", color, indent, val, dur);
-
-    else if(val > 0)
-      buf_write(w, "<span color='%s'>%.0f%% Skill Disruption Protection</span>\n", color, val);
-  }
-
-  // Offensive skill disruption (offensiveDisruptionMin -- seconds of disruption)
-  {
-    float val = dbr_get_float_fast(data, INT_offensiveDisruptionMin, shard_index);
-    float val_max = dbr_get_float_fast(data, INT_offensiveDisruptionMax, shard_index);
-    float ch = dbr_get_float_fast(data, INT_offensiveDisruptionChance, shard_index);
-
-    if(val > 0)
-    {
-      char val_str[64];
-
-      if(val_max > val)
-        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", val, val_max);
-      else
-        snprintf(val_str, sizeof(val_str), "%.1f", val);
-
-      if(ch > 0 && ch < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Skill Disruption</span>\n", color, indent, ch, val_str);
-      else
-        buf_write(ow, "<span color='%s'>%s%s second(s) of Skill Disruption</span>\n", color, indent, val_str);
-    }
-  }
-
-  // Reduced Attack Speed (value + duration)
-  {
-    float val = dbr_get_float_fast(data, INT_offensiveSlowAttackSpeedMin, shard_index);
-    float dur = dbr_get_float_fast(data, INT_offensiveSlowAttackSpeedDurationMin, shard_index);
-
-    if(val > 0 && dur > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed for %.1f Seconds</span>\n", color, indent, val, dur);
-
-    else if(val > 0)
-      buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Attack Speed</span>\n", color, indent, val);
-  }
-
-  // Reduced Run Speed (value + duration, may have max range)
-  {
-    float val = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedMin, shard_index);
-    float val_max = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedMax, shard_index);
-    float dur = dbr_get_float_fast(data, INT_offensiveSlowRunSpeedDurationMin, shard_index);
-
-    if(val > 0)
-    {
-      char val_str[64];
-
-      if(val_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", val, val_max);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f%%", val);
-
-      if(dur > 0)
-        buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed for %.1f Seconds</span>\n", color, indent, val_str, dur);
-      else
-        buf_write(ow, "<span color='%s'>%s%s Reduced Run Speed</span>\n", color, indent, val_str);
-    }
-  }
-
-  // Offensive damage modifiers (may have chance).  Each routes to the
-  // chance block only when its corresponding offensive*Global flag is
-  // set; otherwise it stays top-level.  TotalDamage has no Global
-  // partner and always renders top-level.
-  {
-    static const struct { const char **val; const char **chance; const char *label; const char *prefix; } off_mod_defs[] = {
-      {&INT_offensivePhysicalModifier,  &INT_offensivePhysicalModifierChance,  "Physical Damage",  "Physical"},
-      {&INT_offensiveFireModifier,      &INT_offensiveFireModifierChance,      "Fire Damage",      "Fire"},
-      {&INT_offensiveColdModifier,      &INT_offensiveColdModifierChance,      "Cold Damage",      "Cold"},
-      {&INT_offensiveLightningModifier, &INT_offensiveLightningModifierChance, "Lightning Damage", "Lightning"},
-      {&INT_offensivePoisonModifier,    &INT_offensivePoisonModifierChance,    "Poison Damage",    "Poison"},
-      {&INT_offensiveLifeModifier,      &INT_offensiveLifeModifierChance,      "Vitality Damage",  "Life"},
-      {&INT_offensivePierceModifier,    &INT_offensivePierceModifierChance,    "Pierce Damage",    "Pierce"},
-      {&INT_offensiveElementalModifier, &INT_offensiveElementalModifierChance, "Elemental Damages", "Elemental"},
-      {&INT_offensiveTotalDamageModifier, &INT_offensiveTotalDamageModifierChance, "Total Damage", NULL},
-    };
-
-    for(int mi = 0; mi < (int)(sizeof off_mod_defs / sizeof off_mod_defs[0]); mi++)
-    {
-      float mv = dbr_get_float_fast(data, *off_mod_defs[mi].val, shard_index);
-
-      if(fabs(mv) < 0.001f)
-        continue;
-
-      float mc = dbr_get_float_fast(data, *off_mod_defs[mi].chance, shard_index);
-
-      bool in_chance = global_chance > 0
-                       && off_mod_defs[mi].prefix
-                       && offensive_proc_in_chance(data, off_mod_defs[mi].prefix, shard_index);
-      BufWriter *target = in_chance ? ow : w;
-      const char *target_indent = in_chance ? indent : "";
-
-      if(mc > 0 && mc < 100)
-        buf_write(target, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, target_indent, mc, (int)round(mv), off_mod_defs[mi].label);
-
-      else
-        buf_write(target, "<span color='%s'>%s%+d%% %s</span>\n", color, target_indent, (int)round(mv), off_mod_defs[mi].label);
-    }
-  }
-
-  // Retaliation %-modifiers (may have chance)
-  {
-    static const struct { const char **val; const char **chance; const char *label; } retal_mod_defs[] = {
-      {&INT_retaliationPhysicalModifier,  &INT_retaliationPhysicalModifierChance,  "Physical Retaliation"},
-      {&INT_retaliationColdModifier,      &INT_retaliationColdModifierChance,      "Cold Retaliation"},
-      {&INT_retaliationFireModifier,      &INT_retaliationFireModifierChance,      "Fire Retaliation"},
-      {&INT_retaliationLightningModifier, &INT_retaliationLightningModifierChance, "Lightning Retaliation"},
-      {&INT_retaliationPoisonModifier,    &INT_retaliationPoisonModifierChance,    "Poison Retaliation"},
-      {&INT_retaliationPierceModifier,    &INT_retaliationPierceModifierChance,    "Pierce Retaliation"},
-      {&INT_retaliationLifeModifier,      &INT_retaliationLifeModifierChance,      "Vitality Retaliation"},
-      {&INT_retaliationStunModifier,      &INT_retaliationStunModifierChance,      "Stun Retaliation"},
-      {&INT_retaliationElementalModifier, &INT_retaliationElementalModifierChance, "Elemental Retaliation"},
-    };
-
-    for(int mi = 0; mi < (int)(sizeof retal_mod_defs / sizeof retal_mod_defs[0]); mi++)
-    {
-      float mv = dbr_get_float_fast(data, *retal_mod_defs[mi].val, shard_index);
-
-      if(fabs(mv) < 0.001f)
-        continue;
-
-      float mc = dbr_get_float_fast(data, *retal_mod_defs[mi].chance, shard_index);
-
-      if(mc > 0 && mc < 100)
-        buf_write(rw, "<span color='%s'>%s%.0f%% Chance of %+d%% %s</span>\n", color, retal_indent, mc, (int)round(mv), retal_mod_defs[mi].label);
-
-      else
-        buf_write(rw, "<span color='%s'>%s%+d%% %s</span>\n", color, retal_indent, (int)round(mv), retal_mod_defs[mi].label);
-    }
-  }
-
-  // Percent current life reduction (may have chance, may have max range)
-  {
-    float pcl = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMin, shard_index);
-
-    if(fabs(pcl) > 0.001f)
-    {
-      float pcl_max = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeMax, shard_index);
-      float pcl_chance = dbr_get_float_fast(data, INT_offensivePercentCurrentLifeChance, shard_index);
-      bool in_chance = global_chance > 0 && offensive_proc_in_chance(data, "PercentCurrentLife", shard_index);
-      BufWriter *target = in_chance ? ow : w;
-      const char *target_indent = in_chance ? indent : "";
-
-      if(pcl_chance > 0 && pcl_chance < 100)
-      {
-        if(pcl_max > pcl)
-          buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% ~ %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl, pcl_max);
-        else
-          buf_write(target, "<span color='%s'>%s%.1f%% Chance of %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl_chance, pcl);
-      }
-
-      else
-      {
-        if(pcl_max > pcl)
-          buf_write(target, "<span color='%s'>%s%.0f%% ~ %.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl, pcl_max);
-        else
-          buf_write(target, "<span color='%s'>%s%.0f%% Reduction to Enemy's Health</span>\n", color, target_indent, pcl);
-      }
-    }
-  }
-
-  // Energy drain / energy burn (both DrainMin and DrainRatioMin are percentages)
-  {
-    float drain = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMin, shard_index);
-    float drain_max = dbr_get_float_fast(data, INT_offensiveManaBurnDrainMax, shard_index);
-    float drain_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDrainRatioMin, shard_index);
-    float dmg_ratio = dbr_get_float_fast(data, INT_offensiveManaBurnDamageRatio, shard_index);
-    float chance = dbr_get_float_fast(data, INT_offensiveManaBurnChance, shard_index);
-    float val = (drain > 0.001f) ? drain : drain_ratio;
-
-    if(val > 0.001f)
-    {
-      char val_str[64];
-
-      if(drain_max > val)
-        snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", val, drain_max);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f", val);
-
-      const char *prefix = (chance > 0 && chance < 100) ? "Chance of " : "";
-      char chance_buf[32] = "";
-
-      if(chance > 0 && chance < 100)
-        snprintf(chance_buf, sizeof(chance_buf), "%.0f%% ", chance);
-
-      if(dmg_ratio > 0.001f)
-        buf_write(ow, "<span color='%s'>%s%s%s%s%% Energy Drain (%.0f%% of lost energy as damage)</span>\n", color, indent, chance_buf, prefix, val_str, dmg_ratio);
-
-      else
-        buf_write(ow, "<span color='%s'>%s%s%s%s%% Energy Drain</span>\n", color, indent, chance_buf, prefix, val_str);
-    }
-
-    // Damage to Burning Energy (RatioAdder is +X% damage modifier)
-    float ratio_adder = dbr_get_float_fast(data, INT_offensiveManaBurnRatioAdder, shard_index);
-
-    if(fabs(ratio_adder) > 0.001f)
-    {
-      float ra_chance = dbr_get_float_fast(data, INT_offensiveManaBurnRatioAdderChance, shard_index);
-
-      if(ra_chance > 0 && ra_chance < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %+d%% Damage to Burning Energy</span>\n", color, indent, ra_chance, (int)round(ratio_adder));
-      else
-        buf_write(ow, "<span color='%s'>%s%+d%% Damage to Burning Energy</span>\n", color, indent, (int)round(ratio_adder));
-    }
-  }
-
-  // Offensive stun (may have range, chance, modifier)
-  {
-    float stun_min = dbr_get_float_fast(data, INT_offensiveStunMin, shard_index);
-    float stun_max = dbr_get_float_fast(data, INT_offensiveStunMax, shard_index);
-    float stun_dur_min = dbr_get_float_fast(data, INT_offensiveStunDurationMin, shard_index);
-    float stun_lo = (stun_dur_min > 0) ? stun_dur_min : stun_min;
-    float stun_hi = (stun_max > stun_lo) ? stun_max : 0;
-
-    if(stun_lo > 0)
-    {
-      char val_str[64];
-
-      if(stun_hi > stun_lo)
-        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", stun_lo, stun_hi);
-      else
-        snprintf(val_str, sizeof(val_str), "%.1f", stun_lo);
-
-      float stun_chance = dbr_get_float_fast(data, INT_offensiveStunChance, shard_index);
-
-      if(stun_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Stun</span>\n", color, indent, stun_chance, val_str);
-      else
-        buf_write(ow, "<span color='%s'>%s%s second(s) of Stun</span>\n", color, indent, val_str);
-    }
-
-    float stun_mod = dbr_get_float_fast(data, INT_offensiveStunModifier, shard_index);
-
-    if(fabs(stun_mod) > 0.001f)
-      buf_write(ow, "<span color='%s'>%s%+d%% Stun Duration</span>\n", color, indent, (int)round(stun_mod));
-  }
-
-  // Offensive fumble (melee) and projectile fumble (Impaired Aim -- ranged).
-  // The stat's Min value IS the fumble chance percentage (the game's
-  // DamageDurationFumble tag: "{value}% Chance to Fumble attacks"); the
-  // separate *FumbleChance field is the usual chance-of-effect wrapper.
-  {
-    static const struct { const char **min_int; const char **max_int; const char **dur_int; const char **chance_int; const char *label; } fumble_types[] = {
-      {&INT_offensiveFumbleMin, &INT_offensiveFumbleMax, &INT_offensiveFumbleDurationMin, &INT_offensiveFumbleChance, "Chance to Fumble attacks"},
-      {&INT_offensiveProjectileFumbleMin, &INT_offensiveProjectileFumbleMax, &INT_offensiveProjectileFumbleDurationMin, &INT_offensiveProjectileFumbleChance, "Chance of Impaired Aim"},
-      {NULL, NULL, NULL, NULL, NULL}
-    };
-
-    for(int f = 0; fumble_types[f].min_int; f++)
-    {
-      float mn = dbr_get_float_fast(data, *fumble_types[f].min_int, shard_index);
-
-      if(mn <= 0)
-        continue;
-
-      float mx = dbr_get_float_fast(data, *fumble_types[f].max_int, shard_index);
-      float dur = dbr_get_float_fast(data, *fumble_types[f].dur_int, shard_index);
-      float ch = dbr_get_float_fast(data, *fumble_types[f].chance_int, shard_index);
-      char val_str[64];
-
-      if(mx > mn)
-        snprintf(val_str, sizeof(val_str), "%.0f%% ~ %.0f%%", mn, mx);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f%%", mn);
-
-      char dur_str[48] = "";
-
-      if(dur > 0)
-        snprintf(dur_str, sizeof(dur_str), " for %.1f Seconds", dur);
-
-      if(ch > 0 && ch < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s%s</span>\n", color, indent, ch, val_str, fumble_types[f].label, dur_str);
-      else
-        buf_write(ow, "<span color='%s'>%s%s %s%s</span>\n", color, indent, val_str, fumble_types[f].label, dur_str);
-    }
-  }
-
-  // Offensive freeze (may have range)
-  {
-    float freeze_min = dbr_get_float_fast(data, INT_offensiveFreezeMin, shard_index);
-    float freeze_max = dbr_get_float_fast(data, INT_offensiveFreezeMax, shard_index);
-    float freeze_dur_min = dbr_get_float_fast(data, INT_offensiveFreezeDurationMin, shard_index);
-    float lo = (freeze_dur_min > 0) ? freeze_dur_min : freeze_min;
-    float hi = (freeze_max > lo) ? freeze_max : 0;
-
-    if(lo > 0)
-    {
-      char val_str[64];
-
-      if(hi > lo)
-        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", lo, hi);
-      else
-        snprintf(val_str, sizeof(val_str), "%.1f", lo);
-
-      float freeze_chance = dbr_get_float_fast(data, INT_offensiveFreezeChance, shard_index);
-
-      if(freeze_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Freeze</span>\n", color, indent, freeze_chance, val_str);
-      else
-        buf_write(ow, "<span color='%s'>%s%s second(s) of Freeze</span>\n", color, indent, val_str);
-    }
-  }
-
-  // Offensive sleep (range, chance, modifier — Atlantis content)
-  {
-    float sleep_min = dbr_get_float_fast(data, INT_offensiveSleepMin, shard_index);
-    float sleep_max = dbr_get_float_fast(data, INT_offensiveSleepMax, shard_index);
-    float sleep_dur_min = dbr_get_float_fast(data, INT_offensiveSleepDurationMin, shard_index);
-    float lo = (sleep_dur_min > 0) ? sleep_dur_min : sleep_min;
-    float hi = (sleep_max > lo) ? sleep_max : 0;
-
-    if(lo > 0)
-    {
-      char val_str[64];
-
-      if(hi > lo)
-        snprintf(val_str, sizeof(val_str), "%.1f ~ %.1f", lo, hi);
-      else
-        snprintf(val_str, sizeof(val_str), "%.1f", lo);
-
-      float sleep_chance = dbr_get_float_fast(data, INT_offensiveSleepChance, shard_index);
-
-      if(sleep_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s second(s) of Sleep</span>\n", color, indent, sleep_chance, val_str);
-      else
-        buf_write(ow, "<span color='%s'>%s%s second(s) of Sleep</span>\n", color, indent, val_str);
-    }
-
-    float sleep_mod = dbr_get_float_fast(data, INT_offensiveSleepModifier, shard_index);
-
-    if(fabs(sleep_mod) > 0.001f)
-      buf_write(ow, "<span color='%s'>%s%+d%% Sleep Duration</span>\n", color, indent, (int)round(sleep_mod));
-  }
-
-  // Pierce Ratio modifier ("of Piercing" affixes).  The raw ratio renders in
-  // the weapon-base block above, next to base damage, as the game does.
-  {
-    float pr_mod = dbr_get_float_fast(data, INT_offensivePierceRatioModifier, shard_index);
-    float pr_mod_chance = dbr_get_float_fast(data, INT_offensivePierceRatioModifierChance, shard_index);
-
-    if(fabs(pr_mod) > 0.001f)
-    {
-      if(pr_mod_chance > 0 && pr_mod_chance < 100)
-        buf_write(w, "<span color='%s'>%.1f%% Chance of %+d%% increased Pierce Ratio</span>\n", color, pr_mod_chance, (int)round(pr_mod));
-      else
-        buf_write(w, "<span color='%s'>%+d%% increased Pierce Ratio</span>\n", color, (int)round(pr_mod));
-    }
-  }
-
-  // Offensive petrify
-  {
-    float petrify_min = dbr_get_float_fast(data, INT_offensivePetrifyMin, shard_index);
-    float petrify_dur = dbr_get_float_fast(data, INT_offensivePetrifyDurationMin, shard_index);
-
-    if(petrify_dur <= 0)
-      petrify_dur = petrify_min;
-
-    if(petrify_dur > 0)
-    {
-      float petrify_chance = dbr_get_float_fast(data, INT_offensivePetrifyChance, shard_index);
-
-      if(petrify_chance > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f second(s) of Petrify</span>\n", color, indent, petrify_chance, petrify_dur);
-
-      else
-        buf_write(ow, "<span color='%s'>%s%.1f second(s) of Petrify</span>\n", color, indent, petrify_dur);
-    }
-  }
-
-  // Mind control (offensiveConvertMin -- duration-based conversion of enemies)
-  {
-    float convert_min = dbr_get_float_fast(data, INT_offensiveConvertMin, shard_index);
-
-    if(convert_min > 0)
-    {
-      float convert_chance = dbr_get_float_fast(data, INT_offensiveConvertChance, shard_index);
-
-      if(convert_chance > 0 && convert_chance < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f Seconds of Mind Control</span>\n", color, indent, convert_chance, convert_min);
-      else
-        buf_write(ow, "<span color='%s'>%s%.1f Seconds of Mind Control</span>\n", color, indent, convert_min);
-    }
-  }
-
-  // Offensive confusion
-  {
-    float confuse_min = dbr_get_float_fast(data, INT_offensiveConfusionMin, shard_index);
-    float confuse_max = dbr_get_float_fast(data, INT_offensiveConfusionMax, shard_index);
-    float confuse_dur = dbr_get_float_fast(data, INT_offensiveConfusionDurationMin, shard_index);
-
-    if(confuse_min > 0)
-    {
-      float confuse_chance = dbr_get_float_fast(data, INT_offensiveConfusionChance, shard_index);
-      float val = confuse_dur > 0 ? confuse_dur : confuse_min;
-      float val_max = confuse_max > val ? confuse_max : 0;
-
-      if(confuse_chance > 0)
-      {
-        if(val_max > 0)
-          buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f ~ %.1f second(s) of Confusion</span>\n", color, indent, confuse_chance, val, val_max);
-        else
-          buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.1f second(s) of Confusion</span>\n", color, indent, confuse_chance, val);
-      }
-
-      else
-      {
-        if(val_max > 0)
-          buf_write(ow, "<span color='%s'>%s%.1f ~ %.1f second(s) of Confusion</span>\n", color, indent, val, val_max);
-        else
-          buf_write(ow, "<span color='%s'>%s%.1f second(s) of Confusion</span>\n", color, indent, val);
-      }
-    }
-  }
-
-  // Fear
-  {
-    float fear_min = dbr_get_float_fast(data, INT_offensiveFearMin, shard_index);
-    float fear_max = dbr_get_float_fast(data, INT_offensiveFearMax, shard_index);
-
-    if(fear_min > 0)
-    {
-      if(fear_max > fear_min)
-        buf_write(ow, "<span color='%s'>%s%.1f ~ %.1f second(s) of Fear</span>\n", color, indent, fear_min, fear_max);
-
-      else
-        buf_write(ow, "<span color='%s'>%s%.1f second(s) of Fear</span>\n", color, indent, fear_min);
-    }
-  }
-
-  // Total damage reduction (debuff applied to enemies)
-  {
-    float tdmg_min = dbr_get_float_fast(data, INT_offensiveTotalDamageReductionPercentMin, shard_index);
-    float tdmg_dur = dbr_get_float_fast(data, INT_offensiveTotalDamageReductionPercentDurationMin, shard_index);
-
-    if(tdmg_min > 0)
-    {
-      if(tdmg_dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage for %.1f Seconds</span>\n", color, indent, tdmg_min, tdmg_dur);
-
-      else
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Damage</span>\n", color, indent, tdmg_min);
-    }
-  }
-
-  // Reduced Offensive Ability debuff (applied to enemies)
-  {
-    float oa_mod = dbr_get_float_fast(data, INT_offensiveSlowOffensiveAbilityModifier, shard_index);
-    float oa_dur = dbr_get_float_fast(data, INT_offensiveSlowOffensiveAbilityDurationMin, shard_index);
-
-    if(fabs(oa_mod) > 0.001f && oa_dur > 0)
-      buf_write(ow, "<span color='%s'>%s%+d%% Offensive Ability for %.1f Seconds</span>\n", color, indent, (int)round(-oa_mod), oa_dur);
-  }
-
-  // Reduced Defensive Ability debuff (applied to enemies)
-  {
-    float da_mod = dbr_get_float_fast(data, INT_offensiveSlowOffensiveReductionModifier, shard_index);
-    float da_dur = dbr_get_float_fast(data, INT_offensiveSlowOffensiveReductionDurationMin, shard_index);
-
-    if(fabs(da_mod) > 0.001f && da_dur > 0)
-      buf_write(ow, "<span color='%s'>%s%+d%% Defensive Ability for %.1f Seconds</span>\n", color, indent, (int)round(-da_mod), da_dur);
-  }
-
-  // Reduced Defensive/Offensive Ability proc-style (Min/Max/Chance, applied to enemies)
-  {
-    static const struct {
-      const char **min; const char **max; const char **dur; const char **chance; const char *label;
-    } ability_debuffs[] = {
-      {&INT_offensiveSlowDefensiveAbilityMin, &INT_offensiveSlowDefensiveAbilityMax, &INT_offensiveSlowDefensiveAbilityDurationMin, &INT_offensiveSlowDefensiveAbilityChance, "Reduced Defensive Ability"},
-      {&INT_offensiveSlowOffensiveAbilityMin, &INT_offensiveSlowOffensiveAbilityMax, &INT_offensiveSlowOffensiveAbilityDurationMin, &INT_offensiveSlowOffensiveAbilityChance, "Reduced Offensive Ability"},
-    };
-
-    for(int ad = 0; ad < (int)(sizeof ability_debuffs / sizeof ability_debuffs[0]); ad++)
-    {
-      float mn = dbr_get_float_fast(data, *ability_debuffs[ad].min, shard_index);
-      float dur = dbr_get_float_fast(data, *ability_debuffs[ad].dur, shard_index);
-
-      if(mn <= 0 || dur <= 0)
-        continue;
-
-      float mx = dbr_get_float_fast(data, *ability_debuffs[ad].max, shard_index);
-      float ch = dbr_get_float_fast(data, *ability_debuffs[ad].chance, shard_index);
-
-      char val_str[64];
-
-      if(mx > mn)
-        snprintf(val_str, sizeof(val_str), "%.0f ~ %.0f", mn, mx);
-      else
-        snprintf(val_str, sizeof(val_str), "%.0f", mn);
-
-      if(ch > 0 && ch < 100)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %s %s for %.1f Seconds</span>\n",
-                  color, indent, ch, val_str, ability_debuffs[ad].label, dur);
-      else
-        buf_write(ow, "<span color='%s'>%s%s %s for %.1f Seconds</span>\n",
-                  color, indent, val_str, ability_debuffs[ad].label, dur);
-    }
-  }
-
-  // Slow total speed (with optional chance and duration)
-  {
-    float slow_min = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedMin, shard_index);
-
-    if(slow_min > 0)
-    {
-      float slow_ch = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedChance, shard_index);
-      float slow_dur = dbr_get_float_fast(data, INT_offensiveSlowTotalSpeedDurationMin, shard_index);
-
-      if(slow_ch > 0 && slow_dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Chance of %.0f%% Reduced Total Speed for %.1f Seconds</span>\n", color, indent, slow_ch, slow_min, slow_dur);
-      else if(slow_dur > 0)
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed for %.1f Seconds</span>\n", color, indent, slow_min, slow_dur);
-      else
-        buf_write(ow, "<span color='%s'>%s%.0f%% Reduced Total Speed</span>\n", color, indent, slow_min);
-    }
-  }
-
-  // -- End of offensive sections --
-  // (non-offensive sections follow below, then chance group is flushed at the end)
-
-  // (Shield block renders in the weapon/shield base block near the top.)
-
-  // Petrify resistance (% reduced petrify duration)
-  {
-    float val = dbr_get_float_fast(data, INT_defensivePetrify, shard_index);
-
-    if(val > 0)
-      buf_write(w, "<span color='%s'>%.0f%% Reduced Petrify Duration</span>\n", color, val);
-  }
-
-  // Racial bonus — only meaningful with a named race. The game format spec is
-  // "...{%s1}" with the race substituted in; with no racialBonusRace the engine
-  // (and TQVaultAE's GetRacialBonus) emit nothing. Some skill/aura records carry
-  // an internal racialBonus value with no race (e.g. Dream's Trance of Wrath has
-  // racialBonusPercentDefense=100 and no race) — it must NOT be rendered as
-  // "100% less damage from Enemies".
-  {
-    TQVariable *rv = arz_record_get_var(data, INT_racialBonusRace);
-    const char *race = (rv && rv->type == TQ_VAR_STRING && rv->count > 0 && rv->value.str[0])
-                         ? rv->value.str[0] : NULL;
-
-    if(race)
-    {
-      float dmg = dbr_get_float_fast(data, INT_racialBonusPercentDamage, shard_index);
-
-      if(fabs(dmg) > 0.001f)
-        buf_write(w, "<span color='%s'>%+d%% Damage to %s</span>\n", color, (int)round(dmg), race);
-
-      float abs_dmg = dbr_get_float_fast(data, INT_racialBonusAbsoluteDamage, shard_index);
-
-      if(fabs(abs_dmg) > 0.001f)
-        buf_write(w, "<span color='%s'>%+d Damage to %s</span>\n", color, (int)round(abs_dmg), race);
-
-      float def = dbr_get_float_fast(data, INT_racialBonusPercentDefense, shard_index);
-
-      if(fabs(def) > 0.001f)
-        buf_write(w, "<span color='%s'>%d%% less damage from %s</span>\n", color, (int)round(def), race);
-
-      float abs_def = dbr_get_float_fast(data, INT_racialBonusAbsoluteDefense, shard_index);
-
-      if(fabs(abs_def) > 0.001f)
-        buf_write(w, "<span color='%s'>%d Less Damage from %s</span>\n", color, (int)round(abs_def), race);
-    }
-  }
-
-  // Mastery augmentation: "+N to all skills in X Mastery"
-  for(uint32_t i = 0; i < data->num_vars; i++)
-  {
-    if(!data->vars[i].name)
-      continue;
-
-    if(strncasecmp(data->vars[i].name, "augmentMasteryLevel", 19) == 0)
-    {
-      TQVariable *v = &data->vars[i];
-      int idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
-
-      if(idx < 0)
-        idx = 0;
-
-      float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx];
-
-      if(fabs(val) < 0.001f)
-        continue;
-
-      char mastery_var[64];
-
-      snprintf(mastery_var, sizeof(mastery_var), "augmentMasteryName%s", data->vars[i].name + 19);
-
-      const char *mastery_var_int = arz_intern(mastery_var);
-      TQVariable *mv = arz_record_get_var(data, mastery_var_int);
-      const char *mastery_path = (mv && mv->type == TQ_VAR_STRING && mv->count > 0) ? mv->value.str[0] : NULL;
-
-      if(!mastery_path || !mastery_path[0])
-        continue;
-
-      const char *mastery_name = "Unknown Mastery";
-      const char *name_tag = get_record_variable_string(mastery_path, INT_skillDisplayName);
-
-      if(name_tag)
-      {
-        const char *translated = translation_get(tr, name_tag);
-
-        if(translated)
-          mastery_name = translated;
-      }
-
-      buf_write(&skill_writer, "<span color='%s'>+%d to all skills in %s</span>\n", skill_color, (int)round(val), mastery_name);
-    }
-  }
-
-  // Skill augmentation: "+N to [Skill Name]"
-  for(uint32_t i = 0; i < data->num_vars; i++)
-  {
-    if(!data->vars[i].name)
-      continue;
-
-    if(strncasecmp(data->vars[i].name, "augmentSkillLevel", 17) == 0)
-    {
-      TQVariable *v = &data->vars[i];
-      int idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
-
-      if(idx < 0)
-        idx = 0;
-
-      float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[idx] : v->value.f32[idx];
-
-      if(fabs(val) < 0.001f)
-        continue;
-
-      char skill_var[64];
-
-      snprintf(skill_var, sizeof(skill_var), "augmentSkillName%s", data->vars[i].name + 17);
-
-      const char *skill_var_int = arz_intern(skill_var);
-      TQVariable *sv = arz_record_get_var(data, skill_var_int);
-      const char *skill_path = (sv && sv->type == TQ_VAR_STRING && sv->count > 0) ? sv->value.str[0] : NULL;
-
-      const char *skill_name = "Unknown Skill";
-
-      if(skill_path)
-      {
-        // Follow petSkillName if present (e.g. PetModifier skills)
-        const char *pet_path = get_record_variable_string(skill_path, INT_petSkillName);
-        const char *base_path = (pet_path && pet_path[0]) ? pet_path : skill_path;
-        const char *buff_path = get_record_variable_string(base_path, INT_buffSkillName);
-        const char *lookup_path = (buff_path && buff_path[0]) ? buff_path : base_path;
-        const char *name_tag = get_record_variable_string(lookup_path, INT_skillDisplayName);
-
-        if(name_tag)
-        {
-          const char *translated = translation_get(tr, name_tag);
-
-          if(translated)
-            skill_name = translated;
-        }
-      }
-
-      buf_write(&skill_writer, "<span color='%s'>+%d to %s</span>\n", skill_color, (int)round(val), skill_name);
-    }
-  }
-
-  // Skill cost/cooldown reductions: merge value + chance into one line.
-  // "X% Chance of -Y% Recharge" is one effect; the standalone Chance and
-  // value fields should not render as separate lines.
-  {
-    static const struct { const char **val; const char **chance; const char *label; } skill_red[] = {
-      {&INT_skillCooldownReduction, &INT_skillCooldownReductionChance, "Recharge"},
-      {&INT_skillManaCostReduction, &INT_skillManaCostReductionChance, "Energy Cost"},
-    };
-
-    for(int s = 0; s < (int)(sizeof skill_red / sizeof skill_red[0]); s++)
-    {
-      float val = dbr_get_float_fast(data, *skill_red[s].val, shard_index);
-
-      if(val < 0.001f)
-        continue;
-
-      float chance = dbr_get_float_fast(data, *skill_red[s].chance, shard_index);
-
-      if(chance > 0 && chance < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of -%.0f%% %s</span>\n", color, chance, val, skill_red[s].label);
-
-      else
-        buf_write(w, "<span color='%s'>-%.0f%% %s</span>\n", color, val, skill_red[s].label);
-    }
-  }
-
-  // Standard attr_maps iteration -- O(num_vars) with O(1) per variable
-  for(uint32_t i = 0; i < data->num_vars; i++)
-  {
-    TQVariable *v = &data->vars[i];
-
-    if(!v->name)
-      continue;
-
-    const char *interned = arz_intern(v->name);
-
-    // skip already-handled vars
-    if(strncasecmp(v->name, "augmentMastery", 14) == 0)
-      continue;
-
-    if(strncasecmp(v->name, "augmentSkill", 12) == 0)
-      continue;
-
-    if(g_hash_table_contains(g_skip_set, interned))
-      continue;
-
-    // O(1) lookup instead of linear scan
-    AttributeMap *am = g_hash_table_lookup(g_attr_map_ht, interned);
-
-    if(!am)
-      continue;
-
-    int val_idx = (shard_index < (int)v->count) ? shard_index : (int)v->count - 1;
-
-    if(val_idx < 0)
-      val_idx = 0;
-
-    float val = (v->type == TQ_VAR_INT) ? (float)v->value.i32[val_idx] : v->value.f32[val_idx];
-
-    if(fabs(val) < 0.001f)
-      continue;
-
-    char line[256];
-
-    if(am->is_percent || strstr(am->format, "%d") || strstr(am->format, "%+d"))
-      snprintf(line, sizeof(line), am->format, (int)round(val));
-
-    else
-      snprintf(line, sizeof(line), am->format, val);
-
-    buf_write(w, "<span color='%s'>%s</span>\n", color, line);
-  }
-
-  // Defensive resistances (may have chance)
-  {
-    static const struct { const char **val; const char **chance; const char *label; } resist_defs[] = {
-      {&INT_defensiveFire,      &INT_defensiveFireChance,      "Fire"},
-      {&INT_defensiveCold,      &INT_defensiveColdChance,      "Cold"},
-      {&INT_defensiveLightning, &INT_defensiveLightningChance, "Lightning"},
-      {&INT_defensivePoison,    &INT_defensivePoisonChance,    "Poison"},
-      {&INT_defensivePierce,    &INT_defensivePierceChance,    "Pierce"},
-      {&INT_defensiveLife,      &INT_defensiveLifeChance,      "Vitality"},
-      {&INT_defensiveBleeding,  &INT_defensiveBleedingChance,  "Bleeding"},
-      {&INT_defensivePhysical,  &INT_defensivePhysicalChance,  "Physical"},
-      {&INT_defensiveElementalResistance, &INT_defensiveElementalResistanceChance, "Elemental"},
-    };
-
-    for(int ri = 0; ri < (int)(sizeof resist_defs / sizeof resist_defs[0]); ri++)
-    {
-      float rv = dbr_get_float_fast(data, *resist_defs[ri].val, shard_index);
-
-      if(fabs(rv) < 0.001f)
-        continue;
-
-      float rc = dbr_get_float_fast(data, *resist_defs[ri].chance, shard_index);
-
-      if(rc > 0 && rc < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of %+d%% %s Resistance</span>\n", color, rc, (int)round(rv), resist_defs[ri].label);
-
-      else
-        buf_write(w, "<span color='%s'>%+d%% %s Resistance</span>\n", color, (int)round(rv), resist_defs[ri].label);
-    }
-  }
-
-  // DoT resistances / duration reductions with optional chance
-  {
-    static const struct { const char **val; const char **chance; const char *label; } dot_resist[] = {
-      {&INT_defensiveSlowLifeLeach,  &INT_defensiveSlowLifeLeachChance,  "Vitality Decay Resistance"},
-      {&INT_defensiveSlowManaLeach,  &INT_defensiveSlowManaLeachChance,  "Energy Drain Resistance"},
-      {&INT_defensivePoisonDuration, &INT_defensivePoisonDurationChance, "Reduced Poison Duration"},
-    };
-
-    for(int ri = 0; ri < (int)(sizeof dot_resist / sizeof dot_resist[0]); ri++)
-    {
-      float rv = dbr_get_float_fast(data, *dot_resist[ri].val, shard_index);
-
-      if(fabs(rv) < 0.001f)
-        continue;
-
-      float rc = dbr_get_float_fast(data, *dot_resist[ri].chance, shard_index);
-
-      if(rc > 0 && rc < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of %+d%% %s</span>\n", color, rc, (int)round(rv), dot_resist[ri].label);
-      else
-        buf_write(w, "<span color='%s'>%+d%% %s</span>\n", color, (int)round(rv), dot_resist[ri].label);
-    }
-  }
-
-  // Damage reflected (may have chance)
-  {
-    float rv = dbr_get_float_fast(data, INT_defensiveReflect, shard_index);
-
-    if(rv > 0)
-    {
-      float rc = dbr_get_float_fast(data, INT_defensiveReflectChance, shard_index);
-
-      if(rc > 0 && rc < 100)
-        buf_write(w, "<span color='%s'>%.0f%% Chance of %d%% Damage Reflected</span>\n", color, rc, (int)round(rv));
-      else
-        buf_write(w, "<span color='%s'>%d%% Damage Reflected</span>\n", color, (int)round(rv));
-    }
-  }
-
-  // Skill parameters: life restored (e.g. Regrowth heal).  Energy cost and
-  // recharge render at the top of the card (see the skill-mechanics block).
-  {
-    float life = dbr_get_float_fast(data, INT_skillLifeBonus, shard_index);
-
-    if(life > 0)
-      buf_write(w, "<span color='%s'>+%d Health Restored</span>\n", color, (int)round(life));
-  }
-
-  // Skill parameters: target number
-  {
-    float targets = dbr_get_float_fast(data, INT_skillTargetNumber, shard_index);
-
-    if(targets > 0)
-      buf_write(w, "<span color='%s'>Affects up to %d targets</span>\n", color, (int)targets);
-  }
-
-  // Skill parameters: active duration
-  {
-    float duration = dbr_get_float_fast(data, INT_skillActiveDuration, shard_index);
-
-    if(duration > 0)
-      buf_write(w, "<span color='%s'>%.1f Second Duration</span>\n", color, duration);
-  }
-
-  // Skill parameters: target radius
-  {
-    float radius = dbr_get_float_fast(data, INT_skillTargetRadius, shard_index);
-
-    if(radius > 0)
-      buf_write(w, "<span color='%s'>%.1f Meter Radius</span>\n", color, radius);
-  }
+  StatEmitCtx sc = {
+    .data = data, .tr = tr, .cls = cls, .w = w, .ow = ow, .rw = rw,
+    .skill = &skill_writer, .color = color, .skill_color = skill_color,
+    .indent = indent, .retal_indent = retal_indent,
+    .shard_index = shard_index, .global_chance = global_chance,
+  };
+
+  emit_skill_mechanics(&sc);
+  emit_armor_and_shield(&sc);
+  emit_weapon_base_damage(&sc);
+  emit_leech_and_dots(&sc);
+  emit_retaliation(&sc);
+  emit_retaliation_debuffs(&sc);
+  emit_offensive_modifiers(&sc);
+  emit_offensive_cc(&sc);
+  emit_offensive_debuffs(&sc);
+  emit_petrify_and_racial(&sc);
+  emit_skill_augments(&sc);
+  emit_attrs_and_resists(&sc);
+  emit_skill_params(&sc);
 
 
   // Flush the global-chance-wrapped section (relics/charms/armor/jewelry).
