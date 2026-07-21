@@ -252,6 +252,16 @@ patch_player_name(const char *player_chr_path, const char *new_name)
   memcpy(&old_str_len, data + val_offset, 4);
 
   size_t old_val_bytes = 4 + (size_t)old_str_len * 2;
+
+  // old_str_len is read straight from the file; if the declared value runs past
+  // the end, after_offset below would exceed file_size and (file_size -
+  // after_offset) underflows into a huge memcpy length -> heap corruption.
+  if(val_offset + old_val_bytes > (size_t)file_size)
+  {
+    free(data);
+    return(-1);
+  }
+
   size_t new_name_len = strlen(new_name);
   size_t new_val_bytes = 4 + new_name_len * 2;
   size_t new_file_size = (size_t)file_size - old_val_bytes + new_val_bytes;

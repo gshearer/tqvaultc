@@ -138,6 +138,10 @@ translation_load_from_arc(TQTranslation *t, const char *arc_path)
 
   for(uint32_t i = 0; i < arc->num_files; i++)
   {
+    // arc_load stores NULL for a corrupt/unterminated filename entry.
+    if(!arc->entries[i].path)
+      continue;
+
     const char *ext = strrchr(arc->entries[i].path, '.');
 
     if(ext && strcasecmp(ext, ".txt") == 0)

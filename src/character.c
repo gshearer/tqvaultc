@@ -452,6 +452,19 @@ typedef struct
   size_t skill_list_insert_off;// offset just past the last skill's end_block
 } ParseState;
 
+// Bounds-checked 4-byte value read at the current parse offset.  The main loop
+// validates every key, but the value that follows a key can still sit in the
+// final <4 bytes of a truncated save; read_u32 would then over-read raw_data
+// (malloc'd to exactly `size`).  Return 0 instead of reading past the buffer.
+static uint32_t
+ps_read_u32(const ParseState *ps)
+{
+  if(*ps->offset + 4 > ps->size)
+    return(0);
+
+  return(read_u32(ps->data, *ps->offset));
+}
+
 // Parse a "begin_block" key during character loading.
 // ps: parser state.
 static void
@@ -553,6 +566,12 @@ parse_end_block(ParseState *ps)
   {
     // Sack ends
     ps->chr->num_inv_sacks = ps->inv_sack_idx + 1;
+    // inv_sacks[] is fixed at 4; a save whose numberOfSacks exceeds that walks
+    // inv_sack_idx past the array (item writes above are already < 4 guarded),
+    // but num_inv_sacks would then drive character_free()'s loop off the end and
+    // free() wild pointers.  Clamp to the array size.
+    if(ps->chr->num_inv_sacks > 4)
+      ps->chr->num_inv_sacks = 4;
     ps->inv_items_expected = 0;
     ps->inv_items_read     = 0;
 
@@ -596,7 +615,7 @@ parse_inv_header(ParseState *ps, const char *key)
   if(ps->inv_state == 1 && strcmp(key, "numberOfSacks") == 0)
   {
     ps->chr->inv_block_start = ps->pre_key_offset;
-    ps->inv_num_sacks = (int)read_u32(ps->data, *ps->offset);
+    ps->inv_num_sacks = (int)ps_read_u32(ps);
     *ps->offset += 4;
     ps->inv_state = 2;
     return(1);
@@ -604,7 +623,7 @@ parse_inv_header(ParseState *ps, const char *key)
 
   if(ps->inv_state == 2 && strcmp(key, "currentlyFocusedSackNumber") == 0)
   {
-    ps->chr->focused_sack = read_u32(ps->data, *ps->offset);
+    ps->chr->focused_sack = ps_read_u32(ps);
     *ps->offset += 4;
     ps->inv_state = 3;
     return(1);
@@ -612,7 +631,7 @@ parse_inv_header(ParseState *ps, const char *key)
 
   if(ps->inv_state == 3 && strcmp(key, "currentlySelectedSackNumber") == 0)
   {
-    ps->chr->selected_sack = read_u32(ps->data, *ps->offset);
+    ps->chr->selected_sack = ps_read_u32(ps);
     *ps->offset += 4;
     ps->inv_sack_idx = -1;
     ps->inv_state = 4;
@@ -641,7 +660,7 @@ parse_sack_header(ParseState *ps, const char *key)
   {
     if(ps->inv_state == 6)
     {
-      ps->inv_items_expected = (int)read_u32(ps->data, *ps->offset);
+      ps->inv_items_expected = (int)ps_read_u32(ps);
       ps->inv_items_read     = 0;
       ps->inv_state = 7;
     }
@@ -763,7 +782,7 @@ parse_item_integers(ParseState *ps, const char *key)
 {
   if(strcmp(key, "seed") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     *ps->offset += 4;
 
@@ -777,7 +796,7 @@ parse_item_integers(ParseState *ps, const char *key)
 
   if(strcmp(key, "var1") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     *ps->offset += 4;
 
@@ -791,7 +810,7 @@ parse_item_integers(ParseState *ps, const char *key)
 
   if(strcmp(key, "var2") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     *ps->offset += 4;
 
@@ -820,7 +839,7 @@ parse_item_position(ParseState *ps, const char *key)
   if(strcmp(key, "pointX") == 0)
   {
     if(ps->inv_state == 10 && ps->cur_inv_item)
-      ps->cur_inv_item->point_x = (int)read_u32(ps->data, *ps->offset);
+      ps->cur_inv_item->point_x = (int)ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
@@ -828,7 +847,7 @@ parse_item_position(ParseState *ps, const char *key)
   if(strcmp(key, "pointY") == 0)
   {
     if(ps->inv_state == 10 && ps->cur_inv_item)
-      ps->cur_inv_item->point_y = (int)read_u32(ps->data, *ps->offset);
+      ps->cur_inv_item->point_y = (int)ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
@@ -854,7 +873,14 @@ parse_equipment(ParseState *ps, const char *key)
   {
     if(ps->in_equipment)
     {
-      ps->cur_alternate = (int)read_u32(ps->data, *ps->offset);
+      ps->cur_alternate = (int)ps_read_u32(ps);
+      // alternate is a 0/1 weapon-set flag, but it comes straight from the
+      // save and feeds cur_equip_slot = 7 + cur_alternate*2 (and +weapon_sub
+      // below) as an index into the fixed equipment[12] arrays.  A corrupt or
+      // crafted value would produce an out-of-bounds slot that the < 12 guards
+      // do not catch, so clamp it to its real domain here.
+      if(ps->cur_alternate < 0 || ps->cur_alternate > 1)
+        ps->cur_alternate = 0;
       if(ps->equip_count == 7)
         ps->chr->first_alternate = ps->cur_alternate;
       ps->weapon_sub = 0;
@@ -868,7 +894,7 @@ parse_equipment(ParseState *ps, const char *key)
   {
     if(ps->in_equipment && ps->cur_equip_slot < 12)
       ps->chr->equip_attached[ps->cur_equip_slot] =
-        (int)read_u32(ps->data, *ps->offset);
+        (int)ps_read_u32(ps);
     *ps->offset += 4;
 
     if(ps->in_equipment)
@@ -913,7 +939,7 @@ parse_char_stats(ParseState *ps, const char *key)
 {
   if(strcmp(key, "headerVersion") == 0)
   {
-    ps->chr->header_version = (int)read_u32(ps->data, *ps->offset);
+    ps->chr->header_version = (int)ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
@@ -956,7 +982,7 @@ parse_char_stats(ParseState *ps, const char *key)
 
   if(strcmp(key, "modifierPoints") == 0)
   {
-    ps->chr->modifier_points = read_u32(ps->data, *ps->offset);
+    ps->chr->modifier_points = ps_read_u32(ps);
     ps->chr->off_modifier_points = *ps->offset;
     *ps->offset += 4;
     return(1);
@@ -964,7 +990,7 @@ parse_char_stats(ParseState *ps, const char *key)
 
   if(strcmp(key, "masteriesAllowed") == 0)
   {
-    ps->chr->masteries_allowed = read_u32(ps->data, *ps->offset);
+    ps->chr->masteries_allowed = ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
@@ -1009,28 +1035,28 @@ parse_char_stats(ParseState *ps, const char *key)
   if(strcmp(key, "playerLevel") == 0 ||
      strcmp(key, "currentStats.charLevel") == 0)
   {
-    ps->chr->level = read_u32(ps->data, *ps->offset);
+    ps->chr->level = ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
 
   if(strcmp(key, "currentStats.experiencePoints") == 0)
   {
-    ps->chr->experience = read_u32(ps->data, *ps->offset);
+    ps->chr->experience = ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
 
   if(strcmp(key, "numberOfKills") == 0)
   {
-    ps->chr->kills = read_u32(ps->data, *ps->offset);
+    ps->chr->kills = ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
 
   if(strcmp(key, "numberOfDeaths") == 0)
   {
-    ps->chr->deaths = read_u32(ps->data, *ps->offset);
+    ps->chr->deaths = ps_read_u32(ps);
     *ps->offset += 4;
     return(1);
   }
@@ -1066,7 +1092,7 @@ parse_skills(ParseState *ps, const char *key)
 {
   if(strcmp(key, "skillPoints") == 0)
   {
-    ps->chr->skill_points = read_u32(ps->data, *ps->offset);
+    ps->chr->skill_points = ps_read_u32(ps);
     ps->chr->off_skill_points = *ps->offset;
     *ps->offset += 4;
     return(1);
@@ -1104,7 +1130,7 @@ parse_skills(ParseState *ps, const char *key)
 
   if(strcmp(key, "skillLevel") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     if(ps->pending_skill_name)
     {
@@ -1126,7 +1152,7 @@ parse_skills(ParseState *ps, const char *key)
 
   if(strcmp(key, "skillEnabled") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     if(ps->chr->num_skills > 0)
       ps->chr->skills[ps->chr->num_skills - 1].skill_enabled = v;
@@ -1136,7 +1162,7 @@ parse_skills(ParseState *ps, const char *key)
 
   if(strcmp(key, "skillActive") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     if(ps->chr->num_skills > 0)
       ps->chr->skills[ps->chr->num_skills - 1].skill_active = v;
@@ -1146,7 +1172,7 @@ parse_skills(ParseState *ps, const char *key)
 
   if(strcmp(key, "skillSubLevel") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     if(ps->chr->num_skills > 0)
       ps->chr->skills[ps->chr->num_skills - 1].skill_sublevel = v;
@@ -1156,7 +1182,7 @@ parse_skills(ParseState *ps, const char *key)
 
   if(strcmp(key, "skillTransition") == 0)
   {
-    uint32_t v = read_u32(ps->data, *ps->offset);
+    uint32_t v = ps_read_u32(ps);
 
     if(ps->chr->num_skills > 0)
       ps->chr->skills[ps->chr->num_skills - 1].skill_transition = v;

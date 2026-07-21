@@ -546,10 +546,19 @@ stash_parse_item(const uint8_t *data, size_t *off, size_t sz,
   item.point_y = (int)y_off;
   item.stack_size = stack_count + 1;
 
-  sack->items = realloc(sack->items,
+  TQVaultItem *grown = realloc(sack->items,
       (size_t)(sack->num_items + 1) * sizeof(TQVaultItem));
-  if(!sack->items)
+
+  // On failure keep the existing array and count intact (overwriting
+  // sack->items with NULL would leak every prior item and later make
+  // stash_free() walk a NULL array); free the item we just built.
+  if(!grown)
+  {
+    vault_item_free_strings(&item);
     return(false);
+  }
+
+  sack->items = grown;
   sack->items[sack->num_items] = item;
   sack->num_items++;
   return(true);

@@ -107,18 +107,16 @@ load_item_texture(AppWidgets *widgets, const char *base_name, uint32_t var1)
 
   char tex_path[1024];
   const char *source = bitmap_path ? bitmap_path : base_name;
+  const char *dot = strrchr(source, '.');
+  int base_len = dot ? (int)(dot - source) : (int)strlen(source);
 
-  strncpy(tex_path, source, sizeof(tex_path));
-  tex_path[sizeof(tex_path)-1] = '\0';
+  // Replace any extension on source with ".tex" in one bounded write.  source
+  // comes from on-disk DBR data and can be arbitrarily long, so snprintf's
+  // truncation is what keeps the fixed buffer safe.
+  snprintf(tex_path, sizeof(tex_path), "%.*s.tex", base_len, source);
+
   if(bitmap_path)
     free(bitmap_path);
-
-  char *dot = strrchr(tex_path, '.');
-
-  if(dot)
-    strcpy(dot, ".tex");
-  else
-    strcat(tex_path, ".tex");
 
   GdkPixbuf *pixbuf = texture_load(tex_path);
 

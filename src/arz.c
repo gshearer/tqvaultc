@@ -360,9 +360,17 @@ arz_read_record_at(TQArzFile *arz, uint32_t offset, uint32_t compressed_size)
   while(off + 8 <= (size_t)uncompressed_size)
   {
     uint16_t count = read_u16(uncompressed, off + 2);
+    size_t var_bytes = 8 + 4 * (size_t)count;
+
+    // Require the var's full data payload, not just its 8-byte header, to be
+    // within the decompressed buffer.  A corrupt record whose final var claims
+    // a large count would otherwise be counted here, then over-read by the
+    // memcpy/string walk in the second pass below.
+    if(off + var_bytes > (size_t)uncompressed_size)
+      break;
 
     data_pool_size += count * 8;
-    off += 8 + 4 * (size_t)count;
+    off += var_bytes;
     num_vars++;
   }
 

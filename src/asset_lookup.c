@@ -531,21 +531,30 @@ asset_index_build(const char *game_path, const char *index_path)
 static bool
 asset_index_load(const char *index_path)
 {
+  const char *str;
+  const char *str_end;
+  uint64_t entries_off;
+  uint64_t str_off;
+  uint64_t entries_bytes;
+
   g_index_mmap = platform_mmap_readonly(index_path, &g_index_size);
 
   if(!g_index_mmap)
     return(false);
 
+  // Everything below indexes into the mmap using offsets/counts taken from the
+  // file itself.  A truncated or interrupted write, or a corrupt cache, could
+  // supply values that point past the mapping, so validate the size and every
+  // offset against g_index_size before trusting them (all arithmetic in
+  // uint64_t so num_entries * sizeof(entry) cannot overflow).
+  if(g_index_size < sizeof(TQIndexHeader))
+    goto fail;
+
   g_index_header = (TQIndexHeader *)g_index_mmap;
 
   if(memcmp(g_index_header->magic, "TQVI", 4) != 0 ||
      g_index_header->version != TQ_INDEX_VERSION)
-  {
-    platform_munmap(g_index_mmap, g_index_size);
-    g_index_mmap = NULL;
-    g_index_header = NULL;
-    return(false);
-  }
+    goto fail;
 
   // Reject an index built for a different game folder: the path was corrected
   // (e.g. in Settings), so this index is stale and must be rebuilt rather than
@@ -559,13 +568,22 @@ asset_index_load(const char *index_path)
             "asset_index_load: index built for a different game folder "
             "(\"%.256s\" != \"%.256s\"); rebuilding\n",
             g_index_header->game_folder, g_game_path);
-    platform_munmap(g_index_mmap, g_index_size);
-    g_index_mmap = NULL;
-    g_index_header = NULL;
-    return(false);
+    goto fail;
   }
 
-  g_index_entries = (TQAssetEntry *)((char *)g_index_mmap + g_index_header->entries_offset);
+  entries_off = g_index_header->entries_offset;
+  str_off = g_index_header->string_table_offset;
+  entries_bytes = (uint64_t)g_index_header->num_entries * sizeof(TQAssetEntry);
+
+  // Entry array must sit after the header and stay within the mapping; the
+  // string table must start after the entries and within the mapping.
+  if(entries_off < sizeof(TQIndexHeader) ||
+     entries_off + entries_bytes > g_index_size ||
+     str_off < entries_off + entries_bytes ||
+     str_off > g_index_size)
+    goto fail;
+
+  g_index_entries = (TQAssetEntry *)((char *)g_index_mmap + entries_off);
 
   g_num_files = g_index_header->num_files;
 
@@ -575,17 +593,38 @@ asset_index_load(const char *index_path)
   g_game_files = malloc((size_t)g_num_files * sizeof(char *));
 
   if(!g_game_files)
-    return(false);
+    goto fail;
 
-  const char *str = (const char *)g_index_mmap + g_index_header->string_table_offset;
+  str = (const char *)g_index_mmap + str_off;
+  str_end = (const char *)g_index_mmap + g_index_size;
 
   for(int i = 0; i < g_num_files; i++)
   {
+    size_t remain = (size_t)(str_end - str);
+    size_t slen = strnlen(str, remain);
+
+    // A truncated string table would leave a string with no terminating NUL
+    // inside the mapping; treat the whole index as corrupt.
+    if(slen == remain)
+    {
+      free(g_game_files);
+      g_game_files = NULL;
+      goto fail;
+    }
+
     g_game_files[i] = str;
-    str += strlen(str) + 1;
+    str += slen + 1;
   }
 
   return(true);
+
+fail:
+  platform_munmap(g_index_mmap, g_index_size);
+  g_index_mmap = NULL;
+  g_index_size = 0;
+  g_index_header = NULL;
+  g_index_entries = NULL;
+  return(false);
 }
 
 // asset_manager_init - initialize the asset manager with the game path

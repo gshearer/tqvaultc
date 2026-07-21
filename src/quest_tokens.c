@@ -330,8 +330,17 @@ quest_tokens_load(const char *filepath, QuestTokenSet *out)
 
   off += 4;
 
+  // count comes straight from the file and each token occupies several bytes on
+  // disk, so it can never exceed the bytes remaining.  Clamp before using it as
+  // an allocation size to avoid a multi-GB alloc (or, on 32-bit, a size_t
+  // overflow) from a corrupt count.
+  size_t remaining = len - off;
+
+  if(count > remaining)
+    count = (uint32_t)remaining;
+
   out->capacity = count > 0 ? (int)count : 64;
-  out->tokens = malloc(out->capacity * sizeof(char *));
+  out->tokens = malloc((size_t)out->capacity * sizeof(char *));
 
   if(!out->tokens)
   {
