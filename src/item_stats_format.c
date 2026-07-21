@@ -1,4 +1,5 @@
 #include "item_stats.h"
+#include "item_stats_expr.h"
 #include "asset_lookup.h"
 #include "compat.h"
 #include <stdio.h>
@@ -162,239 +163,6 @@ add_relic_section(const char *relic_name, const char *relic_bonus,
 }
 
 // requirements
-
-// Simple recursive-descent expression evaluator for itemCost equations.
-// Supports: +, -, *, /, ^ (power), parentheses, decimal numbers, and
-// variable substitution for "itemLevel" and "totalAttCount".
-
-typedef struct {
-  const char *p;
-  double item_level;
-  double total_att_count;
-} ExprCtx;
-
-static double expr_parse_expr(ExprCtx *c);
-
-// Skip whitespace in the expression context.
-// c: expression context.
-static void
-expr_skip_ws(ExprCtx *c)
-{
-  while(*c->p == ' ' || *c->p == '\t')
-    c->p++;
-}
-
-// Parse an atom (number, variable, or parenthesized expression).
-// c: expression context.
-// Returns: parsed value.
-static double
-expr_parse_atom(ExprCtx *c)
-{
-  expr_skip_ws(c);
-
-  if(*c->p == '(')
-  {
-    c->p++;
-
-    double v = expr_parse_expr(c);
-
-    expr_skip_ws(c);
-
-    if(*c->p == ')')
-      c->p++;
-
-    return(v);
-  }
-
-  // variable or number
-  if((*c->p >= 'a' && *c->p <= 'z') || (*c->p >= 'A' && *c->p <= 'Z'))
-  {
-    const char *start = c->p;
-
-    while((*c->p >= 'a' && *c->p <= 'z') || (*c->p >= 'A' && *c->p <= 'Z') ||
-           (*c->p >= '0' && *c->p <= '9') || *c->p == '_')
-      c->p++;
-
-    size_t len = (size_t)(c->p - start);
-
-    if(len == 9 && strncmp(start, "itemLevel", 9) == 0)
-      return(c->item_level);
-
-    if(len == 13 && strncmp(start, "totalAttCount", 13) == 0)
-      return(c->total_att_count);
-
-    return(0.0);
-  }
-
-  // number (possibly negative handled by caller via unary minus)
-  char *end;
-  double v = strtod(c->p, &end);
-
-  if(end == c->p)
-    return(0.0);
-
-  c->p = end;
-
-  return(v);
-}
-
-// Parse a unary expression (handles leading +/-).
-// c: expression context.
-// Returns: parsed value.
-static double
-expr_parse_unary(ExprCtx *c)
-{
-  expr_skip_ws(c);
-
-  if(*c->p == '-')
-  {
-    c->p++;
-    return(-expr_parse_unary(c));
-  }
-
-  if(*c->p == '+')
-  {
-    c->p++;
-    return(expr_parse_unary(c));
-  }
-
-  return(expr_parse_atom(c));
-}
-
-// Parse a power expression (right-associative ^).
-// c: expression context.
-// Returns: parsed value.
-static double
-expr_parse_power(ExprCtx *c)
-{
-  double v = expr_parse_unary(c);
-
-  expr_skip_ws(c);
-
-  if(*c->p == '^')
-  {
-    c->p++;
-    v = pow(v, expr_parse_power(c));
-  }
-
-  return(v);
-}
-
-// Parse a multiplication/division expression.
-// c: expression context.
-// Returns: parsed value.
-static double
-expr_parse_muldiv(ExprCtx *c)
-{
-  double v = expr_parse_power(c);
-
-  for(;;)
-  {
-    expr_skip_ws(c);
-
-    if(*c->p == '*')
-    {
-      c->p++;
-      v *= expr_parse_power(c);
-    }
-
-    else if(*c->p == '/')
-    {
-      c->p++;
-
-      double d = expr_parse_power(c);
-
-      if(d != 0)
-        v /= d;
-    }
-
-    else
-      break;
-  }
-
-  return(v);
-}
-
-// Parse an addition/subtraction expression (top-level).
-// c: expression context.
-// Returns: parsed value.
-static double
-expr_parse_expr(ExprCtx *c)
-{
-  double v = expr_parse_muldiv(c);
-
-  for(;;)
-  {
-    expr_skip_ws(c);
-
-    if(*c->p == '+')
-    {
-      c->p++;
-      v += expr_parse_muldiv(c);
-    }
-
-    else if(*c->p == '-')
-    {
-      c->p++;
-      v -= expr_parse_muldiv(c);
-    }
-
-    else
-      break;
-  }
-
-  return(v);
-}
-
-// Evaluate a string equation with variable substitution.
-// eq: equation string.
-// item_level: value for "itemLevel" variable.
-// total_att_count: value for "totalAttCount" variable.
-// Returns: computed result.
-static double
-eval_equation(const char *eq, double item_level, double total_att_count)
-{
-  ExprCtx c = { .p = eq, .item_level = item_level, .total_att_count = total_att_count };
-
-  return(expr_parse_expr(&c));
-}
-
-// Map item Class to equation prefix used in itemCost records.
-// item_class: Class string from DBR.
-// Returns: equation prefix, or NULL if unknown.
-static const char *
-class_to_equation_prefix(const char *item_class)
-{
-  if(!item_class)
-    return(NULL);
-
-  static const struct { const char *cls; const char *prefix; } map[] = {
-    {"ArmorProtective_Head",          "head"},
-    {"ArmorProtective_UpperBody",     "upperBody"},
-    {"ArmorProtective_Forearm",       "forearm"},
-    {"ArmorProtective_LowerBody",     "lowerBody"},
-    {"ArmorJewelry_Ring",             "ring"},
-    {"ArmorJewelry_Amulet",           "amulet"},
-    {"WeaponHunting_Spear",           "spear"},
-    {"WeaponMagical_Staff",           "staff"},
-    {"WeaponHunting_RangedOneHand",   "bow"},
-    {"WeaponHunting_Bow",             "bow"},
-    {"WeaponMelee_Sword",             "sword"},
-    {"WeaponMelee_Mace",              "mace"},
-    {"WeaponMelee_Axe",               "axe"},
-    {"WeaponArmor_Shield",            "shield"},
-    {"ArmorJewelry_Bracelet",         "bracelet"},
-    {NULL, NULL}
-  };
-
-  for(int i = 0; map[i].cls; i++)
-  {
-    if(strcasecmp(item_class, map[i].cls) == 0)
-      return(map[i].prefix);
-  }
-
-  return(NULL);
-}
 
 // Requirement slot order shared by the requirement helpers below.
 // Index 0 = level, 1 = dexterity, 2 = intelligence, 3 = strength.
@@ -991,6 +759,261 @@ append_pet_bonus_block(TQArzRecordData *src, TQTranslation *tr, BufWriter *w,
   return(true);
 }
 
+// Grants Skill block: the item's granted skill (name, activation condition,
+// description), its effect stats, and any summoned-pet / secondary-skill
+// sub-blocks.  No-op when the base item grants no skill.
+static void
+fmt_granted_skill(TQArzRecordData *base_data, TQTranslation *tr, BufWriter *w)
+{
+  const char *skill_dbr = base_data ? record_get_string_fast(base_data, INT_itemSkillName) : NULL;
+
+  if(skill_dbr && skill_dbr[0])
+  {
+    TQArzRecordData *skill_data = asset_get_dbr(skill_dbr);
+    const char *buff_path = skill_data ? record_get_string_fast(skill_data, INT_buffSkillName) : NULL;
+    const char *effect_dbr = (buff_path && buff_path[0]) ? buff_path : skill_dbr;
+    TQArzRecordData *effect_data = asset_get_dbr(effect_dbr);
+
+    const char *skill_tag = effect_data ? record_get_string_fast(effect_data, INT_skillDisplayName) : NULL;
+
+    if(!skill_tag && skill_data)
+      skill_tag = record_get_string_fast(skill_data, INT_skillDisplayName);
+
+    // skillDisplayName is usually a translation tag, but several skills
+    // (e.g. Atlantis' "Wash Out") store the literal display string instead;
+    // the game falls back to the raw value, so mirror that.
+    const char *skill_name = skill_tag ? translation_get(tr, skill_tag) : NULL;
+
+    if(!skill_name)
+      skill_name = skill_tag;
+
+    // Activation condition: the controller's triggerType picks one of the
+    // game's xtagAutoSkillCondition01..08 strings, each carrying its own
+    // leading space, e.g. " (Activated on attack)".
+    const char *trigger_text = NULL;
+    const char *controller_dbr = base_data ? record_get_string_fast(base_data, INT_itemSkillAutoController) : NULL;
+
+    if(controller_dbr && controller_dbr[0])
+    {
+      TQArzRecordData *ctrl_data = asset_get_dbr(controller_dbr);
+      const char *trigger_type = ctrl_data ? record_get_string_fast(ctrl_data, INT_triggerType) : NULL;
+
+      static const struct { const char *type; const char *xtag; const char *fallback; } trigger_map[] = {
+        {"LowHealth",       "xtagAutoSkillCondition01", " (Activated on low health)"},
+        {"LowMana",         "xtagAutoSkillCondition02", " (Activated on low energy)"},
+        {"HitByEnemy",      "xtagAutoSkillCondition03", " (Activated upon taking damage)"},
+        {"HitByMelee",      "xtagAutoSkillCondition04", " (Activated upon taking melee damage)"},
+        {"HitByProjectile", "xtagAutoSkillCondition05", " (Activated upon taking ranged damage)"},
+        {"CastBuff",        "xtagAutoSkillCondition06", " (Activated upon casting a buff)"},
+        {"AttackEnemy",     "xtagAutoSkillCondition07", " (Activated on attack)"},
+        {"OnEquip",         "xtagAutoSkillCondition08", " (Activated when equipped)"},
+      };
+
+      for(size_t ti = 0; trigger_type && ti < sizeof(trigger_map) / sizeof(trigger_map[0]); ti++)
+      {
+        if(strcasecmp(trigger_type, trigger_map[ti].type) == 0)
+        {
+          trigger_text = translation_get(tr, trigger_map[ti].xtag);
+
+          if(!trigger_text)
+            trigger_text = trigger_map[ti].fallback;
+
+          break;
+        }
+      }
+    }
+
+    TQVariable *skill_level_var = base_data ? arz_record_get_var(base_data, INT_itemSkillLevel) : NULL;
+    int skill_level = 1;
+
+    if(skill_level_var)
+    {
+      if(skill_level_var->type == TQ_VAR_INT)
+        skill_level = skill_level_var->value.i32[0];
+
+      else if(skill_level_var->type == TQ_VAR_FLOAT)
+        skill_level = (int)skill_level_var->value.f32[0];
+    }
+
+    int skill_index = (skill_level > 1) ? skill_level - 1 : 0;
+
+    buf_write(w, "\n<span color='white'><b>Grants Skill :</b></span>\n");
+
+    if(skill_name)
+    {
+      char *e_name = escape_markup(skill_name);
+      char *e_trig = escape_markup(trigger_text ? trigger_text : "");
+
+      // Name slightly larger, the way the game presents it; the activation
+      // text keeps the regular size on the same line.
+      buf_write(w, "<span color='white' size='large'>%s</span><span color='white'>%s</span>\n",
+                e_name, e_trig);
+      free(e_name);
+      free(e_trig);
+    }
+
+    const char *desc_tag = effect_data ? record_get_string_fast(effect_data, INT_skillBaseDescription) : NULL;
+
+    if(!desc_tag && skill_data)
+      desc_tag = record_get_string_fast(skill_data, INT_skillBaseDescription);
+
+    if(desc_tag)
+    {
+      const char *desc_text = translation_get(tr, desc_tag);
+
+      if(desc_text)
+      {
+        char *e_desc = escape_markup(desc_text);
+
+        buf_write(w, "<span color='white'>%s</span>\n", e_desc);
+        free(e_desc);
+      }
+    }
+
+    // Blank separator between the skill's name block and its stat lines,
+    // matching the in-game layout.
+    buf_write(w, "\n");
+
+    add_stats_from_record(effect_dbr, tr, w, "#DAA520", skill_index);
+
+    if(buff_path && buff_path[0])
+      add_stats_from_record(skill_dbr, tr, w, "#DAA520", skill_index);
+
+    // Pet summon (Skill_SpawnPet[Monster]): list the conjured pet's
+    // attributes and abilities.  The spawn fields live on the skill record,
+    // but fall through a buff indirection just in case.  No-op for non-summon
+    // skills.
+    {
+      TQArzRecordData *spawn_src = NULL;
+
+      if(skill_data && record_get_string_fast(skill_data, INT_spawnObjects))
+        spawn_src = skill_data;
+      else if(effect_data && record_get_string_fast(effect_data, INT_spawnObjects))
+        spawn_src = effect_data;
+
+      append_pet_summon_stats(spawn_src, tr, w, "#DAA520", skill_index);
+    }
+
+    // Pet/secondary skill
+    const char *pet_skill_path = effect_data ? record_get_string_fast(effect_data, INT_petSkillName) : NULL;
+
+    if((!pet_skill_path || !pet_skill_path[0]) && skill_data)
+      pet_skill_path = record_get_string_fast(skill_data, INT_petSkillName);
+
+    if(pet_skill_path && pet_skill_path[0])
+    {
+      TQArzRecordData *pet_data = asset_get_dbr(pet_skill_path);
+
+      if(pet_data)
+      {
+        float chance = 0;
+        TQVariable *cv = arz_record_get_var(pet_data, INT_skillChanceWeight);
+
+        if(cv)
+        {
+          int ci = (skill_index < (int)cv->count) ? skill_index : (int)cv->count - 1;
+
+          if(ci < 0)
+            ci = 0;
+
+          chance = (cv->type == TQ_VAR_INT) ? (float)cv->value.i32[ci] : cv->value.f32[ci];
+        }
+
+        if(chance > 0)
+          buf_write(w, "<span color='#DAA520'>%.0f%% Chance of:</span>\n", chance);
+
+        const char *pet_buff = record_get_string_fast(pet_data, INT_buffSkillName);
+        const char *pet_effect = (pet_buff && pet_buff[0]) ? pet_buff : pet_skill_path;
+
+        add_stats_from_record(pet_effect, tr, w, "#DAA520", skill_index);
+      }
+    }
+
+  }
+}
+
+// Set info block: the item's set name and its member list.  The set name and
+// members become 'i:' cross-ref links when ITEM_FMT_SET_LINKS is set (DB
+// browser), plain coloured text otherwise.  No-op for non-set items.
+static void
+fmt_set_info(TQArzRecordData *base_data, TQTranslation *tr, unsigned flags, BufWriter *w)
+{
+  const char *set_dbr = base_data ? record_get_string_fast(base_data, INT_itemSetName) : NULL;
+
+  if(set_dbr && set_dbr[0])
+  {
+    // In the Database Browser the set name and members are clickable 'i:'
+    // cross-refs (set entries are stored under their set DBR path); plain
+    // text everywhere else.
+    bool link = (flags & ITEM_FMT_SET_LINKS) != 0;
+    TQArzRecordData *set_data = asset_get_dbr(set_dbr);
+    const char *set_tag = set_data ? record_get_string_fast(set_data, INT_setName) : NULL;
+    const char *set_name = set_tag ? translation_get(tr, set_tag) : NULL;
+
+    if(set_name)
+    {
+      char *e_set = escape_markup(set_name);
+
+      if(link)
+      {
+        char *e_href = escape_markup(set_dbr);
+
+        buf_write(w, "\n<a href='i:%s'><span color='#40FF40'>%s</span></a>\n",
+                  e_href ? e_href : "", e_set ? e_set : "");
+        free(e_href);
+      }
+      else
+        buf_write(w, "\n<span color='#40FF40'>%s</span>\n", e_set);
+
+      free(e_set);
+    }
+
+    // List set members
+    TQVariable *members_var = set_data ? arz_record_get_var(set_data, INT_setMembers) : NULL;
+
+    if(members_var && members_var->type == TQ_VAR_STRING)
+    {
+      for(uint32_t m = 0; m < members_var->count; m++)
+      {
+        const char *member_path = members_var->value.str[m];
+
+        if(!member_path || !member_path[0])
+          continue;
+
+        TQArzRecordData *member_data = asset_get_dbr(member_path);
+        const char *member_tag = member_data ? record_get_string_fast(member_data, INT_description) : NULL;
+
+        if(!member_tag && member_data)
+          member_tag = record_get_string_fast(member_data, INT_itemNameTag);
+
+        const char *member_name = member_tag ? translation_get(tr, member_tag) : NULL;
+
+        if(member_name)
+        {
+          char *e_member = escape_markup(member_name);
+
+          if(link)
+          {
+            // Real rarity colour (matching the set's own detail page) and a
+            // jump link to the member item.
+            const char *mc = get_item_color(member_path, NULL, NULL);
+            char *e_href = escape_markup(member_path);
+
+            buf_write(w, "    <a href='i:%s'><span color='%s'>%s</span></a>\n",
+                      e_href ? e_href : "", mc ? mc : "white",
+                      e_member ? e_member : "");
+            free(e_href);
+          }
+          else
+            buf_write(w, "<span color='#FFF52B'>    %s</span>\n", e_member);
+
+          free(e_member);
+        }
+      }
+    }
+  }
+}
+
 // main tooltip formatter
 
 // Format item stats into a markup string, shared by both character and vault items.
@@ -1291,173 +1314,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   }
 
   // Granted skill
-  {
-    const char *skill_dbr = base_data ? record_get_string_fast(base_data, INT_itemSkillName) : NULL;
-
-    if(skill_dbr && skill_dbr[0])
-    {
-      TQArzRecordData *skill_data = asset_get_dbr(skill_dbr);
-      const char *buff_path = skill_data ? record_get_string_fast(skill_data, INT_buffSkillName) : NULL;
-      const char *effect_dbr = (buff_path && buff_path[0]) ? buff_path : skill_dbr;
-      TQArzRecordData *effect_data = asset_get_dbr(effect_dbr);
-
-      const char *skill_tag = effect_data ? record_get_string_fast(effect_data, INT_skillDisplayName) : NULL;
-
-      if(!skill_tag && skill_data)
-        skill_tag = record_get_string_fast(skill_data, INT_skillDisplayName);
-
-      // skillDisplayName is usually a translation tag, but several skills
-      // (e.g. Atlantis' "Wash Out") store the literal display string instead;
-      // the game falls back to the raw value, so mirror that.
-      const char *skill_name = skill_tag ? translation_get(tr, skill_tag) : NULL;
-
-      if(!skill_name)
-        skill_name = skill_tag;
-
-      // Activation condition: the controller's triggerType picks one of the
-      // game's xtagAutoSkillCondition01..08 strings, each carrying its own
-      // leading space, e.g. " (Activated on attack)".
-      const char *trigger_text = NULL;
-      const char *controller_dbr = base_data ? record_get_string_fast(base_data, INT_itemSkillAutoController) : NULL;
-
-      if(controller_dbr && controller_dbr[0])
-      {
-        TQArzRecordData *ctrl_data = asset_get_dbr(controller_dbr);
-        const char *trigger_type = ctrl_data ? record_get_string_fast(ctrl_data, INT_triggerType) : NULL;
-
-        static const struct { const char *type; const char *xtag; const char *fallback; } trigger_map[] = {
-          {"LowHealth",       "xtagAutoSkillCondition01", " (Activated on low health)"},
-          {"LowMana",         "xtagAutoSkillCondition02", " (Activated on low energy)"},
-          {"HitByEnemy",      "xtagAutoSkillCondition03", " (Activated upon taking damage)"},
-          {"HitByMelee",      "xtagAutoSkillCondition04", " (Activated upon taking melee damage)"},
-          {"HitByProjectile", "xtagAutoSkillCondition05", " (Activated upon taking ranged damage)"},
-          {"CastBuff",        "xtagAutoSkillCondition06", " (Activated upon casting a buff)"},
-          {"AttackEnemy",     "xtagAutoSkillCondition07", " (Activated on attack)"},
-          {"OnEquip",         "xtagAutoSkillCondition08", " (Activated when equipped)"},
-        };
-
-        for(size_t ti = 0; trigger_type && ti < sizeof(trigger_map) / sizeof(trigger_map[0]); ti++)
-        {
-          if(strcasecmp(trigger_type, trigger_map[ti].type) == 0)
-          {
-            trigger_text = translation_get(tr, trigger_map[ti].xtag);
-
-            if(!trigger_text)
-              trigger_text = trigger_map[ti].fallback;
-
-            break;
-          }
-        }
-      }
-
-      TQVariable *skill_level_var = base_data ? arz_record_get_var(base_data, INT_itemSkillLevel) : NULL;
-      int skill_level = 1;
-
-      if(skill_level_var)
-      {
-        if(skill_level_var->type == TQ_VAR_INT)
-          skill_level = skill_level_var->value.i32[0];
-
-        else if(skill_level_var->type == TQ_VAR_FLOAT)
-          skill_level = (int)skill_level_var->value.f32[0];
-      }
-
-      int skill_index = (skill_level > 1) ? skill_level - 1 : 0;
-
-      buf_write(&w, "\n<span color='white'><b>Grants Skill :</b></span>\n");
-
-      if(skill_name)
-      {
-        char *e_name = escape_markup(skill_name);
-        char *e_trig = escape_markup(trigger_text ? trigger_text : "");
-
-        // Name slightly larger, the way the game presents it; the activation
-        // text keeps the regular size on the same line.
-        buf_write(&w, "<span color='white' size='large'>%s</span><span color='white'>%s</span>\n",
-                  e_name, e_trig);
-        free(e_name);
-        free(e_trig);
-      }
-
-      const char *desc_tag = effect_data ? record_get_string_fast(effect_data, INT_skillBaseDescription) : NULL;
-
-      if(!desc_tag && skill_data)
-        desc_tag = record_get_string_fast(skill_data, INT_skillBaseDescription);
-
-      if(desc_tag)
-      {
-        const char *desc_text = translation_get(tr, desc_tag);
-
-        if(desc_text)
-        {
-          char *e_desc = escape_markup(desc_text);
-
-          buf_write(&w, "<span color='white'>%s</span>\n", e_desc);
-          free(e_desc);
-        }
-      }
-
-      // Blank separator between the skill's name block and its stat lines,
-      // matching the in-game layout.
-      buf_write(&w, "\n");
-
-      add_stats_from_record(effect_dbr, tr, &w, "#DAA520", skill_index);
-
-      if(buff_path && buff_path[0])
-        add_stats_from_record(skill_dbr, tr, &w, "#DAA520", skill_index);
-
-      // Pet summon (Skill_SpawnPet[Monster]): list the conjured pet's
-      // attributes and abilities.  The spawn fields live on the skill record,
-      // but fall through a buff indirection just in case.  No-op for non-summon
-      // skills.
-      {
-        TQArzRecordData *spawn_src = NULL;
-
-        if(skill_data && record_get_string_fast(skill_data, INT_spawnObjects))
-          spawn_src = skill_data;
-        else if(effect_data && record_get_string_fast(effect_data, INT_spawnObjects))
-          spawn_src = effect_data;
-
-        append_pet_summon_stats(spawn_src, tr, &w, "#DAA520", skill_index);
-      }
-
-      // Pet/secondary skill
-      const char *pet_skill_path = effect_data ? record_get_string_fast(effect_data, INT_petSkillName) : NULL;
-
-      if((!pet_skill_path || !pet_skill_path[0]) && skill_data)
-        pet_skill_path = record_get_string_fast(skill_data, INT_petSkillName);
-
-      if(pet_skill_path && pet_skill_path[0])
-      {
-        TQArzRecordData *pet_data = asset_get_dbr(pet_skill_path);
-
-        if(pet_data)
-        {
-          float chance = 0;
-          TQVariable *cv = arz_record_get_var(pet_data, INT_skillChanceWeight);
-
-          if(cv)
-          {
-            int ci = (skill_index < (int)cv->count) ? skill_index : (int)cv->count - 1;
-
-            if(ci < 0)
-              ci = 0;
-
-            chance = (cv->type == TQ_VAR_INT) ? (float)cv->value.i32[ci] : cv->value.f32[ci];
-          }
-
-          if(chance > 0)
-            buf_write(&w, "<span color='#DAA520'>%.0f%% Chance of:</span>\n", chance);
-
-          const char *pet_buff = record_get_string_fast(pet_data, INT_buffSkillName);
-          const char *pet_effect = (pet_buff && pet_buff[0]) ? pet_buff : pet_skill_path;
-
-          add_stats_from_record(pet_effect, tr, &w, "#DAA520", skill_index);
-        }
-      }
-
-    }
-  }
+  fmt_granted_skill(base_data, tr, &w);
 
   // Artifact completion bonus
   if(is_artifact && relic_bonus && relic_bonus[0])
@@ -1514,82 +1371,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   }
 
   // Set info
-  {
-    const char *set_dbr = base_data ? record_get_string_fast(base_data, INT_itemSetName) : NULL;
-
-    if(set_dbr && set_dbr[0])
-    {
-      // In the Database Browser the set name and members are clickable 'i:'
-      // cross-refs (set entries are stored under their set DBR path); plain
-      // text everywhere else.
-      bool link = (flags & ITEM_FMT_SET_LINKS) != 0;
-      TQArzRecordData *set_data = asset_get_dbr(set_dbr);
-      const char *set_tag = set_data ? record_get_string_fast(set_data, INT_setName) : NULL;
-      const char *set_name = set_tag ? translation_get(tr, set_tag) : NULL;
-
-      if(set_name)
-      {
-        char *e_set = escape_markup(set_name);
-
-        if(link)
-        {
-          char *e_href = escape_markup(set_dbr);
-
-          buf_write(&w, "\n<a href='i:%s'><span color='#40FF40'>%s</span></a>\n",
-                    e_href ? e_href : "", e_set ? e_set : "");
-          free(e_href);
-        }
-        else
-          buf_write(&w, "\n<span color='#40FF40'>%s</span>\n", e_set);
-
-        free(e_set);
-      }
-
-      // List set members
-      TQVariable *members_var = set_data ? arz_record_get_var(set_data, INT_setMembers) : NULL;
-
-      if(members_var && members_var->type == TQ_VAR_STRING)
-      {
-        for(uint32_t m = 0; m < members_var->count; m++)
-        {
-          const char *member_path = members_var->value.str[m];
-
-          if(!member_path || !member_path[0])
-            continue;
-
-          TQArzRecordData *member_data = asset_get_dbr(member_path);
-          const char *member_tag = member_data ? record_get_string_fast(member_data, INT_description) : NULL;
-
-          if(!member_tag && member_data)
-            member_tag = record_get_string_fast(member_data, INT_itemNameTag);
-
-          const char *member_name = member_tag ? translation_get(tr, member_tag) : NULL;
-
-          if(member_name)
-          {
-            char *e_member = escape_markup(member_name);
-
-            if(link)
-            {
-              // Real rarity colour (matching the set's own detail page) and a
-              // jump link to the member item.
-              const char *mc = get_item_color(member_path, NULL, NULL);
-              char *e_href = escape_markup(member_path);
-
-              buf_write(&w, "    <a href='i:%s'><span color='%s'>%s</span></a>\n",
-                        e_href ? e_href : "", mc ? mc : "white",
-                        e_member ? e_member : "");
-              free(e_href);
-            }
-            else
-              buf_write(&w, "<span color='#FFF52B'>    %s</span>\n", e_member);
-
-            free(e_member);
-          }
-        }
-      }
-    }
-  }
+  fmt_set_info(base_data, tr, flags, &w);
 
   // Requirements
   add_requirements(base_name, prefix_name, suffix_name, relic_name,

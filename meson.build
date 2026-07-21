@@ -61,6 +61,7 @@ app_sources = [
   'src/translation.c',
   'src/item_stats.c',
   'src/item_stats_format.c',
+  'src/item_stats_expr.c',
   'src/affix_table.c',
   'src/db_loot.c',
   'src/db_creatures.c',
