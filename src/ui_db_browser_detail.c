@@ -1173,23 +1173,12 @@ db_section_header(BufWriter *w, const char *accent, const char *title)
   buf_write(w, "\n<span color='%s' weight='bold'>▌ %s</span>\n", accent, title);
 }
 
-// Append the creature's stat block to the detail pane as three colored sections:
-// Attributes (Health/Energy + regen, Str/Dex/Int), Resistances (non-zero %
-// resists tinted per element, vulnerabilities flagged in red) and Abilities (the
-// active skills it casts, resolved to display names).  Levels + race already
-// print in the header line above, so they aren't repeated here.  Each section is
-// emitted only when it has content.
+// db_props_attributes -- gold "Attributes" section: Health/Energy each in their
+// pool color (red/blue) with muted regen, then Str/Dex/Int in warrior/hunter/mage
+// tints.  Emits nothing when every value is zero.
 static void
-db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
+db_props_attributes(TQArzRecordData *d, BufWriter *w)
 {
-  TQArzRecordData *d = asset_get_dbr(c->path);
-
-  if(!d)
-    return;
-
-  // -- Attributes -----------------------------------------------------------
-  // gold accent.  Health/Energy each carry their pool color (red / blue) with
-  // muted regen in tow; Str/Dex/Int take the warrior/hunter/mage tints.
   float life    = db_creature_attr(d, "characterLife");
   float mana    = db_creature_attr(d, "characterMana");
   float life_rg = db_creature_attr(d, "characterLifeRegen");
@@ -1198,40 +1187,45 @@ db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
   int   dex     = (int)(db_creature_attr(d, "characterDexterity") + 0.5f);
   int   intl    = (int)(db_creature_attr(d, "characterIntelligence") + 0.5f);
 
-  if(life > 0 || mana > 0 || str > 0 || dex > 0 || intl > 0)
+  if(!(life > 0 || mana > 0 || str > 0 || dex > 0 || intl > 0))
+    return;
+
+  db_section_header(w, "#E8B24A", "Attributes");
+
+  if(life > 0 || mana > 0)
   {
-    db_section_header(w, "#E8B24A", "Attributes");
-
-    if(life > 0 || mana > 0)
+    buf_write(w, "  <span color='#8A8A98'>Health</span> "
+                 "<span color='#F06B6B'>%d</span>", (int)(life + 0.5f));
+    if(life_rg > 0)
+      buf_write(w, " <span color='#7E8A82'>(+%d/s)</span>",
+                (int)(life_rg + 0.5f));
+    if(mana > 0)
     {
-      buf_write(w, "  <span color='#8A8A98'>Health</span> "
-                   "<span color='#F06B6B'>%d</span>", (int)(life + 0.5f));
-      if(life_rg > 0)
+      buf_write(w, "    <span color='#8A8A98'>Energy</span> "
+                   "<span color='#5FA8F0'>%d</span>", (int)(mana + 0.5f));
+      if(mana_rg > 0)
         buf_write(w, " <span color='#7E8A82'>(+%d/s)</span>",
-                  (int)(life_rg + 0.5f));
-      if(mana > 0)
-      {
-        buf_write(w, "    <span color='#8A8A98'>Energy</span> "
-                     "<span color='#5FA8F0'>%d</span>", (int)(mana + 0.5f));
-        if(mana_rg > 0)
-          buf_write(w, " <span color='#7E8A82'>(+%d/s)</span>",
-                    (int)(mana_rg + 0.5f));
-      }
-      buf_write(w, "\n");
+                  (int)(mana_rg + 0.5f));
     }
-
-    if(str > 0 || dex > 0 || intl > 0)
-      buf_write(w,
-        "  <span color='#8A8A98'>Strength</span> <span color='#E8945C'>%d</span>"
-        "    <span color='#8A8A98'>Dexterity</span> <span color='#7FD08A'>%d</span>"
-        "    <span color='#8A8A98'>Intelligence</span> "
-        "<span color='#7FB4F0'>%d</span>\n",
-        str, dex, intl);
+    buf_write(w, "\n");
   }
 
-  // -- Resistances ----------------------------------------------------------
-  // teal accent.  Each non-zero resist is tinted by its element; vulnerabilities
-  // (a negative resist = extra damage taken) are flagged in bold red instead.
+  if(str > 0 || dex > 0 || intl > 0)
+    buf_write(w,
+      "  <span color='#8A8A98'>Strength</span> <span color='#E8945C'>%d</span>"
+      "    <span color='#8A8A98'>Dexterity</span> <span color='#7FD08A'>%d</span>"
+      "    <span color='#8A8A98'>Intelligence</span> "
+      "<span color='#7FB4F0'>%d</span>\n",
+      str, dex, intl);
+}
+
+// db_props_resistances -- teal "Resistances" section: each non-zero resist
+// tinted by its element; vulnerabilities (negative = extra damage taken) in
+// bold red.  Header + newline emitted lazily so a fully-neutral creature is
+// silent.
+static void
+db_props_resistances(TQArzRecordData *d, BufWriter *w)
+{
   bool any_res = false;
 
   for(size_t i = 0; i < G_N_ELEMENTS(DB_CREATURE_RESISTS); i++)
@@ -1262,12 +1256,15 @@ db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
   }
   if(any_res)
     buf_write(w, "\n");
+}
 
-  // -- Abilities ------------------------------------------------------------
-  // violet accent.  The active skills it uses (skillName1..N + attack/special
-  // slots), deduped by path then by resolved name, skipping passive/utility
-  // records.  The section header is emitted lazily on the first shown skill so
-  // pure-melee creatures get no empty "Abilities" banner.
+// db_props_abilities -- violet "Abilities" section: the active skills it uses
+// (skillName1..N + attack/special slots), deduped by path then by resolved name,
+// skipping passive/utility records.  The header is emitted lazily on the first
+// shown skill so pure-melee creatures get no empty banner.
+static void
+db_props_abilities(DbBrowserState *st, TQArzRecordData *d, BufWriter *w)
+{
   static const char *ATTACK_FIELDS[] = {
     "attackSkillName", "specialAttackSkillName", "specialAttack2SkillName",
   };
@@ -1344,6 +1341,25 @@ db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
   g_ptr_array_free(paths, TRUE);
   g_hash_table_destroy(seen_path);
   g_hash_table_destroy(seen_name);
+}
+
+// Append the creature's stat block to the detail pane as three colored sections:
+// Attributes (Health/Energy + regen, Str/Dex/Int), Resistances (non-zero %
+// resists tinted per element, vulnerabilities flagged in red) and Abilities (the
+// active skills it casts, resolved to display names).  Levels + race already
+// print in the header line above, so they aren't repeated here.  Each section is
+// emitted only when it has content.
+static void
+db_append_creature_properties(DbBrowserState *st, DbCreature *c, BufWriter *w)
+{
+  TQArzRecordData *d = asset_get_dbr(c->path);
+
+  if(!d)
+    return;
+
+  db_props_attributes(d, w);
+  db_props_resistances(d, w);
+  db_props_abilities(st, d, w);
 }
 
 // db_creature_at / db_quest_at - fetch by index with bounds + NULL validation.

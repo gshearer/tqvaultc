@@ -299,6 +299,164 @@ db_creature_free(gpointer data)
   g_free(c);
 }
 
+// creature_from_record -- build a DbCreature from a loaded record, or NULL if
+// it should be skipped (wrong classification, missing tag, or level-less).
+// The returned creature has path/name_tag/classification/race + level[]/active[]
+// filled; drops array and index insertion are the caller's job.
+static DbCreature *
+creature_from_record(TQArzRecordData *d, const char *path)
+{
+  const char *cls = rec_str(d, "monsterClassification");
+  const char *tag = rec_str(d, "description");
+
+  if(!cls || !tag ||
+     (g_ascii_strcasecmp(cls, "Quest") != 0 &&
+      g_ascii_strcasecmp(cls, "Hero")  != 0 &&
+      g_ascii_strcasecmp(cls, "Boss")  != 0))
+    return(NULL);
+
+  // charLevel per difficulty (clone the last value forward if short).
+  TQVariable *lv = rec_var(d, "charLevel");
+  int nlv = (lv && (lv->type == TQ_VAR_INT || lv->type == TQ_VAR_FLOAT))
+            ? (int)lv->count : 0;
+
+  if(nlv == 0)
+    return(NULL);  // tqdb skips level-less creatures
+
+  DbCreature *c = g_new0(DbCreature, 1);
+  c->path           = g_strdup(path);
+  c->name_tag       = g_strdup(tag);
+  c->classification = g_strdup(cls);
+  {
+    const char *race = rec_str(d, "characterRacialProfile");
+    c->race = race ? g_strdup(race) : NULL;
+  }
+
+  for(int i = 0; i < 3; i++)
+  {
+    int src = (i < nlv) ? i : nlv - 1;
+    double val = (lv->type == TQ_VAR_INT) ? (double)lv->value.i32[src]
+                                          : (double)lv->value.f32[src];
+    c->level[i]  = (int)val;
+    c->active[i] = true;
+  }
+
+  // tqdb: a difficulty whose level repeats the first one means the creature
+  // doesn't spawn there; deactivate (count(level[0]) - 1) leading tiers.
+  int repeats = 0;
+  for(int i = 0; i < 3; i++)
+    if(c->level[i] == c->level[0])
+      repeats++;
+  if(repeats > 1 && repeats < 3 + 1)
+    for(int i = 0; i < repeats - 1 && i < 3; i++)
+      c->active[i] = false;
+
+  return(c);
+}
+
+// creature_collect_drops -- aggregate this creature's item -> chance[3] map
+// across its active difficulties (worn equipment weights + boss chest) into agg.
+static void
+creature_collect_drops(DbLootCtx *ctx, TQArzRecordData *d, DbCreature *c,
+                       GHashTable *agg)
+{
+  for(int diff = 0; diff < 3; diff++)
+  {
+    if(!c->active[diff])
+      continue;
+
+    int level = c->level[diff];
+
+    // Worn equipment.
+    for(size_t s = 0; s < G_N_ELEMENTS(EQUIP_SLOTS); s++)
+    {
+      char key[48];
+      g_snprintf(key, sizeof(key), "chanceToEquip%s", EQUIP_SLOTS[s]);
+      double equip_chance = rec_num(d, key);
+      if(equip_chance <= 0.0)
+        continue;
+
+      double summed = 0.0;
+      for(int i = 1; i <= 6; i++)
+      {
+        g_snprintf(key, sizeof(key), "chanceToEquip%sItem%d", EQUIP_SLOTS[s], i);
+        summed += rec_num(d, key);
+      }
+      if(summed <= 0.0)
+        continue;
+
+      for(int i = 1; i <= 6; i++)
+      {
+        g_snprintf(key, sizeof(key), "chanceToEquip%sItem%d", EQUIP_SLOTS[s], i);
+        double weight = rec_num(d, key);
+        if(weight <= 0.0)
+          continue;
+
+        g_snprintf(key, sizeof(key), "loot%sItem%d", EQUIP_SLOTS[s], i);
+        const char *ref = rec_str_at(d, key, (uint32_t)diff);
+        if(!ref)
+          continue;
+
+        double factor = (weight / summed) * equip_chance;
+        merge_ref(ctx, agg, ref, level, factor, diff);
+      }
+    }
+
+    // Boss chest.
+    const char *chest = chest_path_for(c->name_tag, diff);
+    if(chest)
+    {
+      GHashTable *resolved = db_loot_resolve_ctx(ctx, chest, level);
+      if(resolved)
+      {
+        merge_into_agg(agg, resolved, 1.0, diff);
+        g_hash_table_destroy(resolved);
+      }
+    }
+  }
+}
+
+// creature_fold_agg -- fold a creature's aggregated drop map into both the
+// reverse index (idx->by_item) and its own forward list (c->drops).
+static void
+creature_fold_agg(DbCreatureIndex *idx, DbCreature *c, GHashTable *agg, int cidx)
+{
+  GHashTableIter it;
+  gpointer k, v;
+  g_hash_table_iter_init(&it, agg);
+  while(g_hash_table_iter_next(&it, &k, &v))
+  {
+    double *tier = v;
+    if(tier[0] <= 0.0 && tier[1] <= 0.0 && tier[2] <= 0.0)
+      continue;
+
+    c->has_drops = true;
+
+    // Reverse index: item -> creatures.
+    GPtrArray *drops = g_hash_table_lookup(idx->by_item, k);
+    if(!drops)
+    {
+      drops = g_ptr_array_new_with_free_func(g_free);
+      g_hash_table_insert(idx->by_item, g_strdup((const char *)k), drops);
+    }
+
+    DbDrop *drop = g_new0(DbDrop, 1);
+    drop->creature_idx = cidx;
+    drop->chance[0] = tier[0];
+    drop->chance[1] = tier[1];
+    drop->chance[2] = tier[2];
+    g_ptr_array_add(drops, drop);
+
+    // Forward list: creature -> items.
+    DbItemChance *ic = g_new0(DbItemChance, 1);
+    ic->item_lc = g_strdup((const char *)k);
+    ic->chance[0] = tier[0];
+    ic->chance[1] = tier[1];
+    ic->chance[2] = tier[2];
+    g_ptr_array_add(c->drops, ic);
+  }
+}
+
 DbCreatureIndex *
 db_creature_index_build(TQArzFile *arz)
 {
@@ -329,157 +487,24 @@ db_creature_index_build(TQArzFile *arz)
     if(!d)
       continue;
 
-    const char *cls = rec_str(d, "monsterClassification");
-    const char *tag = rec_str(d, "description");
-
-    if(!cls || !tag ||
-       (g_ascii_strcasecmp(cls, "Quest") != 0 &&
-        g_ascii_strcasecmp(cls, "Hero")  != 0 &&
-        g_ascii_strcasecmp(cls, "Boss")  != 0))
+    DbCreature *c = creature_from_record(d, path);
+    if(!c)
     {
       arz_record_data_free(d);
       continue;
     }
 
-    // charLevel per difficulty (clone the last value forward if short).
-    TQVariable *lv = rec_var(d, "charLevel");
-    int nlv = (lv && (lv->type == TQ_VAR_INT || lv->type == TQ_VAR_FLOAT))
-              ? (int)lv->count : 0;
-
-    if(nlv == 0)
-    {
-      arz_record_data_free(d);
-      continue;  // tqdb skips level-less creatures
-    }
-
-    DbCreature *c = g_new0(DbCreature, 1);
-    c->path           = g_strdup(path);
-    c->name_tag       = g_strdup(tag);
-    c->classification = g_strdup(cls);
-    {
-      const char *race = rec_str(d, "characterRacialProfile");
-      c->race = race ? g_strdup(race) : NULL;
-    }
-
-    for(int i = 0; i < 3; i++)
-    {
-      int src = (i < nlv) ? i : nlv - 1;
-      double val = (lv->type == TQ_VAR_INT) ? (double)lv->value.i32[src]
-                                            : (double)lv->value.f32[src];
-      c->level[i]  = (int)val;
-      c->active[i] = true;
-    }
-
-    // tqdb: a difficulty whose level repeats the first one means the creature
-    // doesn't spawn there; deactivate (count(level[0]) - 1) leading tiers.
-    int repeats = 0;
-    for(int i = 0; i < 3; i++)
-      if(c->level[i] == c->level[0])
-        repeats++;
-    if(repeats > 1 && repeats < 3 + 1)
-      for(int i = 0; i < repeats - 1 && i < 3; i++)
-        c->active[i] = false;
-
     int cidx = (int)idx->creatures->len;
     c->drops = g_ptr_array_new_with_free_func(item_chance_free);
     g_ptr_array_add(idx->creatures, c);
 
-    // Aggregate item -> chance[3] across difficulties.
+    // Aggregate item -> chance[3] across difficulties, then fold into the index.
     GHashTable *agg = g_hash_table_new_full(g_str_hash, g_str_equal,
                                             g_free, g_free);
 
-    for(int diff = 0; diff < 3; diff++)
-    {
-      if(!c->active[diff])
-        continue;
-
-      int level = c->level[diff];
-
-      // Worn equipment.
-      for(size_t s = 0; s < G_N_ELEMENTS(EQUIP_SLOTS); s++)
-      {
-        char key[48];
-        g_snprintf(key, sizeof(key), "chanceToEquip%s", EQUIP_SLOTS[s]);
-        double equip_chance = rec_num(d, key);
-        if(equip_chance <= 0.0)
-          continue;
-
-        double summed = 0.0;
-        for(int i = 1; i <= 6; i++)
-        {
-          g_snprintf(key, sizeof(key), "chanceToEquip%sItem%d", EQUIP_SLOTS[s], i);
-          summed += rec_num(d, key);
-        }
-        if(summed <= 0.0)
-          continue;
-
-        for(int i = 1; i <= 6; i++)
-        {
-          g_snprintf(key, sizeof(key), "chanceToEquip%sItem%d", EQUIP_SLOTS[s], i);
-          double weight = rec_num(d, key);
-          if(weight <= 0.0)
-            continue;
-
-          g_snprintf(key, sizeof(key), "loot%sItem%d", EQUIP_SLOTS[s], i);
-          const char *ref = rec_str_at(d, key, (uint32_t)diff);
-          if(!ref)
-            continue;
-
-          double factor = (weight / summed) * equip_chance;
-          merge_ref(ctx, agg, ref, level, factor, diff);
-        }
-      }
-
-      // Boss chest.
-      const char *chest = chest_path_for(tag, diff);
-      if(chest)
-      {
-        GHashTable *resolved = db_loot_resolve_ctx(ctx, chest, level);
-        if(resolved)
-        {
-          merge_into_agg(agg, resolved, 1.0, diff);
-          g_hash_table_destroy(resolved);
-        }
-      }
-    }
-
+    creature_collect_drops(ctx, d, c, agg);
     arz_record_data_free(d);
-
-    // Fold the aggregate into the reverse index.
-    GHashTableIter it;
-    gpointer k, v;
-    g_hash_table_iter_init(&it, agg);
-    while(g_hash_table_iter_next(&it, &k, &v))
-    {
-      double *tier = v;
-      if(tier[0] <= 0.0 && tier[1] <= 0.0 && tier[2] <= 0.0)
-        continue;
-
-      c->has_drops = true;
-
-      // Reverse index: item -> creatures.
-      GPtrArray *drops = g_hash_table_lookup(idx->by_item, k);
-      if(!drops)
-      {
-        drops = g_ptr_array_new_with_free_func(g_free);
-        g_hash_table_insert(idx->by_item, g_strdup((const char *)k), drops);
-      }
-
-      DbDrop *drop = g_new0(DbDrop, 1);
-      drop->creature_idx = cidx;
-      drop->chance[0] = tier[0];
-      drop->chance[1] = tier[1];
-      drop->chance[2] = tier[2];
-      g_ptr_array_add(drops, drop);
-
-      // Forward list: creature -> items.
-      DbItemChance *ic = g_new0(DbItemChance, 1);
-      ic->item_lc = g_strdup((const char *)k);
-      ic->chance[0] = tier[0];
-      ic->chance[1] = tier[1];
-      ic->chance[2] = tier[2];
-      g_ptr_array_add(c->drops, ic);
-    }
+    creature_fold_agg(idx, c, agg, cidx);
 
     g_ptr_array_sort(c->drops, item_chance_cmp);
     g_hash_table_destroy(agg);

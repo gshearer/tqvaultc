@@ -672,117 +672,85 @@ db_affix_add_variant(GPtrArray *variants, const char *path)
 // whose gear is the union of every referencing table's type.  Prefix vs suffix
 // comes from the affix record's own path (\prefix\ / \suffix\).  Properties are
 // rendered live at detail time via add_stats_from_record.
-void
-build_affix_index(DbBrowserState *st)
+
+// affix_add_from_table -- fold one LootRandomizer table's randomizerName* refs
+// into the merge map (affixes: "P|<tag>"/"S|<tag>" -> DbAffixAgg).  label is the
+// equipment type this table is for; each referenced affix contributes its type
+// and its path as a variant of the merged (tag-keyed) affix.
+static void
+affix_add_from_table(TQArzRecordData *table, const char *label,
+                     GHashTable *affixes)
 {
-  TQArzFile *arz = st->arz;
-
-  if(!arz)
-    return;
-
-  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
-
-  // "P|<tag>" / "S|<tag>" (tag-less records keyed by "<kind>|@<path>") -> agg
-  GHashTable *affixes = g_hash_table_new_full(g_str_hash, g_str_equal,
-                                              g_free, db_affix_agg_free);
-
-  for(uint32_t i = 0; i < arz->num_records; i++)
+  for(uint32_t v = 0; v < table->num_vars; v++)
   {
-    // Like build_category_index: this scans every record and caches the large
-    // LootRandomizer affix tables, so bound the record cache as we go (no
-    // record pointer is held across iterations).
-    if(i > 0 && (i & 0x03FF) == 0)
-      asset_dbr_cache_clear();
+    TQVariable *var = &table->vars[v];
 
-    const char *path = arz->records[i].path;
-
-    if(!path)
+    if(!var->name ||
+       strncasecmp(var->name, "randomizerName", 14) != 0 ||
+       var->type != TQ_VAR_STRING || var->count == 0 ||
+       !var->value.str || !var->value.str[0] || !var->value.str[0][0])
       continue;
 
-    char *lower = db_norm_path(path);
-    char *label = NULL;
-    bool is_table = db_affix_table_label(lower, &label);
+    const char *affix_path = var->value.str[0];
+    size_t plen = strlen(affix_path);
 
-    g_free(lower);
-
-    if(!is_table)
+    // Skip malformed randomizer entries (a few tables carry a numeric
+    // placeholder instead of an affix path); tqdb likewise requires the
+    // referenced affix DBR to exist.
+    if(plen < 4 || strcasecmp(affix_path + plen - 4, ".dbr") != 0)
       continue;
 
-    TQArzRecordData *table = asset_get_dbr(path);
+    // Classify prefix vs suffix by the record's own path.
+    int kind;
 
-    if(!table)
+    if(path_contains_ci(affix_path, "\\suffix\\"))
+      kind = 1;
+    else if(path_contains_ci(affix_path, "\\prefix\\"))
+      kind = 0;
+    else
+      continue;  // not a standard prefix/suffix record
+
+    // Merge key: the translation tag (so tiers/rolls of one named affix
+    // collapse), falling back to the path for tag-less records.
+    const char *tag = dbr_get_string(affix_path, "lootRandomizerName");
+    char *key;
+
+    if(tag && tag[0])
+      key = g_strdup_printf("%c|%s", kind ? 'S' : 'P', tag);
+    else
     {
-      g_free(label);
-      continue;
+      char *np = db_norm_path(affix_path);
+
+      key = g_strdup_printf("%c|@%s", kind ? 'S' : 'P', np);
+      g_free(np);
     }
 
-    for(uint32_t v = 0; v < table->num_vars; v++)
+    DbAffixAgg *agg = g_hash_table_lookup(affixes, key);
+
+    if(!agg)
     {
-      TQVariable *var = &table->vars[v];
-
-      if(!var->name ||
-         strncasecmp(var->name, "randomizerName", 14) != 0 ||
-         var->type != TQ_VAR_STRING || var->count == 0 ||
-         !var->value.str || !var->value.str[0] || !var->value.str[0][0])
-        continue;
-
-      const char *affix_path = var->value.str[0];
-      size_t plen = strlen(affix_path);
-
-      // Skip malformed randomizer entries (a few tables carry a numeric
-      // placeholder instead of an affix path); tqdb likewise requires the
-      // referenced affix DBR to exist.
-      if(plen < 4 || strcasecmp(affix_path + plen - 4, ".dbr") != 0)
-        continue;
-
-      // Classify prefix vs suffix by the record's own path.
-      int kind;
-
-      if(path_contains_ci(affix_path, "\\suffix\\"))
-        kind = 1;
-      else if(path_contains_ci(affix_path, "\\prefix\\"))
-        kind = 0;
-      else
-        continue;  // not a standard prefix/suffix record
-
-      // Merge key: the translation tag (so tiers/rolls of one named affix
-      // collapse), falling back to the path for tag-less records.
-      const char *tag = dbr_get_string(affix_path, "lootRandomizerName");
-      char *key;
-
-      if(tag && tag[0])
-        key = g_strdup_printf("%c|%s", kind ? 'S' : 'P', tag);
-      else
-      {
-        char *np = db_norm_path(affix_path);
-
-        key = g_strdup_printf("%c|@%s", kind ? 'S' : 'P', np);
-        g_free(np);
-      }
-
-      DbAffixAgg *agg = g_hash_table_lookup(affixes, key);
-
-      if(!agg)
-      {
-        agg = g_new0(DbAffixAgg, 1);
-        agg->kind = kind;
-        agg->types = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-        agg->variants = g_ptr_array_new_with_free_func(g_free);
-        g_hash_table_insert(affixes, key, agg);  // takes ownership of key
-      }
-      else
-        g_free(key);
-
-      if(!g_hash_table_contains(agg->types, label))
-        g_hash_table_add(agg->types, g_strdup(label));
-
-      db_affix_add_variant(agg->variants, affix_path);
+      agg = g_new0(DbAffixAgg, 1);
+      agg->kind = kind;
+      agg->types = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
+      agg->variants = g_ptr_array_new_with_free_func(g_free);
+      g_hash_table_insert(affixes, key, agg);  // takes ownership of key
     }
+    else
+      g_free(key);
 
-    g_free(label);
+    if(!g_hash_table_contains(agg->types, label))
+      g_hash_table_add(agg->types, g_strdup(label));
+
+    db_affix_add_variant(agg->variants, affix_path);
   }
+}
 
-  // Build one item per merged affix, bucketed and sorted by name.
+// affix_emit_buckets -- turn the merged affix map into one DbBrowseItem per
+// affix, bucketed by prefix/suffix, sorted by name, appended to the category
+// stores.  Consumes (destroys) affixes.
+static void
+affix_emit_buckets(DbBrowserState *st, GHashTable *affixes)
+{
   GPtrArray *buckets[2];  // [0] = prefixes, [1] = suffixes
 
   buckets[0] = g_ptr_array_new();
@@ -839,6 +807,59 @@ build_affix_index(DbBrowserState *st)
   }
 
   g_hash_table_destroy(affixes);
+}
+
+void
+build_affix_index(DbBrowserState *st)
+{
+  TQArzFile *arz = st->arz;
+
+  if(!arz)
+    return;
+
+  asset_dbr_cache_clear_and_trim();   // phase boundary: release + return to OS
+
+  // "P|<tag>" / "S|<tag>" (tag-less records keyed by "<kind>|@<path>") -> agg
+  GHashTable *affixes = g_hash_table_new_full(g_str_hash, g_str_equal,
+                                              g_free, db_affix_agg_free);
+
+  for(uint32_t i = 0; i < arz->num_records; i++)
+  {
+    // Like build_category_index: this scans every record and caches the large
+    // LootRandomizer affix tables, so bound the record cache as we go (no
+    // record pointer is held across iterations).
+    if(i > 0 && (i & 0x03FF) == 0)
+      asset_dbr_cache_clear();
+
+    const char *path = arz->records[i].path;
+
+    if(!path)
+      continue;
+
+    char *lower = db_norm_path(path);
+    char *label = NULL;
+    bool is_table = db_affix_table_label(lower, &label);
+
+    g_free(lower);
+
+    if(!is_table)
+      continue;
+
+    TQArzRecordData *table = asset_get_dbr(path);
+
+    if(!table)
+    {
+      g_free(label);
+      continue;
+    }
+
+    affix_add_from_table(table, label, affixes);
+
+    g_free(label);
+  }
+
+  // Build one item per merged affix, bucketed and sorted by name.
+  affix_emit_buckets(st, affixes);
 }
 
 // -- Affix drill-down: items of a gear type that can roll a given affix -------

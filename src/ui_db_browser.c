@@ -1321,6 +1321,113 @@ show_db_browser_dialog(AppWidgets *widgets)
   g_idle_add(db_browser_load_step, ld);
 }
 
+// build_browser_center -- the center column: a global search entry + count
+// label above the icon grid (GtkGridView over the current category store, with
+// right-click held-item spawn).  Returns the box; populates st->search_entry /
+// count_label / filter_model / selection / grid_view.
+static GtkWidget *
+build_browser_center(DbBrowserState *st)
+{
+  GtkWidget *center = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+
+  gtk_widget_set_margin_start(center, 4);
+  gtk_widget_set_margin_end(center, 4);
+  gtk_widget_set_margin_top(center, 4);
+  gtk_widget_set_margin_bottom(center, 4);
+
+  GtkWidget *search = gtk_search_entry_new();
+
+  st->search_entry = search;
+  gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(search),
+                                         "Search all (name, stats, skills)...");
+  g_signal_connect(search, "search-changed", G_CALLBACK(on_search_changed), st);
+  gtk_box_append(GTK_BOX(center), search);
+
+  st->count_label = gtk_label_new("Select a category");
+  gtk_label_set_xalign(GTK_LABEL(st->count_label), 0.0f);
+  gtk_box_append(GTK_BOX(center), st->count_label);
+
+  // Passthrough model over the current category store (NULL until a category is
+  // chosen).  The search highlights matches in place instead of filtering, so
+  // there is no filter -- db_apply_filter_model just swaps the source model.
+  st->filter_model = gtk_filter_list_model_new(NULL, NULL);
+
+  st->selection = gtk_single_selection_new(G_LIST_MODEL(st->filter_model));
+  gtk_single_selection_set_autoselect(st->selection, FALSE);
+  gtk_single_selection_set_can_unselect(st->selection, TRUE);
+  g_signal_connect(st->selection, "notify::selected-item",
+                   G_CALLBACK(on_grid_selection_changed), st);
+
+  GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+
+  g_signal_connect(factory, "setup",  G_CALLBACK(grid_factory_setup),  st);
+  g_signal_connect(factory, "bind",   G_CALLBACK(grid_factory_bind),   st);
+  g_signal_connect(factory, "unbind", G_CALLBACK(grid_factory_unbind), st);
+
+  st->grid_view = gtk_grid_view_new(GTK_SELECTION_MODEL(st->selection), factory);
+  gtk_grid_view_set_max_columns(GTK_GRID_VIEW(st->grid_view), 16);
+  gtk_grid_view_set_min_columns(GTK_GRID_VIEW(st->grid_view), 2);
+
+  GtkGesture *grid_rc = gtk_gesture_click_new();
+
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(grid_rc), GDK_BUTTON_SECONDARY);
+  g_signal_connect(grid_rc, "pressed", G_CALLBACK(on_grid_right_click), st);
+  gtk_widget_add_controller(st->grid_view, GTK_EVENT_CONTROLLER(grid_rc));
+
+  GtkWidget *grid_scroll = gtk_scrolled_window_new();
+
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(grid_scroll),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_vexpand(grid_scroll, TRUE);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid_scroll), st->grid_view);
+  gtk_box_append(GTK_BOX(center), grid_scroll);
+
+  return(center);
+}
+
+// build_browser_detail -- the right detail pane: a large icon above the full
+// tooltip label (non-selectable so <a href> cross-links fire reliably).
+// Returns the scrolled window; populates st->detail_pic / detail_label.
+static GtkWidget *
+build_browser_detail(DbBrowserState *st)
+{
+  GtkWidget *detail = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+
+  gtk_widget_set_margin_start(detail, 8);
+  gtk_widget_set_margin_end(detail, 8);
+  gtk_widget_set_margin_top(detail, 8);
+  gtk_widget_set_margin_bottom(detail, 8);
+
+  st->detail_pic = gtk_picture_new();
+  gtk_widget_set_size_request(st->detail_pic, 128, 128);
+  gtk_picture_set_content_fit(GTK_PICTURE(st->detail_pic), GTK_CONTENT_FIT_CONTAIN);
+  gtk_widget_set_halign(st->detail_pic, GTK_ALIGN_CENTER);
+  gtk_box_append(GTK_BOX(detail), st->detail_pic);
+
+  st->detail_label = gtk_label_new("");
+  gtk_label_set_wrap(GTK_LABEL(st->detail_label), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(st->detail_label), 0.0f);
+  gtk_label_set_yalign(GTK_LABEL(st->detail_label), 0.0f);
+  // NOT selectable: a selectable GtkLabel competes for the click between text
+  // selection and link activation, so cross-reference <a href> links fired only
+  // intermittently (a hair of pointer movement became a selection drag) and the
+  // whole pane showed the I-beam cursor.  Non-selectable keeps activate-link
+  // firing reliably with a pointer cursor over links.
+  gtk_label_set_selectable(GTK_LABEL(st->detail_label), FALSE);
+  gtk_widget_add_css_class(st->detail_label, "item-tooltip");
+  g_signal_connect(st->detail_label, "activate-link",
+                   G_CALLBACK(on_detail_link), st);
+  gtk_box_append(GTK_BOX(detail), st->detail_label);
+
+  GtkWidget *detail_scroll = gtk_scrolled_window_new();
+
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(detail_scroll),
+                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_vexpand(detail_scroll, TRUE);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(detail_scroll), detail);
+  return(detail_scroll);
+}
+
 // Build the full browser window once all data is indexed.
 static void
 db_browser_build_ui(DbBrowserState *st)
@@ -1385,99 +1492,15 @@ db_browser_build_ui(DbBrowserState *st)
   gtk_paned_set_resize_end_child(GTK_PANED(paned), TRUE);
 
   // Center: search entry above the icon grid.
-  GtkWidget *center = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-
-  gtk_widget_set_margin_start(center, 4);
-  gtk_widget_set_margin_end(center, 4);
-  gtk_widget_set_margin_top(center, 4);
-  gtk_widget_set_margin_bottom(center, 4);
-
-  GtkWidget *search = gtk_search_entry_new();
-
-  st->search_entry = search;
-  gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(search),
-                                         "Search all (name, stats, skills)...");
-  g_signal_connect(search, "search-changed", G_CALLBACK(on_search_changed), st);
-  gtk_box_append(GTK_BOX(center), search);
-
-  st->count_label = gtk_label_new("Select a category");
-  gtk_label_set_xalign(GTK_LABEL(st->count_label), 0.0f);
-  gtk_box_append(GTK_BOX(center), st->count_label);
-
-  // Passthrough model over the current category store (NULL until a category is
-  // chosen).  The search highlights matches in place instead of filtering, so
-  // there is no filter -- db_apply_filter_model just swaps the source model.
-  st->filter_model = gtk_filter_list_model_new(NULL, NULL);
-
-  st->selection = gtk_single_selection_new(G_LIST_MODEL(st->filter_model));
-  gtk_single_selection_set_autoselect(st->selection, FALSE);
-  gtk_single_selection_set_can_unselect(st->selection, TRUE);
-  g_signal_connect(st->selection, "notify::selected-item",
-                   G_CALLBACK(on_grid_selection_changed), st);
-
-  GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
-
-  g_signal_connect(factory, "setup",  G_CALLBACK(grid_factory_setup),  st);
-  g_signal_connect(factory, "bind",   G_CALLBACK(grid_factory_bind),   st);
-  g_signal_connect(factory, "unbind", G_CALLBACK(grid_factory_unbind), st);
-
-  st->grid_view = gtk_grid_view_new(GTK_SELECTION_MODEL(st->selection), factory);
-  gtk_grid_view_set_max_columns(GTK_GRID_VIEW(st->grid_view), 16);
-  gtk_grid_view_set_min_columns(GTK_GRID_VIEW(st->grid_view), 2);
-
-  GtkGesture *grid_rc = gtk_gesture_click_new();
-
-  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(grid_rc), GDK_BUTTON_SECONDARY);
-  g_signal_connect(grid_rc, "pressed", G_CALLBACK(on_grid_right_click), st);
-  gtk_widget_add_controller(st->grid_view, GTK_EVENT_CONTROLLER(grid_rc));
-
-  GtkWidget *grid_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(grid_scroll),
-                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_widget_set_vexpand(grid_scroll, TRUE);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(grid_scroll), st->grid_view);
-  gtk_box_append(GTK_BOX(center), grid_scroll);
+  GtkWidget *center = build_browser_center(st);
 
   gtk_paned_set_start_child(GTK_PANED(paned2), center);
   gtk_paned_set_resize_start_child(GTK_PANED(paned2), TRUE);
   gtk_paned_set_shrink_start_child(GTK_PANED(paned2), FALSE);
 
   // Right: detail pane (large icon + full tooltip).
-  GtkWidget *detail = gtk_box_new(GTK_ORIENTATION_VERTICAL, 6);
+  GtkWidget *detail_scroll = build_browser_detail(st);
 
-  gtk_widget_set_margin_start(detail, 8);
-  gtk_widget_set_margin_end(detail, 8);
-  gtk_widget_set_margin_top(detail, 8);
-  gtk_widget_set_margin_bottom(detail, 8);
-
-  st->detail_pic = gtk_picture_new();
-  gtk_widget_set_size_request(st->detail_pic, 128, 128);
-  gtk_picture_set_content_fit(GTK_PICTURE(st->detail_pic), GTK_CONTENT_FIT_CONTAIN);
-  gtk_widget_set_halign(st->detail_pic, GTK_ALIGN_CENTER);
-  gtk_box_append(GTK_BOX(detail), st->detail_pic);
-
-  st->detail_label = gtk_label_new("");
-  gtk_label_set_wrap(GTK_LABEL(st->detail_label), TRUE);
-  gtk_label_set_xalign(GTK_LABEL(st->detail_label), 0.0f);
-  gtk_label_set_yalign(GTK_LABEL(st->detail_label), 0.0f);
-  // NOT selectable: a selectable GtkLabel competes for the click between text
-  // selection and link activation, so cross-reference <a href> links fired only
-  // intermittently (a hair of pointer movement became a selection drag) and the
-  // whole pane showed the I-beam cursor.  Non-selectable keeps activate-link
-  // firing reliably with a pointer cursor over links.
-  gtk_label_set_selectable(GTK_LABEL(st->detail_label), FALSE);
-  gtk_widget_add_css_class(st->detail_label, "item-tooltip");
-  g_signal_connect(st->detail_label, "activate-link",
-                   G_CALLBACK(on_detail_link), st);
-  gtk_box_append(GTK_BOX(detail), st->detail_label);
-
-  GtkWidget *detail_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(detail_scroll),
-                                  GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_widget_set_vexpand(detail_scroll, TRUE);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(detail_scroll), detail);
   gtk_paned_set_end_child(GTK_PANED(paned2), detail_scroll);
   gtk_paned_set_resize_end_child(GTK_PANED(paned2), FALSE);
   gtk_paned_set_shrink_end_child(GTK_PANED(paned2), FALSE);

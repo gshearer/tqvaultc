@@ -981,6 +981,125 @@ on_list_right_click(GtkGestureClick *gesture, int n_press,
 
 // -- Show the database explorer dialog --------------------------------------
 
+// build_record_tree_pane -- left pane: the record tree (GListStore ->
+// GtkTreeListModel -> filter -> single selection -> GtkListView), wired to the
+// custom search filter and the right-click held-item spawn.  Returns the
+// scrolled window to drop into the paned; populates the st->tree_*/selection/
+// filter/list_view fields.
+static GtkWidget *
+build_record_tree_pane(DatabaseDialogState *st)
+{
+  st->root_store = g_list_store_new(DB_TYPE_RECORD_ITEM);
+
+  // Build tree from arz records (populates st->root_store recursively)
+  build_database_tree(st);
+
+  // Tree-list model wraps the root store; passthrough=FALSE so items
+  // downstream are GtkTreeListRow* (required by GtkTreeExpander).
+  // gtk_tree_list_model_new is transfer-full of the root store — pass an
+  // extra ref so we keep st->root_store valid for cache walks.
+  st->tree_list_model = gtk_tree_list_model_new(
+      G_LIST_MODEL(g_object_ref(st->root_store)),
+      FALSE,  // passthrough
+      FALSE,  // autoexpand
+      create_child_model,
+      st,
+      NULL);
+
+  // Custom filter reads matches_cache (precomputed in on_search_changed).
+  // Keep our own ref so we can call gtk_filter_changed in on_search_changed.
+  st->custom_filter = gtk_custom_filter_new(filter_match, st, NULL);
+  g_object_ref(st->custom_filter);
+
+  st->filter_model = gtk_filter_list_model_new(
+      G_LIST_MODEL(st->tree_list_model),  // transfer-full
+      GTK_FILTER(st->custom_filter));     // transfer-full
+
+  st->selection = gtk_single_selection_new(
+      G_LIST_MODEL(st->filter_model));    // transfer-full
+  gtk_single_selection_set_autoselect(st->selection, FALSE);
+  gtk_single_selection_set_can_unselect(st->selection, TRUE);
+
+  // Plain g_signal_connect: when the dialog is destroyed, the GtkListView
+  // (which owns the only ref to st->selection beyond ours-via-state-fields)
+  // is disposed, which clears all signal handlers before database_state_free
+  // runs to free `st`.  No use-after-free.
+  g_signal_connect(st->selection, "notify::selected-item",
+                   G_CALLBACK(on_selection_changed), st);
+
+  // List view driven by selection.  Single GtkSignalListItemFactory with
+  // setup/bind/unbind that drives a GtkTreeExpander wrapping a GtkLabel.
+  GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
+
+  g_signal_connect(factory, "setup",   G_CALLBACK(record_factory_setup),  NULL);
+  g_signal_connect(factory, "bind",    G_CALLBACK(record_factory_bind),   NULL);
+  g_signal_connect(factory, "unbind",  G_CALLBACK(record_factory_unbind), NULL);
+
+  st->list_view = gtk_list_view_new(GTK_SELECTION_MODEL(st->selection),
+                                     factory);
+  // gtk_list_view_new is transfer-full of selection AND factory.
+
+  // Right-click on a row spawns a held item for drop into an inventory.
+  GtkGesture *list_right_click = gtk_gesture_click_new();
+
+  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(list_right_click),
+                                 GDK_BUTTON_SECONDARY);
+  g_signal_connect(list_right_click, "pressed",
+                   G_CALLBACK(on_list_right_click), st);
+  gtk_widget_add_controller(st->list_view,
+                             GTK_EVENT_CONTROLLER(list_right_click));
+
+  GtkWidget *tree_scroll = gtk_scrolled_window_new();
+
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tree_scroll),
+                                  GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(tree_scroll),
+                                 st->list_view);
+  return(tree_scroll);
+}
+
+// build_variable_pane -- right pane: the selected record's variables in a
+// GtkColumnView (Variable / Type / Value).  Returns the scrolled window to drop
+// into the paned; populates st->var_store / st->var_column_view.
+static GtkWidget *
+build_variable_pane(DatabaseDialogState *st)
+{
+  st->var_store = g_list_store_new(VAR_TYPE_ITEM);
+
+  // gtk_no_selection_new is transfer-full of the model — pass an extra ref so
+  // st->var_store stays valid for our own remove_all/append calls.
+  GtkNoSelection *var_sel = gtk_no_selection_new(
+      G_LIST_MODEL(g_object_ref(st->var_store)));
+
+  // gtk_column_view_new is transfer-full of the selection model.
+  st->var_column_view = gtk_column_view_new(GTK_SELECTION_MODEL(var_sel));
+
+  GtkColumnViewColumn *name_col = var_column_new("Variable", VAR_FIELD_NAME);
+  GtkColumnViewColumn *type_col = var_column_new("Type", VAR_FIELD_TYPE);
+  GtkColumnViewColumn *value_col = var_column_new("Value", VAR_FIELD_VALUE);
+
+  gtk_column_view_column_set_fixed_width(name_col, 150);
+  gtk_column_view_column_set_expand(value_col, TRUE);
+
+  gtk_column_view_append_column(GTK_COLUMN_VIEW(st->var_column_view),
+                                 name_col);
+  gtk_column_view_append_column(GTK_COLUMN_VIEW(st->var_column_view),
+                                 type_col);
+  gtk_column_view_append_column(GTK_COLUMN_VIEW(st->var_column_view),
+                                 value_col);
+  g_object_unref(name_col);
+  g_object_unref(type_col);
+  g_object_unref(value_col);
+
+  GtkWidget *var_scroll = gtk_scrolled_window_new();
+
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(var_scroll),
+                                  GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(var_scroll),
+                                 st->var_column_view);
+  return(var_scroll);
+}
+
 // Create and present the Database Explorer dialog window.  Loads the
 // game's database.arz, builds a tree of records, and provides variable
 // inspection and search filtering.
@@ -1078,111 +1197,16 @@ show_database_dialog(AppWidgets *widgets)
 
   // -- Left pane: record tree (modern GListStore + GtkListView) --
 
-  st->root_store = g_list_store_new(DB_TYPE_RECORD_ITEM);
+  GtkWidget *tree_scroll = build_record_tree_pane(st);
 
-  // Build tree from arz records (populates st->root_store recursively)
-  build_database_tree(st);
-
-  // Tree-list model wraps the root store; passthrough=FALSE so items
-  // downstream are GtkTreeListRow* (required by GtkTreeExpander).
-  // gtk_tree_list_model_new is transfer-full of the root store — pass an
-  // extra ref so we keep st->root_store valid for cache walks.
-  st->tree_list_model = gtk_tree_list_model_new(
-      G_LIST_MODEL(g_object_ref(st->root_store)),
-      FALSE,  // passthrough
-      FALSE,  // autoexpand
-      create_child_model,
-      st,
-      NULL);
-
-  // Custom filter reads matches_cache (precomputed in on_search_changed).
-  // Keep our own ref so we can call gtk_filter_changed in on_search_changed.
-  st->custom_filter = gtk_custom_filter_new(filter_match, st, NULL);
-  g_object_ref(st->custom_filter);
-
-  st->filter_model = gtk_filter_list_model_new(
-      G_LIST_MODEL(st->tree_list_model),  // transfer-full
-      GTK_FILTER(st->custom_filter));     // transfer-full
-
-  st->selection = gtk_single_selection_new(
-      G_LIST_MODEL(st->filter_model));    // transfer-full
-  gtk_single_selection_set_autoselect(st->selection, FALSE);
-  gtk_single_selection_set_can_unselect(st->selection, TRUE);
-
-  // Plain g_signal_connect: when the dialog is destroyed, the GtkListView
-  // (which owns the only ref to st->selection beyond ours-via-state-fields)
-  // is disposed, which clears all signal handlers before database_state_free
-  // runs to free `st`.  No use-after-free.
-  g_signal_connect(st->selection, "notify::selected-item",
-                   G_CALLBACK(on_selection_changed), st);
-
-  // List view driven by selection.  Single GtkSignalListItemFactory with
-  // setup/bind/unbind that drives a GtkTreeExpander wrapping a GtkLabel.
-  GtkListItemFactory *factory = gtk_signal_list_item_factory_new();
-
-  g_signal_connect(factory, "setup",   G_CALLBACK(record_factory_setup),  NULL);
-  g_signal_connect(factory, "bind",    G_CALLBACK(record_factory_bind),   NULL);
-  g_signal_connect(factory, "unbind",  G_CALLBACK(record_factory_unbind), NULL);
-
-  st->list_view = gtk_list_view_new(GTK_SELECTION_MODEL(st->selection),
-                                     factory);
-  // gtk_list_view_new is transfer-full of selection AND factory.
-
-  // Right-click on a row spawns a held item for drop into an inventory.
-  GtkGesture *list_right_click = gtk_gesture_click_new();
-
-  gtk_gesture_single_set_button(GTK_GESTURE_SINGLE(list_right_click),
-                                 GDK_BUTTON_SECONDARY);
-  g_signal_connect(list_right_click, "pressed",
-                   G_CALLBACK(on_list_right_click), st);
-  gtk_widget_add_controller(st->list_view,
-                             GTK_EVENT_CONTROLLER(list_right_click));
-
-  GtkWidget *tree_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(tree_scroll),
-                                  GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(tree_scroll),
-                                 st->list_view);
   gtk_paned_set_start_child(GTK_PANED(paned), tree_scroll);
   gtk_paned_set_resize_start_child(GTK_PANED(paned), FALSE);
   gtk_paned_set_shrink_start_child(GTK_PANED(paned), FALSE);
 
   // -- Right pane: variable list (modern GListStore + GtkColumnView) --
 
-  st->var_store = g_list_store_new(VAR_TYPE_ITEM);
+  GtkWidget *var_scroll = build_variable_pane(st);
 
-  // gtk_no_selection_new is transfer-full of the model — pass an extra ref so
-  // st->var_store stays valid for our own remove_all/append calls.
-  GtkNoSelection *var_sel = gtk_no_selection_new(
-      G_LIST_MODEL(g_object_ref(st->var_store)));
-
-  // gtk_column_view_new is transfer-full of the selection model.
-  st->var_column_view = gtk_column_view_new(GTK_SELECTION_MODEL(var_sel));
-
-  GtkColumnViewColumn *name_col = var_column_new("Variable", VAR_FIELD_NAME);
-  GtkColumnViewColumn *type_col = var_column_new("Type", VAR_FIELD_TYPE);
-  GtkColumnViewColumn *value_col = var_column_new("Value", VAR_FIELD_VALUE);
-
-  gtk_column_view_column_set_fixed_width(name_col, 150);
-  gtk_column_view_column_set_expand(value_col, TRUE);
-
-  gtk_column_view_append_column(GTK_COLUMN_VIEW(st->var_column_view),
-                                 name_col);
-  gtk_column_view_append_column(GTK_COLUMN_VIEW(st->var_column_view),
-                                 type_col);
-  gtk_column_view_append_column(GTK_COLUMN_VIEW(st->var_column_view),
-                                 value_col);
-  g_object_unref(name_col);
-  g_object_unref(type_col);
-  g_object_unref(value_col);
-
-  GtkWidget *var_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(var_scroll),
-                                  GTK_POLICY_AUTOMATIC, GTK_POLICY_AUTOMATIC);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(var_scroll),
-                                 st->var_column_view);
   gtk_paned_set_end_child(GTK_PANED(paned), var_scroll);
   gtk_paned_set_resize_end_child(GTK_PANED(paned), TRUE);
   gtk_paned_set_shrink_end_child(GTK_PANED(paned), FALSE);
