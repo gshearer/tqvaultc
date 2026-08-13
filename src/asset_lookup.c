@@ -1,6 +1,7 @@
 #include "asset_lookup.h"
 #include "platform_mmap.h"
 #include "config.h"
+#include "io_atomic.h"
 #include <string.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -516,11 +517,11 @@ asset_index_build(const char *game_path, const char *index_path)
 
   b.num_entries = write_idx;
 
-  FILE *fp = fopen(index_path, "wb");
+  TQAtomicFile *af = tq_atomic_open(index_path);
 
-  if(!fp)
+  if(!af)
   {
-    fprintf(stderr, "asset_index_build: fopen(%s, wb) failed: %s\n",
+    fprintf(stderr, "asset_index_build: cannot write %s: %s\n",
             index_path, strerror(errno));
     return;
   }
@@ -540,13 +541,17 @@ asset_index_build(const char *game_path, const char *index_path)
   g_strlcpy(header.game_folder, game_path ? game_path : "",
             sizeof(header.game_folder));
 
-  fwrite(&header, sizeof(header), 1, fp);
-  fwrite(b.entries, sizeof(TQAssetEntry), b.num_entries, fp);
+  // Writes are sticky-checked: one commit test covers the whole sequence, and
+  // a partial index is discarded rather than left where the loader finds it.
+  tq_atomic_write(af, &header, sizeof(header));
+  tq_atomic_write(af, b.entries, (size_t)b.num_entries * sizeof(TQAssetEntry));
 
   for(int i = 0; i < b.num_files; i++)
-    fwrite(b.files[i].path, 1, strlen(b.files[i].path) + 1, fp);
+    tq_atomic_write(af, b.files[i].path, strlen(b.files[i].path) + 1);
 
-  fclose(fp);
+  // io_atomic warns with the real errno; a partial index was discarded.
+  if(!tq_atomic_commit(af))
+    fprintf(stderr, "asset_index_build: index %s not written\n", index_path);
 
   for(int i = 0; i < b.num_files; i++)
     free(b.files[i].path);

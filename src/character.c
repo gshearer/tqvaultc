@@ -1,5 +1,6 @@
 #include "character.h"
 #include "config.h"
+#include "io_atomic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1664,6 +1665,33 @@ write_u32_at(uint8_t *data, size_t offset, uint32_t val)
   memcpy(data + offset, &val, 4);
 }
 
+// Write <filepath>.bak, once, the first time a character is saved. A safety net
+// we cannot verify is worse than none, so a failed backup fails the save.
+// character: the character whose current bytes are the backup contents.
+// filepath: the save path the backup sits beside.
+// Returns: true if a backup exists (already or newly written).
+static bool
+character_write_backup(const TQCharacter *character, const char *filepath)
+{
+  char bak_path[1024];
+
+  snprintf(bak_path, sizeof(bak_path), "%s.bak", filepath);
+
+  if(g_file_test(bak_path, G_FILE_TEST_EXISTS))
+    return(true);
+
+  if(!tq_write_file_atomic(bak_path, character->raw_data, character->data_size))
+  {
+    fprintf(stderr, "character: backup %s failed, not saving\n", bak_path);
+    return(false);
+  }
+
+  if(tqvc_debug)
+    printf("character: backup created %s\n", bak_path);
+
+  return(true);
+}
+
 // Save modified character stats (strength, dexterity, etc.) by writing
 // in-place at recorded offsets and flushing to disk.
 // character: the character whose stats to persist.
@@ -1686,21 +1714,8 @@ character_save_stats(TQCharacter *character)
   // All stat offsets are within the prefix region (before inv_block_start),
   // so they remain valid even after splice saves.
 
-  // Create backup on first save
-  char bak_path[1024];
-
-  snprintf(bak_path, sizeof(bak_path), "%s.bak", character->filepath);
-
-  if(!g_file_test(bak_path, G_FILE_TEST_EXISTS))
-  {
-    FILE *bak = fopen(bak_path, "wb");
-
-    if(bak)
-    {
-      fwrite(character->raw_data, 1, character->data_size, bak);
-      fclose(bak);
-    }
-  }
+  if(!character_write_backup(character, character->filepath))
+    return(-1);
 
   // In-place writes at recorded offsets
   write_float_at(character->raw_data, character->off_strength, character->strength);
@@ -1711,16 +1726,8 @@ character_save_stats(TQCharacter *character)
   write_u32_at(character->raw_data, character->off_modifier_points, character->modifier_points);
 
   // Write to disk
-  FILE *file = fopen(character->filepath, "wb");
-
-  if(!file)
-    return(-1);
-
-  size_t written = fwrite(character->raw_data, 1, character->data_size, file);
-
-  fclose(file);
-
-  if(written != character->data_size)
+  if(!tq_write_file_atomic(character->filepath, character->raw_data,
+                           character->data_size))
     return(-1);
 
   if(tqvc_debug)
@@ -1756,21 +1763,8 @@ character_save_skills_ex(TQCharacter *character,
     return(-1);
   }
 
-  // Create backup on first save
-  char bak_path[1024];
-
-  snprintf(bak_path, sizeof(bak_path), "%s.bak", character->filepath);
-
-  if(!g_file_test(bak_path, G_FILE_TEST_EXISTS))
-  {
-    FILE *bak = fopen(bak_path, "wb");
-
-    if(bak)
-    {
-      fwrite(character->raw_data, 1, character->data_size, bak);
-      fclose(bak);
-    }
-  }
+  if(!character_write_backup(character, character->filepath))
+    return(-1);
 
   // In-place writes: existing skill levels at recorded offsets.  Every skill in
   // the list precedes the end-of-list splice point, so these offsets stay valid.
@@ -1840,16 +1834,8 @@ character_save_skills_ex(TQCharacter *character,
     write_u32_at(character->raw_data, character->off_skill_max, newmax);
   }
 
-  FILE *file = fopen(character->filepath, "wb");
-
-  if(!file)
-    return(-1);
-
-  size_t written = fwrite(character->raw_data, 1, character->data_size, file);
-
-  fclose(file);
-
-  if(written != character->data_size)
+  if(!tq_write_file_atomic(character->filepath, character->raw_data,
+                           character->data_size))
     return(-1);
 
   if(tqvc_debug)
@@ -1895,24 +1881,8 @@ character_save(TQCharacter *character, const char *filepath)
     return(-1);
   }
 
-  // Create backup on first save
-  char bak_path[1024];
-
-  snprintf(bak_path, sizeof(bak_path), "%s.bak", filepath);
-
-  if(!g_file_test(bak_path, G_FILE_TEST_EXISTS))
-  {
-    FILE *bak = fopen(bak_path, "wb");
-
-    if(bak)
-    {
-      fwrite(character->raw_data, 1, character->data_size, bak);
-      fclose(bak);
-
-      if(tqvc_debug)
-        printf("character_save: backup created %s\n", bak_path);
-    }
-  }
+  if(!character_write_backup(character, filepath))
+    return(-1);
 
   // Encode new blobs
   uint8_t *inv_blob = NULL, *equip_blob = NULL;
@@ -1969,22 +1939,11 @@ character_save(TQCharacter *character, const char *filepath)
   free(equip_blob);
 
   // Write to disk
-  FILE *file = fopen(filepath, "wb");
-
-  if(!file)
+  if(!tq_write_file_atomic(filepath, new_data, new_size))
   {
     free(new_data);
     return(-1);
   }
-
-  if(fwrite(new_data, 1, new_size, file) != new_size)
-  {
-    fclose(file);
-    free(new_data);
-    return(-1);
-  }
-
-  fclose(file);
 
   // Update raw_data and recalculate boundary offsets for subsequent saves
   free(character->raw_data);

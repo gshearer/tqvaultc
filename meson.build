@@ -54,6 +54,7 @@ app_sources = [
   'src/arz.c',
   'src/vault.c',
   'src/config.c',
+  'src/io_atomic.c',
   'src/arc.c',
   'src/texture.c',
   'src/dds_decode.c',
@@ -119,25 +120,32 @@ executable('tq-stats',
 executable('tq-dbr-tool',
   ['src/utils/tq_dbr_tool.c', 'src/arz.c', 'src/arc.c',
    'src/db_loot.c', 'src/db_creatures.c', 'src/db_quests.c',
-   'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/config.c',
+   'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/config.c', 'src/io_atomic.c',
    'src/mesh.c', 'src/mesh_render.c', 'src/mesh_skin.c', 'src/anm.c'] + platform_sources,
   dependencies: [gtk_dep, json_dep, zlib_dep, m_dep] + win_extra_deps,
   install: true)
 
 # 8. Build the Player.chr Debugging Tool
 executable('tq-chr-tool',
-  ['src/utils/tq_chr_tool.c', 'src/character.c'],
+  ['src/utils/tq_chr_tool.c', 'src/character.c', 'src/io_atomic.c'],
   dependencies: [gtk_dep, m_dep],
   install: true)
 
 # 9. Build the Quest Token Inspection Tool
 executable('tq-quest-tool',
-  ['src/utils/tq_quest_tool.c', 'src/quest_tokens.c'],
+  ['src/utils/tq_quest_tool.c', 'src/quest_tokens.c', 'src/io_atomic.c'],
   dependencies: [gtk_dep],
   install: true)
 
-# 10. Build the Texture Extractor
+# 10. Build the disk-full test harness (POSIX only: no Windows rlimits)
+if host_machine.system() != 'windows'
+  executable('tq-limitrun',
+    'src/utils/tq_limitrun.c',
+    install: true)
+endif
+
+# 11. Build the Texture Extractor
 executable('extract-textures',
-  ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c'] + platform_sources,
+  ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c', 'src/io_atomic.c'] + platform_sources,
   dependencies: [gtk_dep, json_dep, zlib_dep] + win_extra_deps,
   install: true)

@@ -1,5 +1,6 @@
 #include "stash.h"
 #include "config.h"
+#include "io_atomic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -807,27 +808,14 @@ stash_save(TQStash *stash)
 
   memcpy(b.data, &crc, 4);
 
-  // Write .dxb file
-  FILE *f = fopen(stash->filepath, "wb");
-
-  if(!f)
+  // Write .dxb file. tq_write_file_atomic() writes a temp and renames, so a
+  // failure (disk full, I/O error) leaves the previous stash on disk intact.
+  if(!tq_write_file_atomic(stash->filepath, b.data, b.size))
   {
     fprintf(stderr, "stash_save: cannot write %s\n", stash->filepath);
     free(b.data);
     return(-1);
   }
-
-  // A short write (e.g. disk full) must fail loudly, not report success — the
-  // .dxg backup below still holds the previous good copy.
-  if(fwrite(b.data, 1, b.size, f) != b.size)
-  {
-    fprintf(stderr, "stash_save: short write to %s\n", stash->filepath);
-    fclose(f);
-    free(b.data);
-    return(-1);
-  }
-
-  fclose(f);
 
   // Write .dxg backup: change the extension in fName from 'b' to 'g'
   char dxg_path[1024];
@@ -870,15 +858,18 @@ stash_save(TQStash *stash)
   crc = compute_crc32(dxg_data, b.size);
   memcpy(dxg_data, &crc, 4);
 
-  f = fopen(dxg_path, "wb");
-  if(f)
-  {
-    fwrite(dxg_data, 1, b.size, f);
-    fclose(f);
-  }
+  // The .dxg is the game's own safety copy: an unverified one is the thing we
+  // would rely on after a bad save, so a failure here fails the save.
+  bool dxg_ok = tq_write_file_atomic(dxg_path, dxg_data, b.size);
 
   free(dxg_data);
   free(b.data);
+
+  if(!dxg_ok)
+  {
+    fprintf(stderr, "stash_save: cannot write backup %s\n", dxg_path);
+    return(-1);
+  }
 
   stash->dirty = false;
 

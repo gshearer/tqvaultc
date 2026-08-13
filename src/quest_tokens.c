@@ -12,6 +12,7 @@
 //   [len-prefixed "end_block"][0xDEADC0DE]
 
 #include "quest_tokens.h"
+#include "io_atomic.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -472,20 +473,11 @@ quest_tokens_save(const char *filepath, const QuestTokenSet *set)
     return(-1);
   }
 
-  FILE *f = fopen(filepath, "wb");
+  bool ok = tq_write_file_atomic(filepath, bb.data, bb.size);
 
-  if(!f)
-  {
-    free(bb.data);
-    return(-1);
-  }
-
-  size_t written = fwrite(bb.data, 1, bb.size, f);
-
-  fclose(f);
   free(bb.data);
 
-  return((written == bb.size) ? 0 : -1);
+  return(ok ? 0 : -1);
 }
 
 // -- Path helper ------------------------------------------------------------------
@@ -545,36 +537,9 @@ quest_backup_file(const char *filepath)
 
   snprintf(bak, sizeof(bak), "%s.bak", filepath);
 
-  FILE *src = fopen(filepath, "rb");
-  FILE *dst = fopen(bak, "wb");
-
-  if(!src || !dst)
-  {
-    if(src)
-      fclose(src);
-
-    if(dst)
-      fclose(dst);
-
-    return(-1);
-  }
-
-  char buf[4096];
-  size_t n;
-  int rc = 0;
-
-  while((n = fread(buf, 1, sizeof(buf), src)) > 0)
-  {
-    if(fwrite(buf, 1, n, dst) != n)
-    {
-      rc = -1;   // short write (e.g. disk full): the backup is incomplete
-      break;
-    }
-  }
-
-  fclose(src);
-  fclose(dst);
-  return(rc);
+  // An incomplete backup is the one file we must not leave behind: the atomic
+  // copy renames into place only after a verified write.
+  return(tq_copy_file_atomic(filepath, bak) ? 0 : -1);
 }
 
 // -- Copy file helper -------------------------------------------------------------
@@ -586,35 +551,7 @@ quest_backup_file(const char *filepath)
 static int
 copy_file(const char *src_path, const char *dst_path)
 {
-  FILE *src = fopen(src_path, "rb");
-
-  if(!src)
-    return(-1);
-
-  FILE *dst = fopen(dst_path, "wb");
-
-  if(!dst)
-  {
-    fclose(src);
-    return(-1);
-  }
-
-  char buf[4096];
-  size_t n;
-  int err = 0;
-
-  while((n = fread(buf, 1, sizeof(buf), src)) > 0)
-  {
-    if(fwrite(buf, 1, n, dst) != n)
-    {
-      err = -1;
-      break;
-    }
-  }
-
-  fclose(src);
-  fclose(dst);
-  return(err);
+  return(tq_copy_file_atomic(src_path, dst_path) ? 0 : -1);
 }
 
 // -- Quest state file operations --------------------------------------------------
@@ -722,22 +659,14 @@ quest_que_clear_all(const char *quest_dir)
     if(changed)
     {
       quest_backup_file(filepath);
-      f = fopen(filepath, "wb");
 
-      if(f)
-      {
-        size_t nw = fwrite(data, 1, (size_t)fsize, f);
-
-        fclose(f);
-
-        // Only count a fully written file as modified; a short write leaves the
-        // (backed-up) original recoverable rather than falsely reporting success.
-        if(nw == (size_t)fsize)
-          modified++;
-        else
-          fprintf(stderr, "quest_tokens: short write to %s (backup preserved)\n",
-                  filepath);
-      }
+      // Only count a fully written file as modified; a failed write leaves the
+      // original in place rather than falsely reporting success.
+      if(tq_write_file_atomic(filepath, data, (size_t)fsize))
+        modified++;
+      else
+        fprintf(stderr, "quest_tokens: cannot write %s (original preserved)\n",
+                filepath);
     }
 
     free(data);
@@ -790,22 +719,12 @@ quest_myw_clear(const char *quest_dir)
     return(-1);
   }
 
-  FILE *f = fopen(filepath, "wb");
+  bool ok = tq_write_file_atomic(filepath, bb.data, bb.size);
 
-  if(!f)
-  {
-    free(bb.data);
-    g_free(filepath);
-    return(-1);
-  }
-
-  size_t written = fwrite(bb.data, 1, bb.size, f);
-
-  fclose(f);
   free(bb.data);
   g_free(filepath);
 
-  return((written == bb.size) ? 0 : -1);
+  return(ok ? 0 : -1);
 }
 
 // Copy all .que files and Quest.myw from src_dir to dst_dir (backs up dst files).

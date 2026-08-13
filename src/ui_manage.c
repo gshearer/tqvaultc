@@ -12,6 +12,7 @@
 #include <string.h>
 #include <ctype.h>
 #include <glib/gstdio.h>
+#include "io_atomic.h"
 
 // -- Directory copy helper --------------------------------------------------
 
@@ -296,18 +297,13 @@ patch_player_name(const char *player_chr_path, const char *new_name)
 
   free(data);
 
-  fp = fopen(player_chr_path, "wb");
+  bool ok = tq_write_file_atomic(player_chr_path, out, new_file_size);
 
-  if(!fp)
-  {
-    free(out);
-    return(-1);
-  }
-
-  fwrite(out, 1, new_file_size, fp);
-  fclose(fp);
   free(out);
-  return(0);
+
+  // A failed write used to be reported as success while leaving the character
+  // the user just renamed truncated on disk.
+  return(ok ? 0 : -1);
 }
 
 // -- New vault dialog -------------------------------------------------------
@@ -733,18 +729,15 @@ on_dup_vault_ok(GtkButton *btn, gpointer user_data)
 
   fclose(fin);
 
-  FILE *fout = fopen(filepath, "wb");
+  bool ok = tq_write_file_atomic(filepath, buf, (size_t)sz);
 
-  if(!fout)
+  free(buf);
+
+  if(!ok)
   {
-    free(buf);
     show_validation_error(nw->dialog, "Failed to create vault file.");
     return;
   }
-
-  fwrite(buf, 1, (size_t)sz, fout);
-  fclose(fout);
-  free(buf);
 
   // Capture widgets and copy the name before destroy: the state struct is freed
   // by the window's g_free notify, and `text` is owned by the destroyed entry.

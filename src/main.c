@@ -16,6 +16,10 @@
 #include "db_browser_cache.h"
 #include "db_creatures.h"
 #include "creature_thumbs.h"
+#ifndef _WIN32
+#include <glib-unix.h>
+#include <signal.h>
+#endif
 
 static int g_saved_argc;
 static char **g_saved_argv;
@@ -336,6 +340,22 @@ debug_run_tests(int argc, char **argv)
 
   printf("\n--- Debug Tests Complete ---\n");
 }
+
+#ifndef _WIN32
+// SIGINT/SIGTERM handler. g_unix_signal_add dispatches this from the GLib main
+// loop, not from async-signal context, so ordinary GLib calls are safe here:
+// stop the prefetch worker and quit so main()'s shutdown path still runs.
+// user_data: the GApplication.
+// Returns: G_SOURCE_REMOVE (one shutdown is enough).
+static gboolean
+on_term_signal(gpointer user_data)
+{
+  fprintf(stderr, "tqvaultc: signal received, shutting down\n");
+  prefetch_cancel();
+  g_application_quit(G_APPLICATION(user_data));
+  return(G_SOURCE_REMOVE);
+}
+#endif
 
 // GTK activate callback. Initializes the asset manager, string interning,
 // item stats, and affix tables when a game folder is configured, then
@@ -849,6 +869,14 @@ main(int argc, char **argv)
   GtkApplication *app = gtk_application_new("org.tqvaultinc.tqvaultc", G_APPLICATION_DEFAULT_FLAGS);
 
   g_signal_connect(app, "activate", G_CALLBACK(on_activate), NULL);
+
+  // Ctrl-C / a session logout should end the prefetch thread and free the
+  // caches rather than killing the process mid-work. (No Windows equivalent:
+  // glib-unix is POSIX-only and the GUI build has no console to interrupt.)
+#ifndef _WIN32
+  g_unix_signal_add(SIGINT, on_term_signal, app);
+  g_unix_signal_add(SIGTERM, on_term_signal, app);
+#endif
 
   if(tqvc_debug)
     printf("Main: Running GTK application...\n");

@@ -1,4 +1,5 @@
 #include "config.h"
+#include "io_atomic.h"
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -404,22 +405,21 @@ config_save(void)
       json_object_new_int(global_config.last_vault_bag));
 
   const char *json_str = json_object_to_json_string_ext(root, JSON_C_TO_STRING_PRETTY);
-  // Binary mode: keeps the on-disk size honest so the read-back path's
-  // size check doesn't reject our own file (Windows text mode would
-  // expand "\n" to "\r\n" on write).
-  FILE *fp = fopen(global_config.config_path, "wb");
+  // Written as raw bytes (never stdio text mode): that keeps the on-disk size
+  // honest so the read-back path's size check doesn't reject our own file,
+  // which Windows text mode would break by expanding "\n" to "\r\n".
+  bool ok = tq_write_file_atomic(global_config.config_path, json_str,
+                                 strlen(json_str));
 
-  if(!fp)
+  json_object_put(root);
+
+  if(!ok)
   {
-    fprintf(stderr, "config_save: fopen(%s, w) failed: %s\n",
-            global_config.config_path, strerror(errno));
-    json_object_put(root);
+    fprintf(stderr, "config_save: cannot write %s\n",
+            global_config.config_path);
     return(false);
   }
 
-  fputs(json_str, fp);
-  fclose(fp);
-  json_object_put(root);
   fprintf(stderr, "config_save: success\n");
   return(true);
 }

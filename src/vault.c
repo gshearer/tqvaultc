@@ -2,6 +2,7 @@
 #include "config.h"
 #include "asset_lookup.h"
 #include "arz.h"
+#include "io_atomic.h"
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -374,22 +375,16 @@ vault_save_json(TQVault *vault, const char *filepath)
   const char *json_str = json_object_to_json_string_ext(root,
     JSON_C_TO_STRING_PRETTY | JSON_C_TO_STRING_SPACED);
 
-  // Binary mode: keep the on-disk bytes exactly as written (LF newlines) so the
-  // size check in vault_load_json_ex() reads back the same byte count. Text
-  // mode on Windows would expand "\n" to "\r\n", producing files our own
-  // loader then rejects.
-  FILE *fp = fopen(filepath, "wb");
+  // Written as raw bytes (never stdio text mode): the on-disk bytes stay
+  // exactly as built (LF newlines) so the size check in vault_load_json_ex()
+  // reads back the same byte count. Text mode on Windows would expand "\n" to
+  // "\r\n", producing files our own loader then rejects.
+  char *out = g_strconcat(json_str, "\n", NULL);
+  bool  ok  = tq_write_file_atomic(filepath, out, strlen(out));
 
-  if(!fp)
-  {
-    json_object_put(root);
-    return(-1);
-  }
-
-  fprintf(fp, "%s\n", json_str);
-  fclose(fp);
+  g_free(out);
   json_object_put(root);
-  return(0);
+  return(ok ? 0 : -1);
 }
 
 // vault_get_item_at - find an item at a specific grid position in a sack
