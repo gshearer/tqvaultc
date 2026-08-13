@@ -563,8 +563,8 @@ build_mastery_model(SkillsState *st, int pane_idx)
     memset(n, 0, sizeof(*n));
     n->chr_skill_idx = -1;
     n->parent_idx = -1;
-    strncpy(n->skill_path, tree[t].path, sizeof(n->skill_path) - 1);
-    strncpy(n->basename, tree[t].basename, sizeof(n->basename) - 1);
+    g_strlcpy(n->skill_path, tree[t].path, sizeof(n->skill_path));
+    g_strlcpy(n->basename, tree[t].basename, sizeof(n->basename));
     snprintf(n->up_tex, sizeof(n->up_tex), "%s", up);
     snprintf(n->down_tex, sizeof(n->down_tex), "%s", down);
 

@@ -6,6 +6,7 @@
 #include "ui.h"
 #include "arz.h"
 #include "asset_lookup.h"
+#include "parse_num.h"
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -114,7 +115,8 @@ parse_dest(const char *s, ContainerType *ct, int *idx)
   if(!s || strlen(s) < 3 || s[1] != ':')
     return(false);
 
-  *idx = atoi(s + 2);
+  if(!parse_int(s + 2, idx))
+    return(false);
 
   switch(s[0])
   {

@@ -287,8 +287,7 @@ builder_process_arc(IndexBuilder *b, const char *path, const char *rel_path, int
     char temp[512];
 
     snprintf(temp, sizeof(temp), "XPack\\%s", prefix + 6);
-    strncpy(prefix, temp, sizeof(prefix) - 1);
-    prefix[sizeof(prefix) - 1] = '\0';
+    g_strlcpy(prefix, temp, sizeof(prefix));
   }
 
   char magic[4];

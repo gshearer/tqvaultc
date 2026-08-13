@@ -866,22 +866,22 @@ parse_chr_structured(const ChrEntryList *entries, RawChrParse *out)
     if(inv_state == 7 && in_item_inner)
     {
       if(strcmp(e->key, "baseName") == 0)
-        strncpy(cur_item.base_name, e->str_val, sizeof(cur_item.base_name) - 1);
+        g_strlcpy(cur_item.base_name, e->str_val, sizeof(cur_item.base_name));
       else if(strcmp(e->key, "prefixName") == 0)
-        strncpy(cur_item.prefix_name, e->str_val, sizeof(cur_item.prefix_name) - 1);
+        g_strlcpy(cur_item.prefix_name, e->str_val, sizeof(cur_item.prefix_name));
       else if(strcmp(e->key, "suffixName") == 0)
-        strncpy(cur_item.suffix_name, e->str_val, sizeof(cur_item.suffix_name) - 1);
+        g_strlcpy(cur_item.suffix_name, e->str_val, sizeof(cur_item.suffix_name));
       else if(strcmp(e->key, "relicName") == 0)
-        strncpy(cur_item.relic_name, e->str_val, sizeof(cur_item.relic_name) - 1);
+        g_strlcpy(cur_item.relic_name, e->str_val, sizeof(cur_item.relic_name));
       else if(strcmp(e->key, "relicBonus") == 0)
-        strncpy(cur_item.relic_bonus, e->str_val, sizeof(cur_item.relic_bonus) - 1);
+        g_strlcpy(cur_item.relic_bonus, e->str_val, sizeof(cur_item.relic_bonus));
       else if(strcmp(e->key, "relicName2") == 0)
       {
-        strncpy(cur_item.relic_name2, e->str_val, sizeof(cur_item.relic_name2) - 1);
+        g_strlcpy(cur_item.relic_name2, e->str_val, sizeof(cur_item.relic_name2));
         cur_item.has_atlantis = true;
       }
       else if(strcmp(e->key, "relicBonus2") == 0)
-        strncpy(cur_item.relic_bonus2, e->str_val, sizeof(cur_item.relic_bonus2) - 1);
+        g_strlcpy(cur_item.relic_bonus2, e->str_val, sizeof(cur_item.relic_bonus2));
       else if(strcmp(e->key, "seed") == 0)
         cur_item.seed = e->u32_val;
       else if(strcmp(e->key, "var1") == 0)
@@ -959,22 +959,22 @@ parse_chr_structured(const ChrEntryList *entries, RawChrParse *out)
         s->offset = e->offset;
 
         if(strcmp(e->key, "baseName") == 0)
-          strncpy(s->base_name, e->str_val, sizeof(s->base_name) - 1);
+          g_strlcpy(s->base_name, e->str_val, sizeof(s->base_name));
         else if(strcmp(e->key, "prefixName") == 0)
-          strncpy(s->prefix_name, e->str_val, sizeof(s->prefix_name) - 1);
+          g_strlcpy(s->prefix_name, e->str_val, sizeof(s->prefix_name));
         else if(strcmp(e->key, "suffixName") == 0)
-          strncpy(s->suffix_name, e->str_val, sizeof(s->suffix_name) - 1);
+          g_strlcpy(s->suffix_name, e->str_val, sizeof(s->suffix_name));
         else if(strcmp(e->key, "relicName") == 0)
-          strncpy(s->relic_name, e->str_val, sizeof(s->relic_name) - 1);
+          g_strlcpy(s->relic_name, e->str_val, sizeof(s->relic_name));
         else if(strcmp(e->key, "relicBonus") == 0)
-          strncpy(s->relic_bonus, e->str_val, sizeof(s->relic_bonus) - 1);
+          g_strlcpy(s->relic_bonus, e->str_val, sizeof(s->relic_bonus));
         else if(strcmp(e->key, "relicName2") == 0)
         {
-          strncpy(s->relic_name2, e->str_val, sizeof(s->relic_name2) - 1);
+          g_strlcpy(s->relic_name2, e->str_val, sizeof(s->relic_name2));
           s->has_atlantis = true;
         }
         else if(strcmp(e->key, "relicBonus2") == 0)
-          strncpy(s->relic_bonus2, e->str_val, sizeof(s->relic_bonus2) - 1);
+          g_strlcpy(s->relic_bonus2, e->str_val, sizeof(s->relic_bonus2));
         else if(strcmp(e->key, "seed") == 0)
           s->seed = e->u32_val;
         else if(strcmp(e->key, "var1") == 0)

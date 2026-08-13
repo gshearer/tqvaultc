@@ -92,8 +92,7 @@ main(int argc, char *argv[])
         // Ensure directory exists
         char dir_path[1024];
 
-        strncpy(dir_path, out_path, sizeof(dir_path) - 1);
-        dir_path[sizeof(dir_path) - 1] = '\0';
+        g_strlcpy(dir_path, out_path, sizeof(dir_path));
         char *last_slash = strrchr(dir_path, '/');
 
         if(last_slash)

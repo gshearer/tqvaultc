@@ -467,8 +467,10 @@ arz_read_record(TQArzFile *arz, const char *record_path)
 
   char normalized_path[1024];
 
-  strncpy(normalized_path, record_path, sizeof(normalized_path));
-  normalized_path[sizeof(normalized_path) - 1] = '\0';
+  // g_strlcpy, not strncpy: this is the hot point lookup, and strncpy would
+  // NUL-pad all 1024 bytes on every call.  Truncation is harmless -- an
+  // over-long path simply will not match any record.
+  g_strlcpy(normalized_path, record_path, sizeof(normalized_path));
 
   for(int i = 0; normalized_path[i]; i++)
   {

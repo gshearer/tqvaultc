@@ -5,6 +5,7 @@
 
 #include "item_stats.h"
 #include "asset_lookup.h"
+#include "parse_num.h"
 #include "texture.h"
 #include "creature_thumbs.h"
 #include "vault.h"
@@ -276,15 +277,18 @@ db_append_bonus_table(DbBrowserState *st, const char *item_path, BufWriter *w)
        var->type == TQ_VAR_STRING && var->count > 0 && var->value.str &&
        var->value.str[0] && var->value.str[0][0])
     {
-      int idx = atoi(var->name + 14);
+      int idx = 0;
 
-      if(idx >= 0 && idx < 256)
+      if(parse_int(var->name + 14, &idx) && idx >= 0 && idx < 256)
         paths[idx] = var->value.str[0];
     }
     else if(strncasecmp(var->name, "randomizerWeight", 16) == 0)
     {
-      int idx = atoi(var->name + 16);
+      int idx = 0;
       float wt = 0;
+
+      if(!parse_int(var->name + 16, &idx))
+        continue;
 
       if(var->type == TQ_VAR_INT && var->count > 0 && var->value.i32)
         wt = (float)var->value.i32[0];

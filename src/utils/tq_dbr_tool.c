@@ -27,6 +27,7 @@
 #include "../compat.h"  // portable strcasestr (mingw)
 #include "../arz.h"
 #include "../arc.h"
+#include "../parse_num.h"
 #include "../db_loot.h"
 #include "../db_creatures.h"
 #include "../db_quests.h"
@@ -243,12 +244,13 @@ cmd_fields(const char *arz_path, const char *pattern, const char *field_list)
 
   char *field_names[64];
   int num_fields = 0;
-  char *tok = strtok(fields_copy, ",");
+  char *save = NULL;
+  char *tok = strtok_r(fields_copy, ",", &save);
 
   while(tok && num_fields < 64)
   {
     field_names[num_fields++] = tok;
-    tok = strtok(NULL, ",");
+    tok = strtok_r(NULL, ",", &save);
   }
 
   char *lower_pattern = normalize_path(pattern);
@@ -910,14 +912,23 @@ cmd_meshrender(int argc, char **argv)
   const char *mesh_pat = argv[3];
   const char *tex_pat  = argv[4];
   const char *out_path = argv[5];
-  int   size  = (argc > 6) ? atoi(argv[6]) : 256;
+  int   size  = 256;
   // yaw: a number, or "auto" (the default) to orient from the bounding box.
   bool  auto_yaw = (argc <= 7) || strcmp(argv[7], "auto") == 0;
-  float yaw   = auto_yaw ? 0.0f : (float)atof(argv[7]);
-  float pitch = (argc > 8) ? (float)atof(argv[8]) : 12.0f;
+  float yaw   = 0.0f;
+  float pitch = 12.0f;
   // Optional skeletal pose: an .anm substring + frame (0 if omitted).
   const char *anm_pat = (argc > 9) ? argv[9] : NULL;
-  int   frame = (argc > 10) ? atoi(argv[10]) : 0;
+  int   frame = 0;
+
+  if((argc > 6  && !parse_int(argv[6], &size))     ||
+     (!auto_yaw && !parse_float(argv[7], &yaw))    ||
+     (argc > 8  && !parse_float(argv[8], &pitch))  ||
+     (argc > 10 && !parse_int(argv[10], &frame)))
+  {
+    fprintf(stderr, "meshrender: size/yaw/pitch/frame must be numbers\n");
+    return(1);
+  }
 
   if(size < 8 || size > 2048)
     size = 256;
@@ -1195,15 +1206,18 @@ cmd_bonus(const char *arz_path, const char *item_path)
        var->type == TQ_VAR_STRING && var->count > 0 && var->value.str &&
        var->value.str[0] && var->value.str[0][0])
     {
-      int idx = atoi(var->name + 14);
+      int idx = 0;
 
-      if(idx >= 0 && idx < MAX_BONUS_IDX)
+      if(parse_int(var->name + 14, &idx) && idx >= 0 && idx < MAX_BONUS_IDX)
         bp_path[idx] = var->value.str[0];
     }
     else if(strncasecmp(var->name, "randomizerWeight", 16) == 0)
     {
-      int idx = atoi(var->name + 16);
+      int idx = 0;
       float w = 0;
+
+      if(!parse_int(var->name + 16, &idx))
+        continue;
 
       if(var->type == TQ_VAR_INT && var->count > 0 && var->value.i32)
         w = (float)var->value.i32[0];
@@ -2991,7 +3005,15 @@ main(int argc, char **argv)
       return(1);
     }
 
-    return(cmd_loot(argv[2], argv[3], argc >= 5 ? atoi(argv[4]) : 30));
+    int level = 30;
+
+    if(argc >= 5 && !parse_int(argv[4], &level))
+    {
+      fprintf(stderr, "loot: level must be a number\n");
+      return(1);
+    }
+
+    return(cmd_loot(argv[2], argv[3], level));
   }
 
   if(strcmp(cmd, "creatures") == 0)

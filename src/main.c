@@ -301,8 +301,10 @@ equip_check(const char *chr_path, const char *item_path)
   vault_item_format_stats_ex(&it, NULL, &red, card, sizeof(card));
   strip_markup_inplace(card);
 
+  char *save = NULL;
+
   printf("Card requirement lines:\n");
-  for(char *line = strtok(card, "\n"); line; line = strtok(NULL, "\n"))
+  for(char *line = strtok_r(card, "\n", &save); line; line = strtok_r(NULL, "\n", &save))
     if(strstr(line, "Required"))
       printf("  %s\n", line);
 

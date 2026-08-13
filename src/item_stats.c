@@ -762,26 +762,26 @@ static bool
 offensive_proc_in_chance(TQArzRecordData *data, const char *prefix, int shard_index)
 {
   if(!prefix || !*prefix)
-    return false;
+    return(false);
 
   char name[96];
   snprintf(name, sizeof(name), "offensive%sGlobal", prefix);
   const char *iv = arz_intern(name);
 
-  return dbr_get_float_fast(data, iv, shard_index) > 0.5f;
+  return(dbr_get_float_fast(data, iv, shard_index) > 0.5f);
 }
 
 __attribute__((unused)) static bool
 retaliation_proc_in_chance(TQArzRecordData *data, const char *prefix, int shard_index)
 {
   if(!prefix || !*prefix)
-    return false;
+    return(false);
 
   char name[96];
   snprintf(name, sizeof(name), "retaliation%sGlobal", prefix);
   const char *iv = arz_intern(name);
 
-  return dbr_get_float_fast(data, iv, shard_index) > 0.5f;
+  return(dbr_get_float_fast(data, iv, shard_index) > 0.5f);
 }
 
 // Get string variable from a pre-fetched record using interned name.

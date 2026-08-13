@@ -25,6 +25,7 @@
 
 #include "config.h"
 #include "asset_lookup.h"
+#include "parse_num.h"
 #include "affix_table.h"
 #include "texture.h"
 #include <stdio.h>
@@ -1094,7 +1095,9 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
   }
   else if(uri[0] == 'c')
   {
-    DbBrowseItem *t = db_find_grid_item_by_src(st, CAT_CREATURE, atoi(uri + 2));
+    int src = -1;
+    DbBrowseItem *t = parse_int(uri + 2, &src)
+                      ? db_find_grid_item_by_src(st, CAT_CREATURE, src) : NULL;
 
     if(t)
     {
@@ -1104,7 +1107,9 @@ on_detail_link(GtkLabel *label, const char *uri, gpointer data)
   }
   else if(uri[0] == 'q')
   {
-    DbBrowseItem *t = db_find_grid_item_by_src(st, CAT_QUEST, atoi(uri + 2));
+    int src = -1;
+    DbBrowseItem *t = parse_int(uri + 2, &src)
+                      ? db_find_grid_item_by_src(st, CAT_QUEST, src) : NULL;
 
     if(t)
     {

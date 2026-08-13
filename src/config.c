@@ -306,12 +306,12 @@ char *
 config_vault_dir_new(void)
 {
   if(global_config.vault_folder && global_config.vault_folder[0])
-    return g_strdup(global_config.vault_folder);
+    return(g_strdup(global_config.vault_folder));
 
   if(global_config.save_folder && global_config.save_folder[0])
-    return g_build_filename(global_config.save_folder, "TQVaultData", NULL);
+    return(g_build_filename(global_config.save_folder, "TQVaultData", NULL));
 
-  return NULL;
+  return(NULL);
 }
 
 // config_vault_file_new - full path to <vault dir>/<name>.vault.json
@@ -321,14 +321,14 @@ config_vault_file_new(const char *name)
   char *dir = config_vault_dir_new();
 
   if(!dir)
-    return NULL;
+    return(NULL);
 
   char *base = g_strconcat(name, ".vault.json", NULL);
   char *full = g_build_filename(dir, base, NULL);
 
   g_free(dir);
   g_free(base);
-  return full;
+  return(full);
 }
 
 // config_set_last_character - update the last loaded character path in config
