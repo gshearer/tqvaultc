@@ -48,7 +48,7 @@ vault_item_free_strings(TQVaultItem *item)
   free(item->stack_var2);
 }
 
-int tqvc_debug = 0;
+bool tqvc_debug = false;
 
 // ── Sentinel values ──────────────────────────────────────────────────────
 #define TQ_BEGIN_BLOCK  0xB01DFACE
@@ -2050,7 +2050,7 @@ cmd_roundtrip(const char *path)
     return(1);
 
   // Use character_load() / character_save()
-  tqvc_debug = 1;
+  tqvc_debug = true;
   TQCharacter *chr = character_load(path);
 
   if(!chr)

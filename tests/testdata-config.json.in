@@ -1,0 +1,5 @@
+{
+  "game_folder": "@GAME_FOLDER@",
+  "save_folder": "@SAVE_FOLDER@",
+  "vault_folder": "@VAULT_FOLDER@"
+}

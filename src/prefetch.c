@@ -1,12 +1,11 @@
 #include "prefetch.h"
 #include "asset_lookup.h"
 #include "arz.h"
+#include "config.h"   // tqvc_debug -- declare it once, as the bool it actually is
 #include <glib.h>
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
-
-extern int tqvc_debug;
 
 static GThread *g_prefetch_thread;
 static volatile int g_prefetch_cancel;
@@ -128,13 +127,19 @@ prefetch_thread_func(gpointer data)
 
   ensure_interns();
 
-  for(int i = 0; paths[i] && !g_atomic_int_get(&g_prefetch_cancel); i++)
+  // Walk the whole array even after a cancel: we own every string in it, and
+  // stopping the loop early used to leak the ones not yet consumed -- once per
+  // cancel, i.e. on every character switch, vault switch and cache clear.
+  for(int i = 0; paths[i]; i++)
   {
-    TQArzRecordData *rec = asset_get_dbr(paths[i]);
+    if(!g_atomic_int_get(&g_prefetch_cancel))
+    {
+      TQArzRecordData *rec = asset_get_dbr(paths[i]);
 
-    // follow chain references for base item records
-    if(rec && !g_atomic_int_get(&g_prefetch_cancel))
-      follow_chains(rec);
+      // follow chain references for base item records
+      if(rec && !g_atomic_int_get(&g_prefetch_cancel))
+        follow_chains(rec);
+    }
 
     free(paths[i]);
   }

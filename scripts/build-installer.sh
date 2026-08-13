@@ -21,12 +21,16 @@ VERSION=${RELEASE_VERSION:-$(awk -F"'" '/^project\(/{f=1} f && /version:/ {print
 OUT_FILE="tqvaultc-${VERSION}-setup.exe"
 
 # 1. Build (cross from Linux, or native from MSYS2)
+# buildtype=release is not just for speed: meson.build gates
+# -D_FORTIFY_SOURCE=3 / -fstack-protector-strong / -fstack-clash-protection on
+# an optimizing build, so the shipped installer is the one build that most
+# needs it.  Without this it inherits meson's default of debug/-O0.
 if [ ! -d "$BUILD_DIR" ]; then
   if [ "${MSYSTEM:-}" = "MINGW64" ] || [ "${MSYSTEM:-}" = "UCRT64" ]; then
     # Native MSYS2 build — host == target == Windows, no cross file.
-    meson setup "$BUILD_DIR"
+    meson setup "$BUILD_DIR" --buildtype=release
   else
-    meson setup "$BUILD_DIR" --cross-file "$CROSS_FILE"
+    meson setup "$BUILD_DIR" --buildtype=release --cross-file "$CROSS_FILE"
   fi
 fi
 meson compile -C "$BUILD_DIR"

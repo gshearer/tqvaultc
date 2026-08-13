@@ -41,6 +41,89 @@ meson compile -C build
 ./build/extract-textures   # bulk .tex → .png extractor
 ```
 
+### Build configuration
+
+`meson.build` pins `c_std=gnu17` (not `c17` — every `-std=c*` level hides the
+`__USE_MISC` surface the GTK/GLib headers and `compat.h` rely on) and
+`b_pie=true`.
+
+Hardening — `-D_FORTIFY_SOURCE=3`, `-fstack-protector-strong`,
+`-fstack-clash-protection` — is applied **only when `optimization` is not `0`
+or `g`**, because `_FORTIFY_SOURCE` warns at `-O0` and that would break the
+warning-clean rule. Every flag is probed with `cc.has_argument` first, so the
+mingw target silently drops the ones it does not support. The default
+`meson setup build` is a debug build and therefore has none of them; the
+shipped installer is built `--buildtype=release` by
+`scripts/build-installer.sh` and does.
+
+> Existing build directories keep the options they were configured with —
+> `meson setup --reconfigure` does **not** retroactively apply new
+> `default_options`. Either `meson setup --wipe <dir>` or set them explicitly:
+> `meson configure build -Dc_std=gnu17 -Db_pie=true`.
+
+## Tests
+
+Five self-tests plus a threading driver are wired as `test()` targets:
+
+```
+meson test -C build              # all of them
+meson test -C build search-query # just one
+```
+
+| test | needs `testdata/`? | what it covers |
+|---|---|---|
+| `search-query` | no | the shared `SearchQuery` matcher: all four modes, phrase-vs-token-AND, `\|` alternatives, broken-regex fallback |
+| `prefetch` | yes | the prefetch worker racing `asset_get_dbr()` against the main thread, with `asset_dbr_cache_clear()` pulling records out from under both |
+| `stack-merge` | yes | relic/charm completion, the 100-item potion cap, overflow remainders |
+| `db-cache` | yes | DB-browser disk-cache round-trip |
+| `db-search` | yes | DB-browser content search |
+| `db-sort` | yes | DB-browser per-category sort order |
+
+`testdata/` is gitignored (it holds non-redistributable game files), so on a
+fresh clone or in CI only `search-query` registers. The other five appear
+automatically once `testdata/gamefiles/Database/database.arz` exists.
+
+## Sanitizer builds
+
+The point of the test targets is to run them under a sanitizer. ASan and TSan
+cannot share one binary, so this is three build directories, not one flag set:
+
+```
+meson setup build-asan  -Db_sanitize=address,undefined
+meson setup build-ubsan -Db_sanitize=undefined
+meson setup build-tsan  -Db_sanitize=thread -Db_lundef=false
+
+meson test -C build-asan     # ~4 min with testdata present
+meson test -C build-ubsan
+meson test -C build-tsan
+```
+
+Ship nothing that has not been through all three.
+
+**TSan and GLib — read this before adding a suppression.** GLib implements
+`GMutex` directly on futexes rather than on pthread primitives, and TSan only
+intercepts the pthread ones. It therefore cannot see the happens-before edge a
+`g_mutex_lock`/`unlock` pair establishes, and reports every correctly-locked
+handoff as a race — for us, the DBR cache and the intern table, both of which
+publish heap objects that way.
+
+The fix is `src/tq_tsan.h`: `tq_mutex_lock`/`tq_mutex_unlock` wrap the GLib
+calls and add `__tsan_acquire`/`__tsan_release` so the edge is visible.
+Outside a TSan build they expand to the bare `g_mutex_lock`/`unlock` — no
+cost, no behaviour change. **Use them for any new GMutex that guards data
+crossing a thread boundary.**
+
+There is deliberately **no suppression file**. Suppressing would have meant
+blanket-ignoring `arz_record_get_var` and the glib containers, which is
+exactly where a real race would surface. If you hit a report you believe is
+this same artifact, confirm it the way it was confirmed on 2026-08-13 before
+acting: temporarily swap the `GMutex` in question for a `pthread_mutex_t` and
+re-run. If the report survives that, it is real.
+
+`TSAN_OPTIONS` carries `halt_on_error=1:exitcode=66` — meson sets
+`halt_on_error` for ASan/UBSan only, and without it TSan prints a race and
+still exits 0, so a test would pass while reporting one.
+
 ## Cross-compile to Windows (x86_64) from Linux
 
 ```

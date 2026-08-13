@@ -52,6 +52,11 @@ screenshots_testing/
 
 # Compiled objects left in-tree
 *.o
+# Ad-hoc `gcc -o src/utils/foo src/utils/foo.c` output.  Four such binaries
+# were tracked by accident until 2026-08-13; everything in src/utils/ that is
+# meant to ship is built by meson into the build dir instead.
+src/utils/*
+!src/utils/*.c
 *.a
 *.so
 

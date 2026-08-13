@@ -7,13 +7,12 @@
 #include "arz.h"
 #include "asset_lookup.h"
 #include "parse_num.h"
+#include "config.h"   // tqvc_debug -- declare it once, as the bool it actually is
 #include <json-c/json.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h>
-
-extern int tqvc_debug;
 
 // -- Helpers ----------------------------------------------------------------
 

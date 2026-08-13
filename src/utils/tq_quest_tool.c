@@ -602,6 +602,33 @@ cmd_clear(const char *path, const char *quest_name)
   return(0);
 }
 
+// Read exactly `size` bytes from an open stream into a fresh buffer.  A short
+// read is a failure, not a partial success: every caller byte-compares the
+// result, and a partial fill would leave the tail uninitialized and the
+// verdict meaningless.  Returns NULL on a bad size, OOM or a short read; the
+// caller owns the buffer.
+static uint8_t *
+slurp_stream(FILE *f, long size)
+{
+  uint8_t *buf;
+
+  if(size < 0)
+    return(NULL);
+
+  buf = malloc((size_t)size);
+
+  if(!buf)
+    return(NULL);
+
+  if(fread(buf, 1, (size_t)size, f) != (size_t)size)
+  {
+    free(buf);
+    return(NULL);
+  }
+
+  return(buf);
+}
+
 // cmd_roundtrip -- load, save to /tmp, and byte-compare with original.
 // path: path to QuestToken.myw file.
 // returns 0 on success, 1 on mismatch or error.
@@ -658,24 +685,21 @@ cmd_roundtrip(const char *path)
     return(1);
   }
 
-  uint8_t *ba = malloc(sa);
-  uint8_t *bb = malloc(sb);
+  uint8_t *ba = slurp_stream(fa, sa);
+  uint8_t *bb = slurp_stream(fb, sb);
+
+  fclose(fa);
+  fclose(fb);
 
   if(!ba || !bb)
   {
-    fprintf(stderr, "Error: malloc failed\n");
+    fprintf(stderr, "Error: cannot read files for comparison\n");
     free(ba);
     free(bb);
-    fclose(fa); fclose(fb);
     quest_token_set_free(&set);
     g_free(tmp);
     return(1);
   }
-
-  fread(ba, 1, sa, fa);
-  fread(bb, 1, sb, fb);
-  fclose(fa);
-  fclose(fb);
 
   bool identical = memcmp(ba, bb, sa) == 0;
 
@@ -1568,20 +1592,17 @@ cmd_compare_que(const char *dir_a, const char *dir_b)
     fseek(fa, 0, SEEK_END); long sa = ftell(fa); rewind(fa);
     fseek(fb, 0, SEEK_END); long sb = ftell(fb); rewind(fb);
 
-    uint8_t *da = malloc(sa);
-    uint8_t *db = malloc(sb);
+    uint8_t *da = slurp_stream(fa, sa);
+    uint8_t *db = slurp_stream(fb, sb);
+
+    fclose(fa); fclose(fb);
 
     if(!da || !db)
     {
       free(da);
       free(db);
-      fclose(fa); fclose(fb);
       continue;
     }
-
-    fread(da, 1, sa, fa);
-    fread(db, 1, sb, fb);
-    fclose(fa); fclose(fb);
 
     if(sa != sb)
     {

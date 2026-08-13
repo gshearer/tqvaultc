@@ -249,6 +249,128 @@ stack_merge_selftest(void)
   return(fails ? 1 : 0);
 }
 
+// Headless unit test for the shared SearchQuery matcher: one case per distinct
+// code path through search_query_compile()/search_query_match() -- each of the
+// four detected modes plus the semantics that separate them (a PHRASE is
+// contiguous, '|' OR's alternatives, a broken regex degrades to a literal).
+// Needs no game files.  Returns 0 if every case passes, 1 otherwise.
+static int
+search_query_selftest(void)
+{
+  const char *HAY = "+15% attack damage and 20 elemental damage to undead";
+
+  struct {
+    const char     *name;
+    const char     *pattern;
+    const char     *haystack;
+    SearchQueryMode exp_mode;
+    bool            exp_match;
+  } cases[] = {
+    { "empty matches everything", "",                       HAY, SEARCH_QUERY_EMPTY,   true  },
+    { "whitespace-only is empty", "   ",                    HAY, SEARCH_QUERY_EMPTY,   true  },
+    { "phrase single token",      "elemental",              HAY, SEARCH_QUERY_PHRASE,  true  },
+    { "phrase contiguous hit",    "attack damage",          HAY, SEARCH_QUERY_PHRASE,  true  },
+    { "phrase not token-AND",     "attack undead",          HAY, SEARCH_QUERY_PHRASE,  false },
+    { "phrase keeps + and %",     "+15% attack",            HAY, SEARCH_QUERY_PHRASE,  true  },
+    { "OR first alternative",     "attack damage|frostburn",HAY, SEARCH_QUERY_PHRASE,  true  },
+    { "OR second alternative",    "frostburn|to undead",    HAY, SEARCH_QUERY_PHRASE,  true  },
+    { "OR neither alternative",   "frostburn|bleeding",     HAY, SEARCH_QUERY_PHRASE,  false },
+    { "OR alternatives trimmed",  "frostburn | elemental",  HAY, SEARCH_QUERY_PHRASE,  true  },
+    { "regex group hit",          "(attack|pierce) damage", HAY, SEARCH_QUERY_REGEX,   true  },
+    { "regex group miss",         "(cold|fire) damage",     HAY, SEARCH_QUERY_REGEX,   false },
+    { "regex class hit",          "[0-9]+% attack",         HAY, SEARCH_QUERY_REGEX,   true  },
+    { "regex unanchored",         "(undead)",               HAY, SEARCH_QUERY_REGEX,   true  },
+    { "broken regex -> literal",  "(attack",                HAY, SEARCH_QUERY_LITERAL, false },
+    { "NULL haystack no match",   "elemental",              NULL,SEARCH_QUERY_PHRASE,  false },
+  };
+
+  int fails = 0;
+
+  for(size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++)
+  {
+    SearchQuery *q = search_query_compile(cases[i].pattern);
+    char *hay = cases[i].haystack ? g_ascii_strdown(cases[i].haystack, -1) : NULL;
+    bool match = search_query_match(q, hay);
+    SearchQueryMode mode = search_query_mode(q);
+    bool ok = (mode == cases[i].exp_mode && match == cases[i].exp_match);
+
+    printf("[%s] %-26s mode=%-7s match=%-3s  (expect mode=%d match=%s)\n",
+           ok ? "PASS" : "FAIL", cases[i].name, search_query_mode_name(q),
+           match ? "yes" : "no", cases[i].exp_mode,
+           cases[i].exp_match ? "yes" : "no");
+
+    if(!ok)
+      fails++;
+
+    g_free(hay);
+    search_query_free(q);
+  }
+
+  printf("search-query-selftest: %s\n", fails ? "FAILURES" : "all passed");
+  return(fails ? 1 : 0);
+}
+
+// Headless driver for the one genuinely concurrent part of the app: the
+// prefetch worker hitting asset_get_dbr()/arz_intern() while the main thread
+// does the same, and asset_dbr_cache_clear() freeing records under both.  In
+// the app that interleaving only happens with a window open, so without this
+// there is nothing for the TSan build to watch -- and the 2026-06-26 SIGSEGVs
+// (40c0d5a) were exactly these races, found by reading rather than by a tool.
+//
+// Asserts nothing itself: the verdict is the sanitizer's.  Run it under
+// build-tsan (races) and build-asan (the use-after-free the clear hook
+// exists to prevent).  Returns 0 unless the character will not load.
+static int
+prefetch_selftest(const char *chr_path)
+{
+  const int ROUNDS = 4;
+  TQCharacter *chr = character_load(chr_path);
+  int hits = 0;
+
+  if(!chr)
+  {
+    fprintf(stderr, "prefetch-selftest: cannot load %s\n", chr_path);
+    return(1);
+  }
+
+  for(int round = 0; round < ROUNDS; round++)
+  {
+    // Restart each round: the cache clear below joins the worker via the
+    // hook, so the thread has to be brought back up to keep the race live.
+    prefetch_for_character(chr);
+
+    // Race the worker from this thread over the same records it is loading.
+    for(int s = 0; s < chr->num_inv_sacks; s++)
+    {
+      TQVaultSack *sack = &chr->inv_sacks[s];
+
+      for(int i = 0; i < sack->num_items; i++)
+      {
+        const char *paths[] = {
+          sack->items[i].base_name, sack->items[i].prefix_name,
+          sack->items[i].suffix_name, sack->items[i].relic_name
+        };
+
+        for(int p = 0; p < 4; p++)
+        {
+          if(paths[p] && paths[p][0] && asset_get_dbr(paths[p]))
+            hits++;
+        }
+      }
+    }
+
+    // Pull the rug out mid-flight; the hook must join the worker before any
+    // record it still points into is freed.
+    asset_dbr_cache_clear();
+  }
+
+  prefetch_cancel();
+  character_free(chr);
+  printf("prefetch-selftest: %d rounds, %d main-thread lookups, no sanitizer report\n",
+         ROUNDS, hits);
+  return(0);
+}
+
 // Loads a character and reports whether it can equip the given item, showing
 // the computed requirements, attributes, requirement reductions, and verdict.
 // Used to verify the equippability highlight without launching the GUI.
@@ -464,6 +586,8 @@ main(int argc, char **argv)
   bool thumbs_build_only = false;
   bool first_run_build_only = false;
   bool stack_merge_selftest_only = false;
+  bool prefetch_selftest_only = false;
+  const char *prefetch_chr_path = NULL;
   const char *tooltip_prefix = NULL;   // optional --prefix for --tooltip
   const char *tooltip_suffix = NULL;   // optional --suffix for --tooltip
 
@@ -516,11 +640,17 @@ main(int argc, char **argv)
       affix_items_selftest_only = true;
       affix_items_query = argv[++i];
     }
-    else if(strcmp(argv[i], "--search-query-selftest") == 0 && i + 2 < argc)
+    else if(strcmp(argv[i], "--search-query-selftest") == 0)
     {
+      // Two trailing args = the interactive "explain this one query" form.
+      // Bare = the built-in case table, which is what `meson test` runs.
       search_query_selftest_only = true;
-      sq_pattern = argv[++i];
-      sq_haystack = argv[++i];
+
+      if(i + 2 < argc)
+      {
+        sq_pattern = argv[++i];
+        sq_haystack = argv[++i];
+      }
     }
     else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
     {
@@ -533,6 +663,11 @@ main(int argc, char **argv)
     else if(strcmp(argv[i], "--stack-merge-selftest") == 0)
     {
       stack_merge_selftest_only = true;
+    }
+    else if(strcmp(argv[i], "--prefetch-selftest") == 0 && i + 1 < argc)
+    {
+      prefetch_selftest_only = true;
+      prefetch_chr_path = argv[++i];
     }
     else
     {
@@ -736,8 +871,38 @@ main(int argc, char **argv)
     return(rc);
   }
 
+  if(prefetch_selftest_only)
+  {
+    if(!global_config.game_folder)
+    {
+      fprintf(stderr, "tqvaultc --prefetch-selftest: game_folder not configured\n");
+      return(1);
+    }
+
+    asset_manager_init(global_config.game_folder);
+    arz_intern_init();
+    item_stats_init();
+
+    int rc = prefetch_selftest(prefetch_chr_path);
+
+    prefetch_free();
+    item_stats_free();
+    arz_intern_free();
+    asset_manager_free();
+    config_free();
+    return(rc);
+  }
+
   if(search_query_selftest_only)
   {
+    if(!sq_pattern)
+    {
+      int rc = search_query_selftest();
+
+      config_free();
+      return(rc);
+    }
+
     // Pure unit test for the shared matcher: no game files needed.  Lowercase
     // the haystack the same way the real callers do before matching.
     SearchQuery *q = search_query_compile(sq_pattern);

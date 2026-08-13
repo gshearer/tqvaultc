@@ -1,11 +1,38 @@
 project('TQVaultC', 'c',
   version: '0.7.8',
-  default_options: ['warning_level=3'])
+  # c_std is pinned rather than left to the compiler's default of the day.
+  # gnu17 (not c17) because compat.h and the GLib/GTK headers rely on the
+  # __USE_MISC / _DEFAULT_SOURCE surface that every -std=c* level hides.
+  default_options: ['warning_level=3', 'c_std=gnu17', 'b_pie=true'])
+
+cc = meson.get_compiler('c')
 
 # Generated GResource bundles emit single string literals well past the
 # C99 4095-char minimum; -Wno-overlength-strings keeps that out of our
 # build log without affecting our hand-written code.
 add_project_arguments('-Wno-overlength-strings', language: 'c')
+
+# Hardening.  _FORTIFY_SOURCE needs -O1 or higher and warns at -O0, which
+# would break the warning-clean rule, so gate the whole set on an optimizing
+# build rather than applying it globally.  Every flag is probed first:
+# -fstack-clash-protection in particular is unsupported on the mingw target.
+if get_option('optimization') not in ['0', 'g']
+  hardening_args = []
+
+  foreach arg : ['-fstack-protector-strong', '-fstack-clash-protection']
+    if cc.has_argument(arg)
+      hardening_args += arg
+    endif
+  endforeach
+
+  # -U first: distro gcc specs may already define _FORTIFY_SOURCE, and a
+  # bare -D on top of that is a redefinition warning.
+  if cc.has_multi_arguments(['-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3'])
+    hardening_args += ['-U_FORTIFY_SOURCE', '-D_FORTIFY_SOURCE=3']
+  endif
+
+  add_project_arguments(hardening_args, language: 'c')
+endif
 
 # 1. Define Dependencies
 # include_type: 'system' converts -I to -isystem so pedantic warnings from
@@ -14,13 +41,13 @@ add_project_arguments('-Wno-overlength-strings', language: 'c')
 gtk_dep = dependency('gtk4', include_type: 'system')
 json_dep = dependency('json-c', include_type: 'system')
 zlib_dep = dependency('zlib', include_type: 'system')
-m_dep = meson.get_compiler('c').find_library('m', required : false)
+m_dep = cc.find_library('m', required : false)
 
 # Windows-only: psapi provides GetProcessMemoryInfo (config.c's peak-memory
 # reporting for --first-run-build).  Added to every target that links config.c.
 win_extra_deps = []
 if host_machine.system() == 'windows'
-  win_extra_deps += meson.get_compiler('c').find_library('psapi')
+  win_extra_deps += cc.find_library('psapi')
 endif
 
 # 2. Version info
@@ -103,7 +130,7 @@ app_sources = [
 # On Windows, link as a GUI subsystem binary so launching the .exe doesn't
 # spawn a console window. stdout/stderr from the GUI build go to the void;
 # the CLI tools below stay on the console subsystem so --help etc. work.
-executable('tqvaultc',
+tqvaultc_exe = executable('tqvaultc',
   app_sources + platform_sources + [version_h, build_number, app_resources],
   dependencies: [gtk_dep, json_dep, zlib_dep, m_dep] + win_extra_deps,
   # On Windows, link as a GUI subsystem binary so launching the .exe
@@ -151,3 +178,60 @@ executable('extract-textures',
   ['src/extract_textures.c', 'src/arc.c', 'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/arz.c', 'src/config.c', 'src/io_atomic.c'] + platform_sources,
   dependencies: [gtk_dep, json_dep, zlib_dep] + win_extra_deps,
   install: true)
+
+# 12. Tests
+# The self-tests are flags on the tqvaultc binary rather than separate
+# executables, so `meson test` just invokes it.  The point of wiring them up
+# here is the sanitizer build dirs: `meson test -C build-asan` is what actually
+# exercises the parsers under ASan/UBSan/TSan.  See BUILD.md.
+#
+# Only the matcher test is self-contained.  The other four load the real game
+# database, which lives in the gitignored testdata/ tree, so they are
+# registered only when that tree is present -- absent on a fresh clone and in
+# CI, where they would otherwise fail for want of data rather than a defect.
+#
+# TSAN_OPTIONS is inert outside build-tsan, but meson sets halt_on_error for
+# ASan/UBSan only -- without it TSan prints a race and still exits 0, so a test
+# would pass while reporting one.  No suppression file: src/tq_tsan.h annotates
+# the GMutex handoffs TSan cannot see, so the run is clean without blanketing
+# our own functions.
+fs = import('fs')
+
+test_env = {'TSAN_OPTIONS': 'halt_on_error=1:exitcode=66'}
+
+test('search-query', tqvaultc_exe,
+  args: ['--search-query-selftest'],
+  env: test_env,
+  timeout: 60)
+
+testdata_dir = meson.project_source_root() / 'testdata'
+
+if fs.exists(testdata_dir / 'gamefiles' / 'Database' / 'database.arz')
+  testdata_conf = configuration_data()
+  testdata_conf.set('GAME_FOLDER', testdata_dir / 'gamefiles')
+  testdata_conf.set('SAVE_FOLDER', testdata_dir / 'saves')
+  testdata_conf.set('VAULT_FOLDER', testdata_dir / 'vaults')
+
+  testdata_config = configure_file(
+    input: 'tests/testdata-config.json.in',
+    output: 'testdata-config.json',
+    configuration: testdata_conf)
+
+  # Each builds the full DBR index first, so the wall-clock floor is tens of
+  # seconds natively and several times that under a sanitizer.
+  foreach t : [
+    ['db-cache',    ['--db-cache-selftest']],
+    ['db-search',   ['--db-search-selftest', 'vitality damage']],
+    ['db-sort',     ['--db-sort-selftest']],
+    ['stack-merge', ['--stack-merge-selftest']],
+    ['prefetch',    ['--prefetch-selftest', testdata_dir / 'saves/_soothie/Player.chr']],
+  ]
+    test(t[0], tqvaultc_exe,
+      args: t[1] + [testdata_config],
+      env: test_env,
+      timeout: 900)
+  endforeach
+
+else
+  message('testdata/gamefiles not present -- registering only the self-contained tests')
+endif

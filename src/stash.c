@@ -5,8 +5,6 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern bool tqvc_debug;
-
 // ── Binary helpers (same pattern as character.c) ────────────────────────
 
 // Read a little-endian uint32 from data at offset.

@@ -9,6 +9,7 @@
 #include <zlib.h>
 #include <glib.h>
 #include "compat.h"   // tq_heap_trim() in asset_dbr_cache_clear()
+#include "tq_tsan.h"  // tq_mutex_lock/unlock -- GMutex + TSan annotations
 
 static char *g_game_path = NULL;
 static TQArzFile **g_arz_cache = NULL;
@@ -792,9 +793,9 @@ asset_get_dbr(const char *record_path)
       key[i] += 32;
   }
 
-  g_mutex_lock(&g_dbr_mutex);
+  tq_mutex_lock(&g_dbr_mutex);
   TQArzRecordData *data = g_hash_table_lookup(g_dbr_cache, key);
-  g_mutex_unlock(&g_dbr_mutex);
+  tq_mutex_unlock(&g_dbr_mutex);
 
   if(data)
   {
@@ -817,20 +818,20 @@ asset_get_dbr(const char *record_path)
 
       if(data)
       {
-        g_mutex_lock(&g_dbr_mutex);
+        tq_mutex_lock(&g_dbr_mutex);
         // Double-check: another thread may have inserted while we decompressed
         TQArzRecordData *existing = g_hash_table_lookup(g_dbr_cache, key);
 
         if(existing)
         {
-          g_mutex_unlock(&g_dbr_mutex);
+          tq_mutex_unlock(&g_dbr_mutex);
           arz_record_data_free(data);
           free(key);
           return(existing);
         }
 
         g_hash_table_insert(g_dbr_cache, key, data);
-        g_mutex_unlock(&g_dbr_mutex);
+        tq_mutex_unlock(&g_dbr_mutex);
         return(data);
       }
     }
@@ -866,9 +867,9 @@ asset_dbr_cache_clear(void)
   if(g_cache_clear_hook)
     g_cache_clear_hook();
 
-  g_mutex_lock(&g_dbr_mutex);
+  tq_mutex_lock(&g_dbr_mutex);
   g_hash_table_remove_all(g_dbr_cache);
-  g_mutex_unlock(&g_dbr_mutex);
+  tq_mutex_unlock(&g_dbr_mutex);
   // NOTE: deliberately does NOT trim the heap back to the OS — that walk is slow
   // (esp. on Windows) and this is called frequently inside the build loops.  It
   // still bounds *live* memory; the allocator reuses the freed chunks until the
@@ -898,9 +899,9 @@ asset_cache_insert(char *key, TQArzRecordData *data)
   if(!g_dbr_cache || !key || !data)
     return;
 
-  g_mutex_lock(&g_dbr_mutex);
+  tq_mutex_lock(&g_dbr_mutex);
   g_hash_table_insert(g_dbr_cache, key, data);
-  g_mutex_unlock(&g_dbr_mutex);
+  tq_mutex_unlock(&g_dbr_mutex);
 }
 
 // asset_manager_free - free all cached resources and the asset manager state.

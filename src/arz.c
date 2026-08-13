@@ -5,6 +5,7 @@
 #include <string.h>
 #include <strings.h>
 #include <zlib.h>
+#include "tq_tsan.h"  // tq_mutex_lock/unlock -- GMutex + TSan annotations
 
 // ── string intern table ───────────────────────────────────────────
 
@@ -48,7 +49,7 @@ arz_intern(const char *name)
   for(size_t i = 0; i <= len; i++)
     lower[i] = (name[i] >= 'A' && name[i] <= 'Z') ? name[i] + 32 : name[i];
 
-  g_mutex_lock(&g_intern_mutex);
+  tq_mutex_lock(&g_intern_mutex);
 
   if(!g_intern_table)
     arz_intern_init();
@@ -57,14 +58,14 @@ arz_intern(const char *name)
 
   if(existing)
   {
-    g_mutex_unlock(&g_intern_mutex);
+    tq_mutex_unlock(&g_intern_mutex);
     free(lower);
     return(existing);
   }
 
   // lower becomes the canonical copy owned by the hash table
   g_hash_table_insert(g_intern_table, lower, lower);
-  g_mutex_unlock(&g_intern_mutex);
+  tq_mutex_unlock(&g_intern_mutex);
   return(lower);
 }
 
@@ -73,7 +74,7 @@ arz_intern(const char *name)
 void
 arz_intern_free(void)
 {
-  g_mutex_lock(&g_intern_mutex);
+  tq_mutex_lock(&g_intern_mutex);
 
   if(g_intern_table)
   {
@@ -81,7 +82,7 @@ arz_intern_free(void)
     g_intern_table = NULL;
   }
 
-  g_mutex_unlock(&g_intern_mutex);
+  tq_mutex_unlock(&g_intern_mutex);
 }
 
 // ── var_index building ──────────────────────────────────────────
