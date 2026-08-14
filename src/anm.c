@@ -60,6 +60,16 @@ tq_anm_parse(const uint8_t *data, size_t len)
   if(nb == 0 || nb > 4096 || nf == 0 || nf > 1000000)
     return(NULL);
 
+  // Those bounds pass individually at products that ask for hundreds of
+  // gigabytes, and the per-bone `off + fr_bytes > len` check below only fires
+  // after a->frames has already been allocated.  Every bone occupies at least
+  // a 4-byte name length plus nf frames of file data, so the header implies a
+  // minimum file size -- require it before allocating anything.
+  uint64_t need = (uint64_t)nb * (4 + (uint64_t)nf * ANM_FILE_FLOATS * 4);
+
+  if(need > len - 16)
+    return(NULL);
+
   TQAnm *a = calloc(1, sizeof(*a));
 
   if(!a)

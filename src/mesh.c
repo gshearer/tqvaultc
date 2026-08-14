@@ -235,8 +235,19 @@ parse_indices(TQMesh *m, const uint8_t *data, uint32_t size)
     out++;
   }
 
+  // Every triangle was out-of-range or degenerate.  The caller keys off the
+  // return value and leaves have_idx false, so a later type-5 chunk would
+  // overwrite m->indices and leak this buffer -- a failed parse has to leave
+  // the mesh as it found it.
+  if(out == 0)
+  {
+    free(m->indices);
+    m->indices = NULL;
+    return(false);
+  }
+
   m->num_tris = out;
-  return(out > 0);
+  return(true);
 }
 
 static void

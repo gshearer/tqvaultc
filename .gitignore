@@ -1,5 +1,13 @@
 # Build output
 build/
+# Sanitizer and libFuzzer build dirs (build-asan/ubsan/tsan/fuzz).  build-fuzz
+# also holds the generated seed corpora and any crash artifacts -- the corpora
+# are copies of gitignored testdata/; only minimised crashers belong in the
+# repo, under fuzz/regressions/.
+build-asan/
+build-ubsan/
+build-tsan/
+build-fuzz/
 build-win/
 dist-win/
 *-setup.exe

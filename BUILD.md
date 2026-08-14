@@ -124,6 +124,68 @@ re-run. If the report survives that, it is real.
 `halt_on_error` for ASan/UBSan only, and without it TSan prints a race and
 still exits 0, so a test would pass while reporting one.
 
+## Fuzzing the parsers
+
+Every parser that reads a file produced outside this process gets a libFuzzer
+harness under `fuzz/`. libFuzzer is a clang feature — gcc has no
+`-fsanitize=fuzzer` — so this is a fourth build directory, configured with
+clang, and `-Dfuzzing=true` builds *only* the harnesses. The app itself is
+never compiled by clang: it has not been vetted against that toolchain's
+warnings, and dragging it in would put unrelated diagnostics into a build that
+is supposed to be warning-clean.
+
+```
+CC=clang meson setup build-fuzz -Dfuzzing=true
+meson compile -C build-fuzz
+
+fuzz/seed-corpus.sh                     # populate build-fuzz/corpus/ from testdata/
+
+cd build-fuzz/fuzz
+./fuzz-character ../corpus/character -max_total_time=300 \
+    -artifact_prefix=../artifacts/character-
+```
+
+Six targets, each running under ASan and UBSan as well as the fuzzer — a
+fuzzer without a detector only finds the crashes that happen to segfault:
+
+| target | parser | input |
+| --- | --- | --- |
+| `fuzz-character` | `character_load` | `Player.chr` |
+| `fuzz-stash` | `stash_load` | `.dxb` / `.dxg`, desktop v5 and iOS v6 alike |
+| `fuzz-quest` | `quest_tokens_load` | `QuestToken.myw` |
+| `fuzz-mesh` | `tq_mesh_parse` | `.msh` |
+| `fuzz-anm` | `tq_anm_parse` | `.anm` |
+| `fuzz-dds` | `dds_decode` | DDS texture blobs |
+
+The first three take a path rather than a buffer, so they stage each input
+through one reused temp file (`fuzz/fuzz_tmpfile.c`) — creating and unlinking
+a file per iteration would cost more than the parser under test.
+
+**Corpora.** `fuzz/seed-corpus.sh` builds the seed corpora from `testdata/`.
+They are generated rather than committed because they are game files, which
+`testdata/` is gitignored for. Meshes, animations and textures live inside the
+`.arc` archives with no loose copies on disk, so those three corpora come up
+empty; `fuzz/dict/*.dict` supplies their magics and header tokens instead,
+which is what gets the fuzzer past the header checks. Pass one with
+`-dict=../../fuzz/dict/mesh.dict`.
+
+**Regressions.** Minimised crashers are committed under
+`fuzz/regressions/<target>/` and replayed by passing the file directly:
+
+```
+./fuzz-mesh ../../fuzz/regressions/mesh/*
+```
+
+Eight bugs from the first run are in there — an unbounded `.anm` frame
+allocation, two undefined conversions in `.dxb` parsing, and five ownership
+leaks across `.msh`, `.chr` and `.dxb`. Add the crasher to that directory with
+any parser fix.
+
+**Re-fuzz after every fix.** Half of those eight only appeared on the second
+pass: a leak or an abort ends the run, hiding whatever lies behind it. A target
+is clean when a fresh run over a fresh corpus finds nothing, not when the last
+crasher stops reproducing.
+
 ## Cross-compile to Windows (x86_64) from Linux
 
 ```

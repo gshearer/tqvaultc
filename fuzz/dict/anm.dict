@@ -1,0 +1,11 @@
+# libFuzzer dictionary for tq_anm_parse.  Animations live inside the .arc
+# archives, so there is no loose .anm on disk to seed from.
+magic="ANM\x00"
+# numBones and numFrames are rejected outside [1,4096] and [1,1000000], so a
+# random 32-bit word almost never gets past the header.  These are plausible
+# small counts.
+count_one="\x01\x00\x00\x00"
+count_two="\x02\x00\x00\x00"
+count_sixteen="\x10\x00\x00\x00"
+# Per-bone name lengths are capped at 1024; a short one keeps the walk alive.
+namelen_short="\x04\x00\x00\x00"

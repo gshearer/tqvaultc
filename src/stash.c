@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <limits.h>
 
 // ── Binary helpers (same pattern as character.c) ────────────────────────
 
@@ -451,6 +452,20 @@ stash_read_header(const uint8_t *data, size_t *off, size_t sz,
   return(true);
 }
 
+// Convert an on-disk grid offset to int.  Converting a float that does not fit
+// in an int is undefined, and these come straight off disk -- a corrupt stash
+// reached 2.7e23 here.  Real offsets are small non-negative grid coordinates,
+// so anything outside a generous range (NaN included, via the negated compare)
+// becomes 0, which the placement code already treats as unplaced.
+static int
+grid_offset_to_int(float f)
+{
+  if(!(f >= -1.0e9f && f <= 1.0e9f))
+    return(0);
+
+  return((int)f);
+}
+
 // Parse a single item from the stash binary data and append it to the sack.
 // data: raw file buffer
 // off: pointer to current offset, advanced past the item
@@ -461,56 +476,72 @@ static bool
 stash_parse_item(const uint8_t *data, size_t *off, size_t sz,
                  TQVaultSack *sack)
 {
-  // stackCount
+  // Every key from baseName on is preceded by a string allocation, so a
+  // mid-item key mismatch has to unwind them.  One `goto fail` rather than a
+  // free-all block repeated at each exit -- the last three were spelled out
+  // longhand and the earlier ones simply leaked.
+  char *base_name = NULL;
+  char *prefix_name = NULL;
+  char *suffix_name = NULL;
+  char *relic_name = NULL;
+  char *relic_bonus = NULL;
+  char *relic_name2 = NULL;
+  char *relic_bonus2 = NULL;
+  uint32_t seed = 0;
+  uint32_t var1 = 0;
+  uint32_t var2 = 0;
+
+  // stackCount.  Kept unsigned and clamped: the file stores "extras beyond the
+  // first", so it is read back as stack_count + 1 below, and a value of INT_MAX
+  // off a corrupt stash made that addition overflow (UBSan).
   if(!expect_key(data, off, sz, "stackCount"))
-    return(false);
-  int stack_count = (int)read_val_u32(data, off, sz);
+    goto fail;
+  uint32_t stack_count = read_val_u32(data, off, sz);
+
+  if(stack_count > (uint32_t)INT_MAX - 1)
+    stack_count = (uint32_t)INT_MAX - 1;
 
   // begin_block (item)
   if(!expect_key(data, off, sz, "begin_block"))
-    return(false);
+    goto fail;
   read_val_u32(data, off, sz);
 
   // baseName
   if(!expect_key(data, off, sz, "baseName"))
-    return(false);
-  char *base_name = read_val_str(data, off, sz);
+    goto fail;
+  base_name = read_val_str(data, off, sz);
 
   // prefixName
   if(!expect_key(data, off, sz, "prefixName"))
-    return(false);
-  char *prefix_name = read_val_str(data, off, sz);
+    goto fail;
+  prefix_name = read_val_str(data, off, sz);
 
   // suffixName
   if(!expect_key(data, off, sz, "suffixName"))
-    return(false);
-  char *suffix_name = read_val_str(data, off, sz);
+    goto fail;
+  suffix_name = read_val_str(data, off, sz);
 
   // relicName
   if(!expect_key(data, off, sz, "relicName"))
-    return(false);
-  char *relic_name = read_val_str(data, off, sz);
+    goto fail;
+  relic_name = read_val_str(data, off, sz);
 
   // relicBonus
   if(!expect_key(data, off, sz, "relicBonus"))
-    return(false);
-  char *relic_bonus = read_val_str(data, off, sz);
+    goto fail;
+  relic_bonus = read_val_str(data, off, sz);
 
   // seed
   if(!expect_key(data, off, sz, "seed"))
-    return(false);
-  uint32_t seed = read_val_u32(data, off, sz);
+    goto fail;
+  seed = read_val_u32(data, off, sz);
 
   // var1
   if(!expect_key(data, off, sz, "var1"))
-    return(false);
-  uint32_t var1 = read_val_u32(data, off, sz);
+    goto fail;
+  var1 = read_val_u32(data, off, sz);
 
   // Atlantis fields (optional)
-  char *relic_name2 = NULL;
-  char *relic_bonus2 = NULL;
-  uint32_t var2 = 0;
-
   if(peek_key(data, *off, sz, "relicName2"))
   {
     expect_key(data, off, sz, "relicName2");
@@ -525,44 +556,17 @@ stash_parse_item(const uint8_t *data, size_t *off, size_t sz,
 
   // end_block (item)
   if(!expect_key(data, off, sz, "end_block"))
-  {
-    free(base_name);
-    free(prefix_name);
-    free(suffix_name);
-    free(relic_name);
-    free(relic_bonus);
-    free(relic_name2);
-    free(relic_bonus2);
-    return(false);
-  }
+    goto fail;
   read_val_u32(data, off, sz);
 
   // xOffset (float)
   if(!expect_key(data, off, sz, "xOffset"))
-  {
-    free(base_name);
-    free(prefix_name);
-    free(suffix_name);
-    free(relic_name);
-    free(relic_bonus);
-    free(relic_name2);
-    free(relic_bonus2);
-    return(false);
-  }
+    goto fail;
   float x_off = read_val_f32(data, off, sz);
 
   // yOffset (float)
   if(!expect_key(data, off, sz, "yOffset"))
-  {
-    free(base_name);
-    free(prefix_name);
-    free(suffix_name);
-    free(relic_name);
-    free(relic_bonus);
-    free(relic_name2);
-    free(relic_bonus2);
-    return(false);
-  }
+    goto fail;
   float y_off = read_val_f32(data, off, sz);
 
   // Build item
@@ -578,9 +582,9 @@ stash_parse_item(const uint8_t *data, size_t *off, size_t sz,
   item.relic_bonus2 = relic_bonus2;
   item.var1 = var1;
   item.var2 = var2;
-  item.point_x = (int)x_off;
-  item.point_y = (int)y_off;
-  item.stack_size = stack_count + 1;
+  item.point_x = grid_offset_to_int(x_off);
+  item.point_y = grid_offset_to_int(y_off);
+  item.stack_size = (int)stack_count + 1;
 
   TQVaultItem *grown = realloc(sack->items,
       (size_t)(sack->num_items + 1) * sizeof(TQVaultItem));
@@ -598,6 +602,16 @@ stash_parse_item(const uint8_t *data, size_t *off, size_t sz,
   sack->items[sack->num_items] = item;
   sack->num_items++;
   return(true);
+
+fail:
+  free(base_name);
+  free(prefix_name);
+  free(suffix_name);
+  free(relic_name);
+  free(relic_bonus);
+  free(relic_name2);
+  free(relic_bonus2);
+  return(false);
 }
 
 // Load a stash from a .dxb binary file.

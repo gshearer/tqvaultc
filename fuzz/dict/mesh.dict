@@ -1,0 +1,13 @@
+# libFuzzer dictionary for tq_mesh_parse.  Meshes live inside the .arc
+# archives, so there is no loose .msh on disk to seed from.
+magic="MSH\x00"
+# Chunk ids the parser looks for: 4 = vertices, 5 = indices, 6 = skeleton,
+# 7 = material footer.
+chunk_verts="\x04\x00\x00\x00"
+chunk_indices="\x05\x00\x00\x00"
+chunk_skeleton="\x06\x00\x00\x00"
+chunk_material="\x07\x00\x00\x00"
+# The material footer is scanned for this key, and the string it points at is
+# accepted only when it ends in .tex.
+key_basetexture="baseTexture"
+ext_tex=".tex"

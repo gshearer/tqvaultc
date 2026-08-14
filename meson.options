@@ -1,0 +1,2 @@
+option('fuzzing', type: 'boolean', value: false,
+  description: 'Build only the libFuzzer parser harnesses in fuzz/ (needs clang)')

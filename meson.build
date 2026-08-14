@@ -1,11 +1,48 @@
 project('TQVaultC', 'c',
   version: '0.7.8',
+  # 1.1 is what the meson.options file (over meson_options.txt) requires.
+  meson_version: '>= 1.1',
   # c_std is pinned rather than left to the compiler's default of the day.
   # gnu17 (not c17) because compat.h and the GLib/GTK headers rely on the
   # __USE_MISC / _DEFAULT_SOURCE surface that every -std=c* level hides.
   default_options: ['warning_level=3', 'c_std=gnu17', 'b_pie=true'])
 
 cc = meson.get_compiler('c')
+
+# 0. Fuzzing build.  libFuzzer is a clang feature -- gcc has no
+# -fsanitize=fuzzer -- so the harnesses need their own build dir configured
+# with CC=clang, and -Dfuzzing=true builds *those and nothing else*.  Pulling
+# the app into a clang build would put warnings from a toolchain we do not
+# otherwise use into a build that is meant to be warning-clean.
+#
+# The source lists are built here rather than in fuzz/meson.build because
+# meson forbids a subdir from naming files above itself; file objects carry
+# their location, so they pass down fine.  Same for the include dir.
+if get_option('fuzzing')
+  fuzz_inc = include_directories('src')
+
+  # What the save parsers drag in behind them: config.c for tqvc_debug and the
+  # config accessors, io_atomic.c for the write side, vault.c for the shared
+  # item representation (vault_item_free_strings), and then vault.c's own
+  # dependency on the DBR lookup layer -- asset_lookup.c, arz.c, arc.c and the
+  # mmap shim.  None of it is exercised by these harnesses (no game database is
+  # loaded); it is here to satisfy the linker.
+  fuzz_save_support = files(
+    'src/config.c', 'src/io_atomic.c', 'src/vault.c',
+    'src/asset_lookup.c', 'src/arz.c', 'src/arc.c', 'src/platform_mmap.c')
+
+  fuzz_parser_sources = {
+    'character': files('src/character.c'),
+    'stash':     files('src/stash.c'),
+    'quest':     files('src/quest_tokens.c'),
+    'mesh':      files('src/mesh.c'),
+    'anm':       files('src/anm.c'),
+    'dds':       files('src/dds_decode.c'),
+  }
+
+  subdir('fuzz')
+  subdir_done()
+endif
 
 # Generated GResource bundles emit single string literals well past the
 # C99 4095-char minimum; -Wno-overlength-strings keeps that out of our

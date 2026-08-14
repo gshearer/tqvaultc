@@ -522,6 +522,21 @@ ps_read_u32(const ParseState *ps)
   return(read_u32(ps->data, *ps->offset));
 }
 
+// Drop the item currently being parsed, if any, and clear the pointer.  Used
+// wherever an in-progress item can be abandoned: a malformed save can re-enter
+// the outer-item state without the end_block that would have consumed the
+// previous one, and character_load() can run out of file mid-item.
+static void
+inv_item_discard(ParseState *ps)
+{
+  if(!ps->cur_inv_item)
+    return;
+
+  vault_item_free_strings(ps->cur_inv_item);
+  free(ps->cur_inv_item);
+  ps->cur_inv_item = NULL;
+}
+
 // Parse a "begin_block" key during character loading.
 // ps: parser state.
 static void
@@ -535,15 +550,35 @@ parse_begin_block(ParseState *ps)
     ps->inv_sack_idx++;
     if(ps->inv_sack_idx < 4)
     {
-      ps->chr->inv_sacks[ps->inv_sack_idx].items     = NULL;
-      ps->chr->inv_sacks[ps->inv_sack_idx].num_items = 0;
+      TQVaultSack *sk = &ps->chr->inv_sacks[ps->inv_sack_idx];
+
+      // A resync restarts the inventory walk (inv_sack_idx goes back to -1), so
+      // this can land on a sack that already holds items.  Free them before
+      // overwriting the pointer.
+      for(int i = 0; i < sk->num_items; i++)
+        vault_item_free_strings(&sk->items[i]);
+
+      free(sk->items);
+      sk->items     = NULL;
+      sk->num_items = 0;
+
+      // Claim the sack for character_free() here rather than only at its end
+      // block (inv_state 7): a save that is truncated or resyncs away mid-sack
+      // never reaches that state, and every item appended below would then sit
+      // outside the range character_free() walks.  High-water mark, never a
+      // plain assignment -- after a resync this index can go backwards, which
+      // would orphan the sacks above it.
+      if(ps->inv_sack_idx + 1 > ps->chr->num_inv_sacks)
+        ps->chr->num_inv_sacks = ps->inv_sack_idx + 1;
     }
     ps->inv_state = 5;
   }
 
   else if(ps->inv_state == 7 && ps->inv_items_read < ps->inv_items_expected)
   {
-    // Outer item block
+    // Outer item block.  Discard first: re-entering this state with an item
+    // still in progress would otherwise lose the pointer to it.
+    inv_item_discard(ps);
     ps->cur_inv_item = calloc(1, sizeof(TQVaultItem));
     ps->inv_state = 8;
   }
@@ -644,8 +679,11 @@ parse_end_block(ParseState *ps)
 
   else if(ps->inv_state == 7)
   {
-    // Sack ends
-    ps->chr->num_inv_sacks = ps->inv_sack_idx + 1;
+    // Sack ends.  High-water mark for the same reason as the sack-start claim:
+    // after a resync inv_sack_idx can go backwards, and shrinking the count
+    // would orphan the sacks above it.
+    if(ps->inv_sack_idx + 1 > ps->chr->num_inv_sacks)
+      ps->chr->num_inv_sacks = ps->inv_sack_idx + 1;
     // inv_sacks[] is fixed at 4; a save whose numberOfSacks exceeds that walks
     // inv_sack_idx past the array (item writes above are already < 4 guarded),
     // but num_inv_sacks would then drive character_free()'s loop off the end and
@@ -751,6 +789,25 @@ parse_sack_header(ParseState *ps, const char *key)
   return(0);
 }
 
+// Free an equipment item and every string it owns.  Safe on NULL.  Used both
+// by character_free() and by the slot-overwrite path below, which used to free
+// the struct alone and leak all seven strings.
+static void
+equip_item_free(TQItem *eq)
+{
+  if(!eq)
+    return;
+
+  free(eq->base_name);
+  free(eq->prefix_name);
+  free(eq->suffix_name);
+  free(eq->relic_name);
+  free(eq->relic_bonus);
+  free(eq->relic_name2);
+  free(eq->relic_bonus2);
+  free(eq);
+}
+
 // Parse item string fields (baseName, prefixName, suffixName, etc.).
 // ps: parser state.
 // key: the current key string.
@@ -770,7 +827,10 @@ parse_item_strings(ParseState *ps, const char *key)
 
         if(slot)
         {
-          free(ps->chr->equipment[ps->cur_equip_slot]);
+          // A corrupt save can name the same slot twice; the previous occupant
+          // owns seven strings, so free the item properly rather than just its
+          // struct.
+          equip_item_free(ps->chr->equipment[ps->cur_equip_slot]);
           ps->chr->equipment[ps->cur_equip_slot] = slot;
           slot->base_name = val;
         }
@@ -822,18 +882,15 @@ parse_item_strings(ParseState *ps, const char *key)
     {
       TQItem *eq = ps->chr->equipment[ps->cur_equip_slot];
 
-      if(strcmp(key, "prefixName")  == 0)
-        eq->prefix_name  = val;
-      else if(strcmp(key, "suffixName")  == 0)
-        eq->suffix_name  = val;
-      else if(strcmp(key, "relicName")   == 0)
-        eq->relic_name   = val;
-      else if(strcmp(key, "relicBonus")  == 0)
-        eq->relic_bonus  = val;
-      else if(strcmp(key, "relicName2")  == 0)
-        eq->relic_name2  = val;
-      else if(strcmp(key, "relicBonus2") == 0)
-        eq->relic_bonus2 = val;
+      // Free before assigning: a corrupt save can repeat a key for the same
+      // slot, and the old string would otherwise leak.  The inventory branch
+      // below already did this.
+      if(strcmp(key, "prefixName")  == 0) { free(eq->prefix_name);  eq->prefix_name  = val; }
+      else if(strcmp(key, "suffixName")  == 0) { free(eq->suffix_name);  eq->suffix_name  = val; }
+      else if(strcmp(key, "relicName")   == 0) { free(eq->relic_name);   eq->relic_name   = val; }
+      else if(strcmp(key, "relicBonus")  == 0) { free(eq->relic_bonus);  eq->relic_bonus  = val; }
+      else if(strcmp(key, "relicName2")  == 0) { free(eq->relic_name2);  eq->relic_name2  = val; }
+      else if(strcmp(key, "relicBonus2") == 0) { free(eq->relic_bonus2); eq->relic_bonus2 = val; }
       else
         free(val);
     }
@@ -1486,11 +1543,7 @@ character_load(const char *filepath)
   }
 
   // Clean up any dangling in-progress item
-  if(ps.cur_inv_item)
-  {
-    vault_item_free_strings(ps.cur_inv_item);
-    free(ps.cur_inv_item);
-  }
+  inv_item_discard(&ps);
 
   free(ps.pending_skill_name);
 
@@ -1621,19 +1674,7 @@ character_free(TQCharacter *character)
   free(character->skills);
 
   for(int i = 0; i < 12; i++)
-  {
-    if(character->equipment[i])
-    {
-      free(character->equipment[i]->base_name);
-      free(character->equipment[i]->prefix_name);
-      free(character->equipment[i]->suffix_name);
-      free(character->equipment[i]->relic_name);
-      free(character->equipment[i]->relic_bonus);
-      free(character->equipment[i]->relic_name2);
-      free(character->equipment[i]->relic_bonus2);
-      free(character->equipment[i]);
-    }
-  }
+    equip_item_free(character->equipment[i]);
 
   for(int s = 0; s < character->num_inv_sacks; s++)
   {

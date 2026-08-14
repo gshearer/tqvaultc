@@ -1,0 +1,16 @@
+# libFuzzer dictionary for dds_decode.  The .arc archives store textures as
+# .tex, and extract-textures emits PNG, so there are no raw .dds files on disk
+# to seed from -- these tokens are what gets the fuzzer past the magic and
+# pixel-format checks instead.
+magic="DDS "
+fourcc_dxt1="DXT1"
+fourcc_dxt3="DXT3"
+fourcc_dxt5="DXT5"
+# header size 124 and the DDSD_CAPS|HEIGHT|WIDTH|PIXELFORMAT flag word
+header_size="\x7c\x00\x00\x00"
+flags="\x07\x10\x00\x00"
+# DDPF_FOURCC and DDPF_RGB in the pixel-format flags
+pf_fourcc="\x04\x00\x00\x00"
+pf_rgb="\x40\x00\x00\x00"
+# 32bpp, the uncompressed B8G8R8A8 path
+bpp32="\x20\x00\x00\x00"
