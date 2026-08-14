@@ -65,6 +65,7 @@ screenshots_testing/
 # meant to ship is built by meson into the build dir instead.
 src/utils/*
 !src/utils/*.c
+!src/utils/*.h
 *.a
 *.so
 

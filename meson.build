@@ -184,7 +184,10 @@ executable('tq-stats',
 
 # 7. Build the DBR/ARC Inspection Tool
 executable('tq-dbr-tool',
-  ['src/utils/tq_dbr_tool.c', 'src/arz.c', 'src/arc.c',
+  ['src/utils/tq_dbr_tool.c', 'src/utils/tq_dbr_common.c', 'src/utils/cli_args.c',
+   'src/utils/tq_dbr_record.c', 'src/utils/tq_dbr_arc.c', 'src/utils/tq_dbr_item.c',
+   'src/utils/tq_dbr_affix.c', 'src/utils/tq_dbr_skill.c', 'src/utils/tq_dbr_world.c',
+   'src/arz.c', 'src/arc.c',
    'src/db_loot.c', 'src/db_creatures.c', 'src/db_quests.c',
    'src/texture.c', 'src/dds_decode.c', 'src/asset_lookup.c', 'src/config.c', 'src/io_atomic.c',
    'src/parse_num.c',
@@ -194,13 +197,18 @@ executable('tq-dbr-tool',
 
 # 8. Build the Player.chr Debugging Tool
 executable('tq-chr-tool',
-  ['src/utils/tq_chr_tool.c', 'src/character.c', 'src/io_atomic.c'],
+  ['src/utils/tq_chr_tool.c', 'src/utils/tq_chr_parse.c', 'src/utils/cli_args.c',
+   'src/utils/tq_chr_report.c', 'src/utils/tq_chr_compare.c', 'src/utils/tq_chr_edit.c',
+   'src/character.c', 'src/io_atomic.c'],
   dependencies: [gtk_dep, m_dep],
   install: true)
 
 # 9. Build the Quest Token Inspection Tool
 executable('tq-quest-tool',
-  ['src/utils/tq_quest_tool.c', 'src/quest_tokens.c', 'src/io_atomic.c'],
+  ['src/utils/tq_quest_tool.c', 'src/utils/tq_quest_common.c',
+   'src/utils/tq_quest_token.c', 'src/utils/tq_quest_que.c', 'src/utils/tq_quest_scan.c',
+   'src/utils/cli_args.c',
+   'src/quest_tokens.c', 'src/io_atomic.c'],
   dependencies: [gtk_dep],
   install: true)
 
