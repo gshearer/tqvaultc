@@ -1,5 +1,5 @@
 project('TQVaultC', 'c',
-  version: '0.7.8',
+  version: '0.7.9',
   # 1.1 is what the meson.options file (over meson_options.txt) requires.
   meson_version: '>= 1.1',
   # c_std is pinned rather than left to the compiler's default of the day.
