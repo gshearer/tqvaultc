@@ -490,7 +490,189 @@ make_affix_row(const TQAffixEntry *entry, float pct,
   return(row);
 }
 
-// Show the affix modification dialog for the current context item.
+// Copy the item fields the preview renders from whichever of the two item
+// representations the context menu was opened on.  orig_prefix/orig_suffix are
+// strdup'd; affix_dialog_state_free owns them from here.
+static void
+affix_state_copy_item(AffixDialogState *st, TQItem *equip_item, TQVaultItem *vault_item)
+{
+  if(equip_item)
+  {
+    st->seed = equip_item->seed;
+    st->base_name = equip_item->base_name;
+    st->orig_prefix = equip_item->prefix_name ? strdup(equip_item->prefix_name) : NULL;
+    st->orig_suffix = equip_item->suffix_name ? strdup(equip_item->suffix_name) : NULL;
+    st->relic_name = equip_item->relic_name;
+    st->relic_bonus = equip_item->relic_bonus;
+    st->var1 = equip_item->var1;
+    st->relic_name2 = equip_item->relic_name2;
+    st->relic_bonus2 = equip_item->relic_bonus2;
+    st->var2 = equip_item->var2;
+  }
+
+  else
+  {
+    st->seed = vault_item->seed;
+    st->base_name = vault_item->base_name;
+    st->orig_prefix = vault_item->prefix_name ? strdup(vault_item->prefix_name) : NULL;
+    st->orig_suffix = vault_item->suffix_name ? strdup(vault_item->suffix_name) : NULL;
+    st->relic_name = vault_item->relic_name;
+    st->relic_bonus = vault_item->relic_bonus;
+    st->var1 = vault_item->var1;
+    st->relic_name2 = vault_item->relic_name2;
+    st->relic_bonus2 = vault_item->relic_bonus2;
+    st->var2 = vault_item->var2;
+  }
+
+  st->selected_prefix = st->orig_prefix ? strdup(st->orig_prefix) : NULL;
+  st->selected_suffix = st->orig_suffix ? strdup(st->orig_suffix) : NULL;
+}
+
+// One of the two identical outer panes: a title, a filter entry, and the
+// scrolling affix list.  Both output widgets are needed by the caller to wire
+// up filtering and selection.
+static void
+build_affix_list_pane(GtkWidget *panes, const char *title,
+    GtkWidget **search_out, GtkWidget **listbox_out)
+{
+  GtkWidget *vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+
+  gtk_widget_set_hexpand(vbox, TRUE);
+  gtk_box_append(GTK_BOX(panes), vbox);
+
+  GtkWidget *label = gtk_label_new(title);
+
+  gtk_widget_set_halign(label, GTK_ALIGN_START);
+  gtk_box_append(GTK_BOX(vbox), label);
+
+  GtkWidget *search = gtk_search_entry_new();
+
+  gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(search), "Filter...");
+  gtk_box_append(GTK_BOX(vbox), search);
+
+  GtkWidget *scroll = gtk_scrolled_window_new();
+
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                 GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_vexpand(scroll, TRUE);
+  gtk_box_append(GTK_BOX(vbox), scroll);
+
+  GtkWidget *listbox = gtk_list_box_new();
+
+  gtk_list_box_set_selection_mode(GTK_LIST_BOX(listbox), GTK_SELECTION_SINGLE);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), listbox);
+
+  *search_out = search;
+  *listbox_out = listbox;
+}
+
+// The centre pane: a scrolling markup label showing the item as it would read
+// with the currently selected affixes.
+static void
+build_affix_preview_pane(GtkWidget *panes, AffixDialogState *st)
+{
+  GtkWidget *scroll = gtk_scrolled_window_new();
+
+  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                 GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+  gtk_widget_set_hexpand(scroll, TRUE);
+  gtk_widget_set_vexpand(scroll, TRUE);
+  gtk_widget_set_size_request(scroll, 420, -1);
+  gtk_widget_add_css_class(scroll, "affix-preview");
+  gtk_box_append(GTK_BOX(panes), scroll);
+
+  GtkWidget *preview_label = gtk_label_new("");
+
+  st->preview_label = GTK_LABEL(preview_label);
+  gtk_label_set_use_markup(GTK_LABEL(preview_label), TRUE);
+  gtk_label_set_wrap(GTK_LABEL(preview_label), TRUE);
+  gtk_label_set_xalign(GTK_LABEL(preview_label), 0.0f);
+  gtk_label_set_yalign(GTK_LABEL(preview_label), 0.0f);
+  gtk_widget_set_margin_start(preview_label, 12);
+  gtk_widget_set_margin_end(preview_label, 12);
+  gtk_widget_set_margin_top(preview_label, 12);
+  gtk_widget_set_margin_bottom(preview_label, 12);
+  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), preview_label);
+}
+
+static void
+build_affix_button_bar(GtkWidget *vbox, AffixDialogState *st)
+{
+  GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+
+  gtk_widget_set_halign(btn_box, GTK_ALIGN_CENTER);
+  gtk_widget_set_margin_top(btn_box, 8);
+  gtk_widget_set_margin_bottom(btn_box, 8);
+  gtk_box_append(GTK_BOX(vbox), btn_box);
+
+  GtkWidget *apply_btn = gtk_button_new_with_label("Apply");
+
+  gtk_widget_add_css_class(apply_btn, "suggested-action");
+  g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_affix_dialog_apply), st);
+  gtk_box_append(GTK_BOX(btn_box), apply_btn);
+
+  GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
+
+  g_signal_connect(cancel_btn, "clicked", G_CALLBACK(on_affix_dialog_cancel), st);
+  gtk_box_append(GTK_BOX(btn_box), cancel_btn);
+}
+
+// Fill one affix listbox: a "none" row, then every affix, grouped under a
+// header per effect family that has more than one tier.  Returns the row
+// matching `current` (or the "none" row) so the caller can pre-select it.
+static GtkWidget *
+populate_affix_list(GtkWidget *listbox, TQAffixList *list, const char *current)
+{
+  float total_w = 0;
+
+  for(int i = 0; i < list->count; i++)
+    total_w += list->entries[i].weight;
+
+  bool none_is_current = !current || !current[0];
+  GtkWidget *none_row = make_affix_row(NULL, 0, none_is_current, false, false);
+
+  gtk_list_box_append(GTK_LIST_BOX(listbox), none_row);
+
+  GtkWidget *select_row = none_is_current ? none_row : NULL;
+  const char *prev_family = NULL;
+
+  for(int i = 0; i < list->count; i++)
+  {
+    TQAffixEntry *e = &list->entries[i];
+    bool new_family = !prev_family || !e->effect_family ||
+                      strcasecmp(prev_family, e->effect_family) != 0;
+    bool has_siblings = family_has_siblings(list->entries, list->count, i);
+
+    // Insert group header when family changes and there are multiple tiers
+    if(new_family && has_siblings)
+    {
+      const char *hdr_text = e->stat_category ? e->stat_category : e->stat_summary;
+
+      if(hdr_text)
+      {
+        GtkWidget *hdr = make_group_header(hdr_text);
+
+        gtk_list_box_append(GTK_LIST_BOX(listbox), hdr);
+      }
+    }
+
+    prev_family = e->effect_family;
+
+    bool is_cur = current && strcasecmp(current, e->affix_path) == 0;
+    float pct = total_w > 0 ? (e->weight / total_w) * 100.0f : 0;
+    bool lower = has_siblings && !is_max_tier_in_family(list->entries, list->count, i);
+
+    GtkWidget *r = make_affix_row(e, pct, is_cur, has_siblings, lower);
+
+    gtk_list_box_append(GTK_LIST_BOX(listbox), r);
+
+    if(is_cur)
+      select_row = r;
+  }
+
+  return(select_row);
+}
+
 //
 // widgets: application widget state
 // override_affixes: if non-NULL, use these affixes instead of looking up by item
@@ -538,37 +720,7 @@ show_affix_dialog(AppWidgets *widgets, TQItemAffixes *override_affixes,
   st->equip_item = equip_item;
   st->source = widgets->context_source;
 
-  // Copy item fields for preview
-  if(equip_item)
-  {
-    st->seed = equip_item->seed;
-    st->base_name = equip_item->base_name;
-    st->orig_prefix = equip_item->prefix_name ? strdup(equip_item->prefix_name) : NULL;
-    st->orig_suffix = equip_item->suffix_name ? strdup(equip_item->suffix_name) : NULL;
-    st->relic_name = equip_item->relic_name;
-    st->relic_bonus = equip_item->relic_bonus;
-    st->var1 = equip_item->var1;
-    st->relic_name2 = equip_item->relic_name2;
-    st->relic_bonus2 = equip_item->relic_bonus2;
-    st->var2 = equip_item->var2;
-  }
-
-  else
-  {
-    st->seed = vault_item->seed;
-    st->base_name = vault_item->base_name;
-    st->orig_prefix = vault_item->prefix_name ? strdup(vault_item->prefix_name) : NULL;
-    st->orig_suffix = vault_item->suffix_name ? strdup(vault_item->suffix_name) : NULL;
-    st->relic_name = vault_item->relic_name;
-    st->relic_bonus = vault_item->relic_bonus;
-    st->var1 = vault_item->var1;
-    st->relic_name2 = vault_item->relic_name2;
-    st->relic_bonus2 = vault_item->relic_bonus2;
-    st->var2 = vault_item->var2;
-  }
-
-  st->selected_prefix = st->orig_prefix ? strdup(st->orig_prefix) : NULL;
-  st->selected_suffix = st->orig_suffix ? strdup(st->orig_suffix) : NULL;
+  affix_state_copy_item(st, equip_item, vault_item);
 
   // -- Build dialog window --
   GtkWidget *dialog = gtk_window_new();
@@ -587,7 +739,7 @@ show_affix_dialog(AppWidgets *widgets, TQItemAffixes *override_affixes,
 
   gtk_window_set_child(GTK_WINDOW(dialog), vbox);
 
-  // -- Three-pane hbox --
+  // -- Three-pane hbox: prefix list | preview | suffix list --
   GtkWidget *panes = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
 
   gtk_widget_set_vexpand(panes, TRUE);
@@ -596,209 +748,23 @@ show_affix_dialog(AppWidgets *widgets, TQItemAffixes *override_affixes,
   gtk_widget_set_margin_top(panes, 8);
   gtk_box_append(GTK_BOX(vbox), panes);
 
-  // -- Left pane: Prefix --
-  GtkWidget *left_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+  GtkWidget *prefix_search, *prefix_listbox, *suffix_search, *suffix_listbox;
 
-  gtk_widget_set_hexpand(left_vbox, TRUE);
-  gtk_box_append(GTK_BOX(panes), left_vbox);
+  build_affix_list_pane(panes, "Prefix", &prefix_search, &prefix_listbox);
+  build_affix_preview_pane(panes, st);
+  build_affix_list_pane(panes, "Suffix", &suffix_search, &suffix_listbox);
 
-  GtkWidget *prefix_label = gtk_label_new("Prefix");
-
-  gtk_widget_set_halign(prefix_label, GTK_ALIGN_START);
-  gtk_box_append(GTK_BOX(left_vbox), prefix_label);
-
-  GtkWidget *prefix_search = gtk_search_entry_new();
-
-  gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(prefix_search), "Filter...");
   st->prefix_search = prefix_search;
-  gtk_box_append(GTK_BOX(left_vbox), prefix_search);
-
-  GtkWidget *prefix_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(prefix_scroll),
-                                 GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_widget_set_vexpand(prefix_scroll, TRUE);
-  gtk_box_append(GTK_BOX(left_vbox), prefix_scroll);
-
-  GtkWidget *prefix_listbox = gtk_list_box_new();
-
   st->prefix_listbox = GTK_LIST_BOX(prefix_listbox);
-  gtk_list_box_set_selection_mode(GTK_LIST_BOX(prefix_listbox), GTK_SELECTION_SINGLE);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(prefix_scroll), prefix_listbox);
-
-  // -- Center pane: Preview --
-  GtkWidget *center_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(center_scroll),
-                                 GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_widget_set_hexpand(center_scroll, TRUE);
-  gtk_widget_set_vexpand(center_scroll, TRUE);
-  gtk_widget_set_size_request(center_scroll, 420, -1);
-  gtk_widget_add_css_class(center_scroll, "affix-preview");
-  gtk_box_append(GTK_BOX(panes), center_scroll);
-
-  GtkWidget *preview_label = gtk_label_new("");
-
-  st->preview_label = GTK_LABEL(preview_label);
-  gtk_label_set_use_markup(GTK_LABEL(preview_label), TRUE);
-  gtk_label_set_wrap(GTK_LABEL(preview_label), TRUE);
-  gtk_label_set_xalign(GTK_LABEL(preview_label), 0.0f);
-  gtk_label_set_yalign(GTK_LABEL(preview_label), 0.0f);
-  gtk_widget_set_margin_start(preview_label, 12);
-  gtk_widget_set_margin_end(preview_label, 12);
-  gtk_widget_set_margin_top(preview_label, 12);
-  gtk_widget_set_margin_bottom(preview_label, 12);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(center_scroll), preview_label);
-
-  // -- Right pane: Suffix --
-  GtkWidget *right_vbox = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-
-  gtk_widget_set_hexpand(right_vbox, TRUE);
-  gtk_box_append(GTK_BOX(panes), right_vbox);
-
-  GtkWidget *suffix_label = gtk_label_new("Suffix");
-
-  gtk_widget_set_halign(suffix_label, GTK_ALIGN_START);
-  gtk_box_append(GTK_BOX(right_vbox), suffix_label);
-
-  GtkWidget *suffix_search = gtk_search_entry_new();
-
-  gtk_search_entry_set_placeholder_text(GTK_SEARCH_ENTRY(suffix_search), "Filter...");
   st->suffix_search = suffix_search;
-  gtk_box_append(GTK_BOX(right_vbox), suffix_search);
-
-  GtkWidget *suffix_scroll = gtk_scrolled_window_new();
-
-  gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(suffix_scroll),
-                                 GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-  gtk_widget_set_vexpand(suffix_scroll, TRUE);
-  gtk_box_append(GTK_BOX(right_vbox), suffix_scroll);
-
-  GtkWidget *suffix_listbox = gtk_list_box_new();
-
   st->suffix_listbox = GTK_LIST_BOX(suffix_listbox);
-  gtk_list_box_set_selection_mode(GTK_LIST_BOX(suffix_listbox), GTK_SELECTION_SINGLE);
-  gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(suffix_scroll), suffix_listbox);
 
-  // -- Button bar --
-  GtkWidget *btn_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+  build_affix_button_bar(vbox, st);
 
-  gtk_widget_set_halign(btn_box, GTK_ALIGN_CENTER);
-  gtk_widget_set_margin_top(btn_box, 8);
-  gtk_widget_set_margin_bottom(btn_box, 8);
-  gtk_box_append(GTK_BOX(vbox), btn_box);
-
-  GtkWidget *apply_btn = gtk_button_new_with_label("Apply");
-
-  gtk_widget_add_css_class(apply_btn, "suggested-action");
-  g_signal_connect(apply_btn, "clicked", G_CALLBACK(on_affix_dialog_apply), st);
-  gtk_box_append(GTK_BOX(btn_box), apply_btn);
-
-  GtkWidget *cancel_btn = gtk_button_new_with_label("Cancel");
-
-  g_signal_connect(cancel_btn, "clicked", G_CALLBACK(on_affix_dialog_cancel), st);
-  gtk_box_append(GTK_BOX(btn_box), cancel_btn);
-
-  // -- Populate prefix listbox --
-  float prefix_total_w = 0;
-
-  for(int i = 0; i < affixes->prefixes.count; i++)
-    prefix_total_w += affixes->prefixes.entries[i].weight;
-
-  const char *cur_prefix = st->orig_prefix;
-  bool none_is_current = !cur_prefix || !cur_prefix[0];
-  GtkWidget *none_row = make_affix_row(NULL, 0, none_is_current, false, false);
-
-  gtk_list_box_append(GTK_LIST_BOX(prefix_listbox), none_row);
-  GtkWidget *prefix_select_row = none_is_current ? none_row : NULL;
-
-  const char *prev_family = NULL;
-
-  for(int i = 0; i < affixes->prefixes.count; i++)
-  {
-    TQAffixEntry *e = &affixes->prefixes.entries[i];
-    bool new_family = !prev_family || !e->effect_family ||
-                      strcasecmp(prev_family, e->effect_family) != 0;
-    bool has_siblings = family_has_siblings(affixes->prefixes.entries,
-                                            affixes->prefixes.count, i);
-
-    // Insert group header when family changes and there are multiple tiers
-    if(new_family && has_siblings)
-    {
-      const char *hdr_text = e->stat_category ? e->stat_category : e->stat_summary;
-
-      if(hdr_text)
-      {
-        GtkWidget *hdr = make_group_header(hdr_text);
-
-        gtk_list_box_append(GTK_LIST_BOX(prefix_listbox), hdr);
-      }
-    }
-
-    prev_family = e->effect_family;
-
-    bool is_cur = cur_prefix && strcasecmp(cur_prefix, e->affix_path) == 0;
-    float pct = prefix_total_w > 0 ? (e->weight / prefix_total_w) * 100.0f : 0;
-    bool lower = has_siblings && !is_max_tier_in_family(
-      affixes->prefixes.entries, affixes->prefixes.count, i);
-
-    GtkWidget *r = make_affix_row(e, pct, is_cur, has_siblings, lower);
-
-    gtk_list_box_append(GTK_LIST_BOX(prefix_listbox), r);
-
-    if(is_cur)
-      prefix_select_row = r;
-  }
-
-  // -- Populate suffix listbox --
-  float suffix_total_w = 0;
-
-  for(int i = 0; i < affixes->suffixes.count; i++)
-    suffix_total_w += affixes->suffixes.entries[i].weight;
-
-  const char *cur_suffix = st->orig_suffix;
-
-  none_is_current = !cur_suffix || !cur_suffix[0];
-  none_row = make_affix_row(NULL, 0, none_is_current, false, false);
-  gtk_list_box_append(GTK_LIST_BOX(suffix_listbox), none_row);
-  GtkWidget *suffix_select_row = none_is_current ? none_row : NULL;
-
-  prev_family = NULL;
-
-  for(int i = 0; i < affixes->suffixes.count; i++)
-  {
-    TQAffixEntry *e = &affixes->suffixes.entries[i];
-    bool new_family = !prev_family || !e->effect_family ||
-                      strcasecmp(prev_family, e->effect_family) != 0;
-    bool has_siblings = family_has_siblings(affixes->suffixes.entries,
-                                            affixes->suffixes.count, i);
-
-    if(new_family && has_siblings)
-    {
-      const char *hdr_text = e->stat_category ? e->stat_category : e->stat_summary;
-
-      if(hdr_text)
-      {
-        GtkWidget *hdr = make_group_header(hdr_text);
-
-        gtk_list_box_append(GTK_LIST_BOX(suffix_listbox), hdr);
-      }
-    }
-
-    prev_family = e->effect_family;
-
-    bool is_cur = cur_suffix && strcasecmp(cur_suffix, e->affix_path) == 0;
-    float pct = suffix_total_w > 0 ? (e->weight / suffix_total_w) * 100.0f : 0;
-    bool lower = has_siblings && !is_max_tier_in_family(
-      affixes->suffixes.entries, affixes->suffixes.count, i);
-
-    GtkWidget *r = make_affix_row(e, pct, is_cur, has_siblings, lower);
-
-    gtk_list_box_append(GTK_LIST_BOX(suffix_listbox), r);
-
-    if(is_cur)
-      suffix_select_row = r;
-  }
+  GtkWidget *prefix_select_row = populate_affix_list(prefix_listbox, &affixes->prefixes,
+                                                     st->orig_prefix);
+  GtkWidget *suffix_select_row = populate_affix_list(suffix_listbox, &affixes->suffixes,
+                                                     st->orig_suffix);
 
   // Connect signals AFTER populating to avoid spurious callbacks
   g_signal_connect(prefix_listbox, "row-selected",

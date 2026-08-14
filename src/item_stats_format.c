@@ -1016,6 +1016,278 @@ fmt_set_info(TQArzRecordData *base_data, TQTranslation *tr, unsigned flags, BufW
 
 // main tooltip formatter
 
+// The display tags of the three records an item's name is assembled from.
+// Any member is NULL when that record has no usable tag; fmt_item_title
+// resolves them once and later sections reuse them.
+typedef struct
+{
+  const char *base;
+  const char *prefix;
+  const char *suffix;
+} ItemNameTags;
+
+// Write the coloured "<prefix> <base> <suffix>" title plus the weapon/equipment
+// type line, and hand back the tags the affix and base sections re-translate.
+static ItemNameTags
+fmt_item_title(BufWriter *w, TQTranslation *tr,
+    const char *base_name, const char *prefix_name, const char *suffix_name,
+    TQArzRecordData *base_data, TQArzRecordData *prefix_data, TQArzRecordData *suffix_data)
+{
+  ItemNameTags tags;
+
+  tags.base = base_data ? record_get_string_fast(base_data, INT_itemNameTag) : NULL;
+  tags.prefix = prefix_data ? record_get_string_fast(prefix_data, INT_description) : NULL;
+
+  if(!tags.prefix && prefix_data)
+    tags.prefix = record_get_string_fast(prefix_data, INT_lootRandomizerName);
+
+  if(!tags.prefix && prefix_data)
+    tags.prefix = record_get_string_fast(prefix_data, INT_FileDescription);
+
+  tags.suffix = suffix_data ? record_get_string_fast(suffix_data, INT_description) : NULL;
+
+  if(!tags.suffix && suffix_data)
+    tags.suffix = record_get_string_fast(suffix_data, INT_lootRandomizerName);
+
+  if(!tags.suffix && suffix_data)
+    tags.suffix = record_get_string_fast(suffix_data, INT_FileDescription);
+
+  // Fallback: try "description" tag if "itemNameTag" is missing (XPack4 relics/charms)
+  if(!tags.base && base_data)
+    tags.base = record_get_string_fast(base_data, INT_description);
+
+  // Strip "records\" prefix from path for display
+  const char *display_path = base_name;
+
+  if(display_path && strncasecmp(display_path, "records\\", 8) == 0)
+    display_path += 8;
+
+  const char *base_str = tags.base ? translation_get(tr, tags.base) : NULL;
+  char *base_pretty = NULL;
+
+  if(!base_str || !base_str[0])
+  {
+    base_pretty = pretty_name_from_path(base_name);
+    base_str = base_pretty;
+  }
+
+  const char *prefix_str = tags.prefix ? translation_get(tr, tags.prefix) : "";
+
+  if(!prefix_str || !prefix_str[0])
+    prefix_str = tags.prefix ? tags.prefix : "";
+
+  const char *suffix_str = tags.suffix ? translation_get(tr, tags.suffix) : "";
+
+  if(!suffix_str || !suffix_str[0])
+    suffix_str = tags.suffix ? tags.suffix : "";
+
+  if(!base_str)
+    base_str = display_path;
+
+  const char *item_color = get_item_color(base_name, prefix_name, suffix_name);
+  char *e_base = escape_markup(base_str);
+  char *e_prefix = escape_markup(prefix_str);
+  char *e_suffix = escape_markup(suffix_str);
+
+  buf_write(w, "<b><span color='%s'>", item_color);
+
+  if(e_prefix[0])
+    buf_write(w, "%s  ", e_prefix);
+
+  buf_write(w, "%s", e_base);
+
+  if(e_suffix[0])
+    buf_write(w, " %s", e_suffix);
+
+  buf_write(w, "</span></b>\n");
+
+  // Weapon/equipment type
+  const char *item_text_tag = base_data ? record_get_string_fast(base_data, INT_itemText) : NULL;
+
+  if(item_text_tag)
+  {
+    const char *text_str = translation_get(tr, item_text_tag);
+
+    if(text_str)
+    {
+      char *e_text = escape_markup(text_str);
+
+      buf_write(w, "<span color='white'>%s</span>\n", e_text);
+      free(e_text);
+    }
+  }
+
+  free(e_base); free(e_prefix); free(e_suffix); free(base_pretty);
+
+  return(tags);
+}
+
+// Write the "Lesser / Greater / Divine" subtitle an artifact carries.
+static void
+fmt_artifact_class(BufWriter *w, TQTranslation *tr, TQArzRecordData *base_data)
+{
+  const char *art_class = base_data ? record_get_string_fast(base_data, INT_artifactClassification) : NULL;
+
+  if(!art_class || !art_class[0])
+    return;
+
+  const char *class_tag = NULL;
+
+  if(strcasecmp(art_class, "LESSER") == 0)
+    class_tag = "xtagArtifactClass01";
+
+  else if(strcasecmp(art_class, "GREATER") == 0)
+    class_tag = "xtagArtifactClass02";
+
+  else if(strcasecmp(art_class, "DIVINE") == 0)
+    class_tag = "xtagArtifactClass03";
+
+  if(!class_tag)
+    return;
+
+  const char *class_str = translation_get(tr, class_tag);
+
+  if(!class_str)
+    return;
+
+  char *e_class = escape_markup(class_str);
+
+  buf_write(w, "<span color='white'>%s</span>\n", e_class);
+  free(e_class);
+}
+
+// Write one affix section — the "<label> Properties" header and the affix's own
+// stats.  A record that emits no stats leaves no trace: the writer is rewound
+// past the header.  Affix pet bonuses render inline, as the last items under the
+// affix (the in-record reorder already puts the "Bonus to All Pets" block after
+// the affix's own stats/skill augments).
+static void
+fmt_affix_section(BufWriter *w, TQTranslation *tr, const char *affix_name,
+    const char *affix_tag, const char *label)
+{
+  if(!affix_name || !affix_name[0])
+    return;
+
+  size_t pos_before = w->pos;
+  const char *aname = affix_tag ? translation_get(tr, affix_tag) : NULL;
+  char *ea = escape_markup(aname ? aname : "");
+
+  if(ea[0])
+    buf_write(w, "\n<span color='white'><b>%s Properties : %s</b></span>\n", label, ea);
+
+  else
+    buf_write(w, "\n<span color='white'><b>%s Properties</b></span>\n", label);
+
+  free(ea);
+
+  size_t pos_after_header = w->pos;
+
+  add_stats_from_record(affix_name, tr, w, "#00A3FF", 0);
+
+  if(w->pos == pos_after_header)
+  {
+    w->pos = pos_before;
+    w->buf[w->pos] = '\0';
+  }
+}
+
+// True when the item is a relic or charm carried in its own right, rather than
+// one socketed into a piece of gear.
+static bool
+item_is_standalone_relic(const char *base_name, TQArzRecordData *base_data)
+{
+  if(!base_name)
+    return(false);
+
+  if(path_contains_ci(base_name, "animalrelic")
+      || path_contains_ci(base_name, "\\relics\\")
+      || path_contains_ci(base_name, "\\charms\\"))
+    return(true);
+
+  if(!base_data)
+    return(false);
+
+  // Fallback: check Class for items in non-standard dirs (e.g. HCDUNGEON)
+  const char *cls = record_get_string_fast(base_data, INT_Class);
+
+  return(cls && (strcasecmp(cls, "ItemRelic") == 0 || strcasecmp(cls, "ItemCharm") == 0));
+}
+
+// Write the base item's header line and its stats.  The base record's
+// "Bonus to All Pets" block is deferred here and appended by the caller.
+static void
+fmt_base_item_block(BufWriter *w, TQTranslation *tr, const char *base_name,
+    const char *base_tag, const char *prefix_name, const char *suffix_name,
+    bool standalone_relic_charm, bool standalone_complete, uint32_t var1,
+    int base_shard_index)
+{
+  const char *bname = base_tag ? translation_get(tr, base_tag) : NULL;
+  char *eb = escape_markup(bname ? bname : "");
+
+  if(standalone_relic_charm)
+  {
+    const char *type_label = relic_type_label(base_name);
+
+    if(standalone_complete)
+      buf_write(w, "\n<span color='#C1A472'>Completed %s</span>\n", type_label);
+
+    else if(var1 > 0)
+      buf_write(w, "\n<span color='#C1A472'>%s (+%u)</span>\n", type_label, var1);
+
+    else
+      buf_write(w, "\n<span color='#C1A472'>%s</span>\n", type_label);
+  }
+
+  else
+  {
+    // The header only earns its keep when affix sections follow and the
+    // block needs distinguishing; a plain item's title already names it
+    // (the in-game tooltip shows no such header).
+    bool has_affix = (prefix_name && prefix_name[0]) || (suffix_name && suffix_name[0]);
+
+    if(has_affix && eb[0])
+      buf_write(w, "\n<span color='#FFA500'><b>Base Item Properties : %s</b></span>\n", eb);
+
+    else if(has_affix)
+      buf_write(w, "\n<span color='#FFA500'><b>Base Item Properties</b></span>\n");
+
+    else
+      buf_write(w, "\n");
+  }
+
+  free(eb);
+
+  // (Weapon/shield attack speed renders inside add_stats_from_record, between
+  // the base damage block and the bonus stats, as the game lays it out.)
+
+  g_item_stats_defer_pet_bonus = true;   // grouped at the end of the card
+  add_stats_from_record(base_name, tr, w,
+      standalone_relic_charm ? "#C1A472" : "#00FFFF", base_shard_index);
+  g_item_stats_defer_pet_bonus = false;
+}
+
+// The expansion an item's DBR path places it in, or NULL for the base game.
+static const char *
+expansion_label_for(const char *base_name)
+{
+  if(!base_name)
+    return(NULL);
+
+  if(strncasecmp(base_name, "records\\xpack4\\", 15) == 0)
+    return("Eternal Embers Item");
+
+  if(strncasecmp(base_name, "records\\xpack3\\", 15) == 0)
+    return("Atlantis Item");
+
+  if(strncasecmp(base_name, "records\\xpack2\\", 15) == 0)
+    return("Ragnarok Item");
+
+  if(strncasecmp(base_name, "records\\xpack\\", 14) == 0)
+    return("Immortal Throne Item");
+
+  return(NULL);
+}
+
 // Format item stats into a markup string, shared by both character and vault items.
 // seed: item seed value.
 // base_name: DBR path to the base item.
@@ -1046,175 +1318,13 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   TQArzRecordData *prefix_data = (prefix_name && prefix_name[0]) ? asset_get_dbr(prefix_name) : NULL;
   TQArzRecordData *suffix_data = (suffix_name && suffix_name[0]) ? asset_get_dbr(suffix_name) : NULL;
 
-  // Item title
-  const char *base_tag = base_data ? record_get_string_fast(base_data, INT_itemNameTag) : NULL;
-  const char *prefix_tag = prefix_data ? record_get_string_fast(prefix_data, INT_description) : NULL;
+  ItemNameTags tags = fmt_item_title(&w, tr, base_name, prefix_name, suffix_name,
+      base_data, prefix_data, suffix_data);
 
-  if(!prefix_tag && prefix_data)
-    prefix_tag = record_get_string_fast(prefix_data, INT_lootRandomizerName);
+  fmt_artifact_class(&w, tr, base_data);
+  fmt_affix_section(&w, tr, prefix_name, tags.prefix, "Prefix");
 
-  if(!prefix_tag && prefix_data)
-    prefix_tag = record_get_string_fast(prefix_data, INT_FileDescription);
-
-  const char *suffix_tag = suffix_data ? record_get_string_fast(suffix_data, INT_description) : NULL;
-
-  if(!suffix_tag && suffix_data)
-    suffix_tag = record_get_string_fast(suffix_data, INT_lootRandomizerName);
-
-  if(!suffix_tag && suffix_data)
-    suffix_tag = record_get_string_fast(suffix_data, INT_FileDescription);
-
-  // Fallback: try "description" tag if "itemNameTag" is missing (XPack4 relics/charms)
-  if(!base_tag && base_data)
-    base_tag = record_get_string_fast(base_data, INT_description);
-
-  // Strip "records\" prefix from path for display
-  const char *display_path = base_name;
-
-  if(display_path && strncasecmp(display_path, "records\\", 8) == 0)
-    display_path += 8;
-
-  const char *base_str = base_tag ? translation_get(tr, base_tag) : NULL;
-  char *base_pretty = NULL;
-
-  if(!base_str || !base_str[0])
-  {
-    base_pretty = pretty_name_from_path(base_name);
-    base_str = base_pretty;
-  }
-
-  const char *prefix_str = prefix_tag ? translation_get(tr, prefix_tag) : "";
-
-  if(!prefix_str || !prefix_str[0])
-    prefix_str = prefix_tag ? prefix_tag : "";
-
-  const char *suffix_str = suffix_tag ? translation_get(tr, suffix_tag) : "";
-
-  if(!suffix_str || !suffix_str[0])
-    suffix_str = suffix_tag ? suffix_tag : "";
-
-  if(!base_str)
-    base_str = display_path;
-
-  const char *item_color = get_item_color(base_name, prefix_name, suffix_name);
-  char *e_base = escape_markup(base_str);
-  char *e_prefix = escape_markup(prefix_str);
-  char *e_suffix = escape_markup(suffix_str);
-
-  buf_write(&w, "<b><span color='%s'>", item_color);
-
-  if(e_prefix[0])
-    buf_write(&w, "%s  ", e_prefix);
-
-  buf_write(&w, "%s", e_base);
-
-  if(e_suffix[0])
-    buf_write(&w, " %s", e_suffix);
-
-  buf_write(&w, "</span></b>\n");
-
-  // Weapon/equipment type
-  {
-    const char *item_text_tag = base_data ? record_get_string_fast(base_data, INT_itemText) : NULL;
-
-    if(item_text_tag)
-    {
-      const char *text_str = translation_get(tr, item_text_tag);
-
-      if(text_str)
-      {
-        char *e_text = escape_markup(text_str);
-
-        buf_write(&w, "<span color='white'>%s</span>\n", e_text);
-        free(e_text);
-      }
-    }
-  }
-
-  free(e_base); free(e_prefix); free(e_suffix); free(base_pretty);
-
-  // Artifact classification subtitle
-  {
-    const char *art_class = base_data ? record_get_string_fast(base_data, INT_artifactClassification) : NULL;
-
-    if(art_class && art_class[0])
-    {
-      const char *class_tag = NULL;
-
-      if(strcasecmp(art_class, "LESSER") == 0)
-        class_tag = "xtagArtifactClass01";
-
-      else if(strcasecmp(art_class, "GREATER") == 0)
-        class_tag = "xtagArtifactClass02";
-
-      else if(strcasecmp(art_class, "DIVINE") == 0)
-        class_tag = "xtagArtifactClass03";
-
-      if(class_tag)
-      {
-        const char *class_str = translation_get(tr, class_tag);
-
-        if(class_str)
-        {
-          char *e_class = escape_markup(class_str);
-
-          buf_write(&w, "<span color='white'>%s</span>\n", e_class);
-          free(e_class);
-        }
-      }
-    }
-  }
-
-  // Prefix properties
-  if(prefix_name && prefix_name[0])
-  {
-    size_t pos_before = w.pos;
-    const char *pname = prefix_tag ? translation_get(tr, prefix_tag) : NULL;
-    char *ep = escape_markup(pname ? pname : "");
-
-    if(ep[0])
-      buf_write(&w, "\n<span color='white'><b>Prefix Properties : %s</b></span>\n", ep);
-
-    else
-      buf_write(&w, "\n<span color='white'><b>Prefix Properties</b></span>\n");
-
-    free(ep);
-
-    size_t pos_after_header = w.pos;
-
-    // Affix pet bonuses render inline, as the last items under the affix (the
-    // in-record reorder already puts the "Bonus to All Pets" block after the
-    // affix's own stats/skill augments).
-    add_stats_from_record(prefix_name, tr, &w, "#00A3FF", 0);
-
-    if(w.pos == pos_after_header)
-    {
-      w.pos = pos_before;
-      w.buf[w.pos] = '\0';
-    }
-  }
-
-  // Detect if this is a standalone relic/charm
-  bool standalone_relic_charm = false;
-
-  if(base_name)
-  {
-    if(path_contains_ci(base_name, "animalrelic")
-        || path_contains_ci(base_name, "\\relics\\")
-        || path_contains_ci(base_name, "\\charms\\"))
-      standalone_relic_charm = true;
-
-    else if(base_data)
-    {
-      // Fallback: check Class for items in non-standard dirs (e.g. HCDUNGEON)
-      const char *cls = record_get_string_fast(base_data, INT_Class);
-
-      if(cls && (strcasecmp(cls, "ItemRelic") == 0 ||
-                  strcasecmp(cls, "ItemCharm") == 0))
-        standalone_relic_charm = true;
-    }
-  }
-
+  bool standalone_relic_charm = item_is_standalone_relic(base_name, base_data);
   bool is_artifact = (base_name && path_contains_ci(base_name, "\\artifacts\\") && !path_contains_ci(base_name, "\\arcaneformulae\\"));
   int base_shard_index = 0;
   bool standalone_complete = false;
@@ -1230,52 +1340,8 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
         : (var1 > 0 ? (int)var1 - 1 : 0);
   }
 
-  // Base item properties
-  {
-    const char *bname = base_tag ? translation_get(tr, base_tag) : NULL;
-    char *eb = escape_markup(bname ? bname : "");
-
-    if(standalone_relic_charm)
-    {
-      const char *type_label = relic_type_label(base_name);
-
-      if(standalone_complete)
-        buf_write(&w, "\n<span color='#C1A472'>Completed %s</span>\n", type_label);
-
-      else if(var1 > 0)
-        buf_write(&w, "\n<span color='#C1A472'>%s (+%u)</span>\n", type_label, var1);
-
-      else
-        buf_write(&w, "\n<span color='#C1A472'>%s</span>\n", type_label);
-    }
-
-    else
-    {
-      // The header only earns its keep when affix sections follow and the
-      // block needs distinguishing; a plain item's title already names it
-      // (the in-game tooltip shows no such header).
-      bool has_affix = (prefix_name && prefix_name[0]) || (suffix_name && suffix_name[0]);
-
-      if(has_affix && eb[0])
-        buf_write(&w, "\n<span color='#FFA500'><b>Base Item Properties : %s</b></span>\n", eb);
-
-      else if(has_affix)
-        buf_write(&w, "\n<span color='#FFA500'><b>Base Item Properties</b></span>\n");
-
-      else
-        buf_write(&w, "\n");
-    }
-
-    free(eb);
-
-    // (Weapon/shield attack speed renders inside add_stats_from_record, between
-    // the base damage block and the bonus stats, as the game lays it out.)
-
-    g_item_stats_defer_pet_bonus = true;   // grouped at the end of the card
-    add_stats_from_record(base_name, tr, &w,
-        standalone_relic_charm ? "#C1A472" : "#00FFFF", base_shard_index);
-    g_item_stats_defer_pet_bonus = false;
-  }
+  fmt_base_item_block(&w, tr, base_name, tags.base, prefix_name, suffix_name,
+      standalone_relic_charm, standalone_complete, var1, base_shard_index);
 
   // Standalone relic/charm completion bonus
   if(standalone_relic_charm && standalone_complete && relic_bonus && relic_bonus[0])
@@ -1286,32 +1352,7 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
     add_stats_from_record(relic_bonus, tr, &w, "#C1A472", 0);
   }
 
-  // Suffix properties
-  if(suffix_name && suffix_name[0])
-  {
-    size_t pos_before = w.pos;
-    const char *sname = suffix_tag ? translation_get(tr, suffix_tag) : NULL;
-    char *es = escape_markup(sname ? sname : "");
-
-    if(es[0])
-      buf_write(&w, "\n<span color='white'><b>Suffix Properties : %s</b></span>\n", es);
-
-    else
-      buf_write(&w, "\n<span color='white'><b>Suffix Properties</b></span>\n");
-
-    free(es);
-
-    size_t pos_after_header = w.pos;
-
-    // Affix pet bonuses render inline, as the last items under the affix.
-    add_stats_from_record(suffix_name, tr, &w, "#00A3FF", 0);
-
-    if(w.pos == pos_after_header)
-    {
-      w.pos = pos_before;
-      w.buf[w.pos] = '\0';
-    }
-  }
+  fmt_affix_section(&w, tr, suffix_name, tags.suffix, "Suffix");
 
   // Granted skill
   fmt_granted_skill(base_data, tr, &w);
@@ -1348,31 +1389,13 @@ format_stats_common(uint32_t seed, const char *base_name, const char *prefix_nam
   }
 
   // Expansion indicator based on item path
-  {
-    const char *expansion_label = NULL;
+  const char *expansion_label = expansion_label_for(base_name);
 
-    if(base_name)
-    {
-      if(strncasecmp(base_name, "records\\xpack4\\", 15) == 0)
-        expansion_label = "Eternal Embers Item";
-
-      else if(strncasecmp(base_name, "records\\xpack3\\", 15) == 0)
-        expansion_label = "Atlantis Item";
-
-      else if(strncasecmp(base_name, "records\\xpack2\\", 15) == 0)
-        expansion_label = "Ragnarok Item";
-
-      else if(strncasecmp(base_name, "records\\xpack\\", 14) == 0)
-        expansion_label = "Immortal Throne Item";
-    }
-
-    if(expansion_label)
-      buf_write(&w, "<span color='#40FF40'>%s</span>\n", expansion_label);
-  }
+  if(expansion_label)
+    buf_write(&w, "<span color='#40FF40'>%s</span>\n", expansion_label);
 
   // Set info
   fmt_set_info(base_data, tr, flags, &w);
-
   // Requirements
   add_requirements(base_name, prefix_name, suffix_name, relic_name,
                    relic_name2, reduction, &w);

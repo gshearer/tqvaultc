@@ -84,6 +84,170 @@ show_compare_tooltip(AppWidgets *widgets, const TQVaultItem *hovered_item)
   gtk_widget_set_visible(widgets->compare_scroll, TRUE);
 }
 
+// Point the tooltip popover at `w`, reparenting it when the hovered widget
+// changed.  The popover is owned by us, so unparenting never destroys it.
+static void
+tooltip_reparent(AppWidgets *widgets, GtkWidget *w)
+{
+  if(widgets->tooltip_parent == w)
+    return;
+
+  if(widgets->tooltip_parent)
+    gtk_widget_unparent(widgets->tooltip_popover);
+  gtk_widget_set_parent(widgets->tooltip_popover, w);
+  widgets->tooltip_parent = w;
+}
+
+// Render the card for `item` into `markup` and show the popover over it, or
+// hide the popover when `item` is NULL.  `cache` holds the item the popover is
+// currently showing for this container, so an unchanged hover is a no-op.
+// Every outcome ends the tooltip update -- callers return straight after.
+//
+// rect: where to point.  NULL derives it from the item's grid position at
+// `cell` pixels per cell, which is what every sack and stash container wants;
+// the equipment paper-doll passes its slot rectangle instead.
+static void
+tooltip_show_for_item(AppWidgets *widgets, GtkWidget *w, TQVaultItem *item,
+    double cell, TQVaultItem **cache, char *markup, size_t markup_size,
+    const GdkRectangle *rect)
+{
+  GtkWidget *popover = widgets->tooltip_popover;
+
+  if(!item)
+  {
+    *cache = NULL;
+    gtk_widget_set_visible(popover, FALSE);
+    return;
+  }
+
+  if(item == *cache && gtk_widget_get_visible(popover))
+    return;
+
+  *cache = item;
+  widgets->tooltip_item_base = item->base_name;
+  widgets->tooltip_item_var1 = item->var1;
+  markup[0] = '\0';
+
+  ItemReqReduction red;
+
+  item_req_reduction(widgets->current_character, item->base_name, &red);
+  vault_item_format_stats_ex(item, widgets->translations, &red, markup, markup_size);
+  tooltip_reparent(widgets, w);
+
+  GdkRectangle r;
+
+  if(rect)
+    r = *rect;
+  else
+  {
+    int iw, ih;
+
+    get_item_dims(widgets, item, &iw, &ih);
+    r.x      = (int)(item->point_x * cell);
+    r.y      = (int)(item->point_y * cell);
+    r.width  = (int)(iw * cell);
+    r.height = (int)(ih * cell);
+  }
+
+  gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label), markup);
+  show_compare_tooltip(widgets, item);
+  gtk_popover_set_pointing_to(GTK_POPOVER(popover), &r);
+  tooltip_set_position(popover, w, &r);
+  gtk_widget_set_visible(popover, TRUE);
+}
+
+// The shared cell size for the vault/inventory/bag grids, falling back to an
+// even split of the allocation when the shared size is not settled yet.
+static double
+grid_cell_size(AppWidgets *widgets, int pw, int cols)
+{
+  double cell = compute_cell_size(widgets);
+
+  return(cell > 0.0 ? cell : (double)pw / cols);
+}
+
+// Tooltip for one stash tab.  A stash sizes its cells from its own declared
+// dimensions rather than the shared grid size, so the hit test cannot go
+// through sack_hit_test().
+static void
+tooltip_update_stash(AppWidgets *widgets, GtkWidget *w, TQStash *st,
+    double x, double y, TQVaultItem **cache, char *markup, size_t markup_size)
+{
+  double cell = stash_cell_size(st, w);
+  TQVaultItem *item = find_item_at_cell(widgets, &st->sack, st->sack_width,
+                                        st->sack_height, cell, x, y, NULL);
+
+  tooltip_show_for_item(widgets, w, item, cell, cache, markup, markup_size, NULL);
+}
+
+// Tooltip for the equipment paper-doll, whose "item" is assembled from the
+// character's equipment slot and whose cache key is the slot, not a pointer.
+static void
+tooltip_update_equip(AppWidgets *widgets, GtkWidget *w, double x, double y)
+{
+  GtkWidget *popover = widgets->tooltip_popover;
+
+  if(!widgets->current_character)
+  {
+    gtk_widget_set_visible(popover, FALSE);
+    return;
+  }
+
+  double cell_size = compute_cell_size(widgets);
+  double sx, sy, sbw, sbh;
+  int slot = -1;
+
+  if(!equip_hit_test(x, y, cell_size, &slot, &sx, &sy, &sbw, &sbh) ||
+     slot < 0 || slot >= 12 ||
+     !widgets->current_character->equipment[slot])
+  {
+    widgets->last_equip_tooltip_slot = -1;
+    gtk_widget_set_visible(popover, FALSE);
+    return;
+  }
+
+  if(slot == widgets->last_equip_tooltip_slot && gtk_widget_get_visible(popover))
+    return;
+
+  widgets->last_equip_tooltip_slot = slot;
+  widgets->last_equip_tooltip_markup[0] = '\0';
+
+  TQItem *eq = widgets->current_character->equipment[slot];
+  TQVaultItem vi = {0};
+
+  vi.seed        = eq->seed;
+  vi.base_name   = eq->base_name;
+  vi.prefix_name = eq->prefix_name;
+  vi.suffix_name = eq->suffix_name;
+  vi.relic_name  = eq->relic_name;
+  vi.relic_bonus = eq->relic_bonus;
+  vi.relic_name2 = eq->relic_name2;
+  vi.relic_bonus2= eq->relic_bonus2;
+  vi.var1        = eq->var1;
+  vi.var2        = eq->var2;
+  widgets->tooltip_item_base = eq->base_name;
+  widgets->tooltip_item_var1 = eq->var1;
+
+  ItemReqReduction red;
+
+  item_req_reduction(widgets->current_character, vi.base_name, &red);
+  vault_item_format_stats_ex(&vi, widgets->translations, &red,
+                             widgets->last_equip_tooltip_markup,
+                             sizeof(widgets->last_equip_tooltip_markup));
+  tooltip_reparent(widgets, w);
+
+  GdkRectangle rect;
+
+  rect.x = (int)sx;  rect.y = (int)sy;
+  rect.width = (int)sbw;  rect.height = (int)sbh;
+  gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),
+                       widgets->last_equip_tooltip_markup);
+  show_compare_tooltip(widgets, &vi);
+  gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
+  tooltip_set_position(popover, w, &rect);
+  gtk_widget_set_visible(popover, TRUE);
+}
+
 // Update the instant tooltip based on current cursor position and widget.
 // Driven by on_motion(), replaces GTK4's 500ms-delayed tooltips.
 //
@@ -116,25 +280,9 @@ update_instant_tooltip(AppWidgets *widgets)
   double y = widgets->cursor_y;
   int pw = gtk_widget_get_width(w);
   int ph = gtk_widget_get_height(w);
-  TQVaultItem *item = NULL;
-  int equip_slot = -1;
-  GdkRectangle rect = {0};
-
-  // Helper: compute item rectangle from cell coordinates for sack items
-  #define SACK_ITEM_RECT(it, fallback_cols) do {                          \
-      double cell = compute_cell_size(widgets);                           \
-      if(cell <= 0.0) cell = (double)pw / (fallback_cols);               \
-      int iw, ih;                                                         \
-      get_item_dims(widgets, (it), &iw, &ih);                            \
-      rect.x      = (int)((it)->point_x * cell);                        \
-      rect.y      = (int)((it)->point_y * cell);                        \
-      rect.width  = (int)(iw * cell);                                    \
-      rect.height = (int)(ih * cell);                                    \
-  } while(0)
 
   if(w == widgets->vault_drawing_area)
   {
-    // Vault sack
     if(!widgets->current_vault)
     {
       gtk_widget_set_visible(popover, FALSE);
@@ -142,49 +290,15 @@ update_instant_tooltip(AppWidgets *widgets)
     }
 
     int si = widgets->current_sack;
+    TQVaultItem *item = NULL;
 
     if(si >= 0 && si < widgets->current_vault->num_sacks)
-    {
-      TQVaultSack *sack = &widgets->current_vault->sacks[si];
-      item = sack_hit_test(widgets, sack, 18, 20, pw, ph, (int)x, (int)y);
-    }
+      item = sack_hit_test(widgets, &widgets->current_vault->sacks[si],
+                           18, 20, pw, ph, (int)x, (int)y);
 
-    if(item)
-    {
-      if(item == widgets->last_tooltip_item &&
-         gtk_widget_get_visible(popover))
-        return;
-
-      widgets->last_tooltip_item = item;
-      widgets->tooltip_item_base = item->base_name;
-      widgets->tooltip_item_var1 = item->var1;
-      widgets->last_tooltip_markup[0] = '\0';
-      ItemReqReduction red;
-      item_req_reduction(widgets->current_character, item->base_name, &red);
-      vault_item_format_stats_ex(item, widgets->translations, &red,
-                                 widgets->last_tooltip_markup,
-                                 sizeof(widgets->last_tooltip_markup));
-
-      if(widgets->tooltip_parent != w)
-      {
-        if(widgets->tooltip_parent)
-          gtk_widget_unparent(popover);
-        gtk_widget_set_parent(popover, w);
-        widgets->tooltip_parent = w;
-      }
-
-      SACK_ITEM_RECT(item, 18);
-      gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),
-                           widgets->last_tooltip_markup);
-      show_compare_tooltip(widgets, item);
-      gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
-      tooltip_set_position(popover, w, &rect);
-      gtk_widget_set_visible(popover, TRUE);
-      return;
-    }
-
-    widgets->last_tooltip_item = NULL;
-    gtk_widget_set_visible(popover, FALSE);
+    tooltip_show_for_item(widgets, w, item, grid_cell_size(widgets, pw, 18),
+        &widgets->last_tooltip_item, widgets->last_tooltip_markup,
+        sizeof(widgets->last_tooltip_markup), NULL);
     return;
   }
 
@@ -196,45 +310,12 @@ update_instant_tooltip(AppWidgets *widgets)
       return;
     }
 
-    TQVaultSack *sack = &widgets->current_character->inv_sacks[0];
-    item = sack_hit_test(widgets, sack, CHAR_INV_COLS, CHAR_INV_ROWS, pw, ph, (int)x, (int)y);
+    TQVaultItem *item = sack_hit_test(widgets, &widgets->current_character->inv_sacks[0],
+                                      CHAR_INV_COLS, CHAR_INV_ROWS, pw, ph, (int)x, (int)y);
 
-    if(item)
-    {
-      if(item == widgets->last_inv_tooltip_item &&
-         gtk_widget_get_visible(popover))
-        return;
-
-      widgets->last_inv_tooltip_item = item;
-      widgets->tooltip_item_base = item->base_name;
-      widgets->tooltip_item_var1 = item->var1;
-      widgets->last_inv_tooltip_markup[0] = '\0';
-      ItemReqReduction red;
-      item_req_reduction(widgets->current_character, item->base_name, &red);
-      vault_item_format_stats_ex(item, widgets->translations, &red,
-                                 widgets->last_inv_tooltip_markup,
-                                 sizeof(widgets->last_inv_tooltip_markup));
-
-      if(widgets->tooltip_parent != w)
-      {
-        if(widgets->tooltip_parent)
-          gtk_widget_unparent(popover);
-        gtk_widget_set_parent(popover, w);
-        widgets->tooltip_parent = w;
-      }
-
-      SACK_ITEM_RECT(item, CHAR_INV_COLS);
-      gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),
-                           widgets->last_inv_tooltip_markup);
-      show_compare_tooltip(widgets, item);
-      gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
-      tooltip_set_position(popover, w, &rect);
-      gtk_widget_set_visible(popover, TRUE);
-      return;
-    }
-
-    widgets->last_inv_tooltip_item = NULL;
-    gtk_widget_set_visible(popover, FALSE);
+    tooltip_show_for_item(widgets, w, item, grid_cell_size(widgets, pw, CHAR_INV_COLS),
+        &widgets->last_inv_tooltip_item, widgets->last_inv_tooltip_markup,
+        sizeof(widgets->last_inv_tooltip_markup), NULL);
     return;
   }
 
@@ -248,183 +329,42 @@ update_instant_tooltip(AppWidgets *widgets)
       return;
     }
 
-    TQVaultSack *sack = &widgets->current_character->inv_sacks[idx];
-    item = sack_hit_test(widgets, sack, CHAR_BAG_COLS, CHAR_BAG_ROWS, pw, ph, (int)x, (int)y);
+    TQVaultItem *item = sack_hit_test(widgets, &widgets->current_character->inv_sacks[idx],
+                                      CHAR_BAG_COLS, CHAR_BAG_ROWS, pw, ph, (int)x, (int)y);
 
-    if(item)
-    {
-      if(item == widgets->last_bag_tooltip_item &&
-         gtk_widget_get_visible(popover))
-        return;
-
-      widgets->last_bag_tooltip_item = item;
-      widgets->tooltip_item_base = item->base_name;
-      widgets->tooltip_item_var1 = item->var1;
-      widgets->last_bag_tooltip_markup[0] = '\0';
-      ItemReqReduction red;
-      item_req_reduction(widgets->current_character, item->base_name, &red);
-      vault_item_format_stats_ex(item, widgets->translations, &red,
-                                 widgets->last_bag_tooltip_markup,
-                                 sizeof(widgets->last_bag_tooltip_markup));
-
-      if(widgets->tooltip_parent != w)
-      {
-        if(widgets->tooltip_parent)
-          gtk_widget_unparent(popover);
-        gtk_widget_set_parent(popover, w);
-        widgets->tooltip_parent = w;
-      }
-
-      SACK_ITEM_RECT(item, CHAR_BAG_COLS);
-      gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),
-                           widgets->last_bag_tooltip_markup);
-      show_compare_tooltip(widgets, item);
-      gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
-      tooltip_set_position(popover, w, &rect);
-      gtk_widget_set_visible(popover, TRUE);
-      return;
-    }
-
-    widgets->last_bag_tooltip_item = NULL;
-    gtk_widget_set_visible(popover, FALSE);
+    tooltip_show_for_item(widgets, w, item, grid_cell_size(widgets, pw, CHAR_BAG_COLS),
+        &widgets->last_bag_tooltip_item, widgets->last_bag_tooltip_markup,
+        sizeof(widgets->last_bag_tooltip_markup), NULL);
     return;
   }
 
-  #undef SACK_ITEM_RECT
-
-  // Helper macro for stash tooltip item rects (cell size from stash dims)
-  #define STASH_ITEM_RECT(it, stash_ptr) do {                             \
-      double cell = (double)pw / (stash_ptr)->sack_width;                 \
-      double cell_h2 = (double)ph / (stash_ptr)->sack_height;             \
-      if(cell_h2 < cell) cell = cell_h2;                                  \
-      if(cell <= 0.0) cell = 32.0;                                        \
-      int iw, ih;                                                         \
-      get_item_dims(widgets, (it), &iw, &ih);                            \
-      rect.x      = (int)((it)->point_x * cell);                        \
-      rect.y      = (int)((it)->point_y * cell);                        \
-      rect.width  = (int)(iw * cell);                                    \
-      rect.height = (int)(ih * cell);                                    \
-  } while(0)
-
-  // Stash tooltip helper: compute cell size, find item, show tooltip.
-  // Uses find_item_at_cell() with the locally-computed cell size instead of
-  // sack_hit_test() (which would use compute_cell_size() -- wrong for stashes).
-  #define STASH_TOOLTIP(da_field, stash_field, cache_item, cache_markup, label) \
-  if(w == widgets->da_field && widgets->stash_field) {                        \
-      TQStash *st = widgets->stash_field;                                      \
-      double scw = (double)pw / st->sack_width;                                \
-      double sch = (double)ph / st->sack_height;                               \
-      double scell = scw < sch ? scw : sch;                                    \
-      if(scell <= 0.0) scell = 32.0;                                           \
-      item = find_item_at_cell(widgets, &st->sack, st->sack_width,             \
-                               st->sack_height, scell, x, y, NULL);            \
-      if(item) {                                                               \
-          if(item == widgets->cache_item &&                                     \
-             gtk_widget_get_visible(popover)) return;                          \
-          widgets->cache_item = item;                                          \
-          widgets->tooltip_item_base = item->base_name;                        \
-          widgets->tooltip_item_var1 = item->var1;                             \
-          widgets->cache_markup[0] = '\0';                                     \
-          ItemReqReduction red;                                                \
-          item_req_reduction(widgets->current_character, item->base_name, &red); \
-          vault_item_format_stats_ex(item, widgets->translations, &red,         \
-                                  widgets->cache_markup,                        \
-                                  sizeof(widgets->cache_markup));               \
-          if(widgets->tooltip_parent != w) {                                   \
-              if(widgets->tooltip_parent) gtk_widget_unparent(popover);        \
-              gtk_widget_set_parent(popover, w);                               \
-              widgets->tooltip_parent = w;                                     \
-          }                                                                    \
-          STASH_ITEM_RECT(item, st);                                           \
-          gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),              \
-                               widgets->cache_markup);                          \
-          show_compare_tooltip(widgets, item);                                 \
-          gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);            \
-          tooltip_set_position(popover, w, &rect);                             \
-          gtk_widget_set_visible(popover, TRUE);                               \
-          return;                                                              \
-      }                                                                        \
-      widgets->cache_item = NULL;                                              \
-      gtk_widget_set_visible(popover, FALSE);                                  \
-      return;                                                                  \
+  if(w == widgets->stash_transfer_da && widgets->transfer_stash)
+  {
+    tooltip_update_stash(widgets, w, widgets->transfer_stash, x, y,
+        &widgets->last_transfer_tooltip_item, widgets->last_transfer_tooltip_markup,
+        sizeof(widgets->last_transfer_tooltip_markup));
+    return;
   }
 
-  STASH_TOOLTIP(stash_transfer_da, transfer_stash,
-                last_transfer_tooltip_item, last_transfer_tooltip_markup, "Transfer")
-  STASH_TOOLTIP(stash_player_da, player_stash,
-                last_player_tooltip_item, last_player_tooltip_markup, "Storage")
-  STASH_TOOLTIP(stash_relic_da, relic_vault,
-                last_relic_tooltip_item, last_relic_tooltip_markup, "Relics")
+  if(w == widgets->stash_player_da && widgets->player_stash)
+  {
+    tooltip_update_stash(widgets, w, widgets->player_stash, x, y,
+        &widgets->last_player_tooltip_item, widgets->last_player_tooltip_markup,
+        sizeof(widgets->last_player_tooltip_markup));
+    return;
+  }
 
-  #undef STASH_TOOLTIP
-  #undef STASH_ITEM_RECT
+  if(w == widgets->stash_relic_da && widgets->relic_vault)
+  {
+    tooltip_update_stash(widgets, w, widgets->relic_vault, x, y,
+        &widgets->last_relic_tooltip_item, widgets->last_relic_tooltip_markup,
+        sizeof(widgets->last_relic_tooltip_markup));
+    return;
+  }
 
   if(w == widgets->equip_drawing_area)
   {
-    if(!widgets->current_character)
-    {
-      gtk_widget_set_visible(popover, FALSE);
-      return;
-    }
-
-    double cell_size = compute_cell_size(widgets);
-    double sx, sy, sbw, sbh;
-    int slot = -1;
-
-    if(equip_hit_test(x, y, cell_size, &slot, &sx, &sy, &sbw, &sbh) &&
-       slot >= 0 && slot < 12 &&
-       widgets->current_character->equipment[slot])
-    {
-      equip_slot = slot;
-
-      if(equip_slot == widgets->last_equip_tooltip_slot &&
-         gtk_widget_get_visible(popover))
-        return;
-
-      widgets->last_equip_tooltip_slot = equip_slot;
-      widgets->last_equip_tooltip_markup[0] = '\0';
-      TQItem *eq = widgets->current_character->equipment[equip_slot];
-      TQVaultItem vi = {0};
-
-      vi.seed        = eq->seed;
-      vi.base_name   = eq->base_name;
-      vi.prefix_name = eq->prefix_name;
-      vi.suffix_name = eq->suffix_name;
-      vi.relic_name  = eq->relic_name;
-      vi.relic_bonus = eq->relic_bonus;
-      vi.relic_name2 = eq->relic_name2;
-      vi.relic_bonus2= eq->relic_bonus2;
-      vi.var1        = eq->var1;
-      vi.var2        = eq->var2;
-      widgets->tooltip_item_base = eq->base_name;
-      widgets->tooltip_item_var1 = eq->var1;
-      ItemReqReduction red;
-      item_req_reduction(widgets->current_character, vi.base_name, &red);
-      vault_item_format_stats_ex(&vi, widgets->translations, &red,
-                                 widgets->last_equip_tooltip_markup,
-                                 sizeof(widgets->last_equip_tooltip_markup));
-
-      if(widgets->tooltip_parent != w)
-      {
-        if(widgets->tooltip_parent)
-          gtk_widget_unparent(popover);
-        gtk_widget_set_parent(popover, w);
-        widgets->tooltip_parent = w;
-      }
-
-      rect.x = (int)sx;  rect.y = (int)sy;
-      rect.width = (int)sbw;  rect.height = (int)sbh;
-      gtk_label_set_markup(GTK_LABEL(widgets->tooltip_label),
-                           widgets->last_equip_tooltip_markup);
-      show_compare_tooltip(widgets, &vi);
-      gtk_popover_set_pointing_to(GTK_POPOVER(popover), &rect);
-      tooltip_set_position(popover, w, &rect);
-      gtk_widget_set_visible(popover, TRUE);
-      return;
-    }
-
-    widgets->last_equip_tooltip_slot = -1;
-    gtk_widget_set_visible(popover, FALSE);
+    tooltip_update_equip(widgets, w, x, y);
     return;
   }
 

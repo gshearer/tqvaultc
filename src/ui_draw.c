@@ -425,13 +425,388 @@ equip_draw_cb(GtkDrawingArea *drawing_area, cairo_t *cr,
 
 // ── Shared sack drawing helper ──────────────────────────────────────────
 
-// Draw all items in a vault sack grid, including textures, overlays,
-// shard/stack counts, search highlights, and held-item placement preview.
-// cr: cairo context
-// widgets: application widget state
-// sack: the sack to draw (may be NULL)
-// cols: number of grid columns
-// rows: number of grid rows
+// The character-constant inputs to the always-on equippability tint.  Computed
+// once per draw call: without the hoist a full vault would redo ~23 stat
+// lookups per gear item on every redraw.
+typedef struct
+{
+  bool active;                  // false when no character is loaded, or an item is held
+  float str, dex, intel;
+  int level;
+  ReqReductionProfile prof;
+} EquipCheck;
+
+// Fill the grid area (and only the grid area, so surplus allocation stays
+// transparent) and stroke the cell lines over it.
+static void
+draw_grid_background(cairo_t *cr, int cols, int rows,
+    double cell_width, double cell_height)
+{
+  cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
+  cairo_rectangle(cr, 0, 0, (double)cols * cell_width, (double)rows * cell_height);
+  cairo_fill(cr);
+
+  cairo_set_source_rgb(cr, 0.3, 0.3, 0.3);
+  cairo_set_line_width(cr, 1.0);
+
+  for(int i = 0; i <= rows; i++)
+  {
+    cairo_move_to(cr, 0, (double)i * cell_height);
+    cairo_line_to(cr, (double)cols * cell_width, (double)i * cell_height);
+  }
+
+  for(int j = 0; j <= cols; j++)
+  {
+    cairo_move_to(cr, (double)j * cell_width, 0);
+    cairo_line_to(cr, (double)j * cell_width, (double)rows * cell_height);
+  }
+  cairo_stroke(cr);
+}
+
+// True when the compare-marked item lives in the container being drawn, so the
+// per-item loop should tint it green.
+static bool
+sack_shows_compare_item(AppWidgets *widgets, GtkWidget *this_widget)
+{
+  if(!widgets->compare_active || widgets->compare_source == CONTAINER_EQUIP)
+    return(false);
+
+  if(this_widget == widgets->vault_drawing_area &&
+     widgets->compare_source == CONTAINER_VAULT &&
+     widgets->current_sack == widgets->compare_sack_idx)
+    return(true);
+
+  if(this_widget == widgets->inv_drawing_area &&
+     widgets->compare_source == CONTAINER_INV)
+    return(true);
+
+  if(this_widget == widgets->bag_drawing_area &&
+     widgets->compare_source == CONTAINER_BAG &&
+     widgets->current_char_bag == widgets->compare_sack_idx)
+    return(true);
+
+  if(this_widget == widgets->stash_transfer_da &&
+     widgets->compare_source == CONTAINER_TRANSFER)
+    return(true);
+
+  if(this_widget == widgets->stash_player_da &&
+     widgets->compare_source == CONTAINER_PLAYER_STASH)
+    return(true);
+
+  if(this_widget == widgets->stash_relic_da &&
+     widgets->compare_source == CONTAINER_RELIC_VAULT)
+    return(true);
+
+  return(false);
+}
+
+// Snapshot the loaded character's buffed attributes and requirement reductions.
+// eq->active comes out false when nothing should be tinted.
+static void
+equip_check_prepare(AppWidgets *widgets, EquipCheck *eq)
+{
+  eq->active = (!widgets->held_item && widgets->current_character != NULL);
+  eq->str = eq->dex = eq->intel = 0.0f;
+  eq->level = 0;
+
+  if(!eq->active)
+    return;
+
+  character_buffed_attributes(widgets->current_character,
+                             &eq->str, &eq->dex, &eq->intel);
+  character_req_reduction_profile(widgets->current_character, &eq->prof);
+  eq->level = (int)widgets->current_character->level;
+}
+
+// Draw a shard or stack count in an item's bottom-right corner: white glyphs
+// over a one-pixel black outline, so the number reads over any item art.
+static void
+draw_corner_number(cairo_t *cr, const char *num_text,
+    double x, double y, double rw, double rh)
+{
+  cairo_save(cr);
+  cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
+
+  double font_size = rh * 0.35;
+
+  if(font_size < 10)
+    font_size = 10;
+  cairo_set_font_size(cr, font_size);
+
+  cairo_text_extents_t extents;
+
+  cairo_text_extents(cr, num_text, &extents);
+  double tx = x + rw - extents.width - 4;
+  double ty = y + rh - 4;
+
+  // Shadow outline
+  cairo_set_source_rgba(cr, 0, 0, 0, 0.8);
+  for(int dx = -1; dx <= 1; dx++)
+  {
+    for(int dy = -1; dy <= 1; dy++)
+    {
+      if(dx == 0 && dy == 0)
+        continue;
+      cairo_move_to(cr, tx + dx, ty + dy);
+      cairo_show_text(cr, num_text);
+    }
+  }
+
+  // White number
+  cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
+  cairo_move_to(cr, tx, ty);
+  cairo_show_text(cr, num_text);
+  cairo_restore(cr);
+}
+
+// Draw one item into its grid cell: tints, texture, relic overlay, counts and
+// the search outline.
+static void
+draw_sack_item(cairo_t *cr, AppWidgets *widgets, TQVaultItem *item,
+    double cell_width, double cell_height, bool highlight_compare,
+    const EquipCheck *eq)
+{
+  int w, h;
+
+  GdkPixbuf *pixbuf = load_item_texture(widgets, item->base_name, item->var1);
+
+  if(pixbuf)
+  {
+    w = gdk_pixbuf_get_width(pixbuf) / 32;
+    h = gdk_pixbuf_get_height(pixbuf) / 32;
+    if(w < 1)
+      w = 1;
+    if(h < 1)
+      h = 1;
+  }
+  else
+  {
+    w = item->width  > 0 ? item->width  : 1;
+    h = item->height > 0 ? item->height : 1;
+  }
+
+  double x  = (double)item->point_x * cell_width;
+  double y  = (double)item->point_y * cell_height;
+  double rw = (double)w * cell_width;
+  double rh = (double)h * cell_height;
+
+  // Green highlight for compare-marked item
+  if(highlight_compare &&
+     item->point_x == widgets->compare_item.point_x &&
+     item->point_y == widgets->compare_item.point_y)
+  {
+    cairo_set_source_rgba(cr, 0.0, 0.6, 0.0, 0.35);
+    cairo_rectangle(cr, x, y, rw, rh);
+    cairo_fill(cr);
+  }
+
+  // Equippability highlight (green = can equip, red = requirements not met by
+  // the loaded character).  Only items that occupy an equipment slot (armour,
+  // jewellery, weapons, shields) qualify; scrolls, charms, relics, artifacts,
+  // potions and dyes are never slotted into the character and so get no
+  // highlight.  Dimmed ~20% (RGB x0.8) vs the old hover-only tint so the
+  // always-on shading is less distracting.
+  if(eq->active && item_gear_type(item->base_name) != 0)
+  {
+    bool equippable = item_is_equippable_pre(item, eq->str, eq->dex,
+                                            eq->intel, eq->level,
+                                            &eq->prof);
+
+    cairo_set_source_rgba(cr,
+        equippable ? 0.0 : 0.64,
+        equippable ? 0.64 : 0.0,
+        0.0, 0.35);
+    cairo_rectangle(cr, x, y, rw, rh);
+    cairo_fill(cr);
+  }
+
+  if(pixbuf)
+  {
+    int pw = gdk_pixbuf_get_width(pixbuf);
+    int ph = gdk_pixbuf_get_height(pixbuf);
+
+    cairo_save(cr);
+    cairo_translate(cr, x + 2, y + 2);
+    cairo_scale(cr, (rw - 4) / pw, (rh - 4) / ph);
+    G_GNUC_BEGIN_IGNORE_DEPRECATIONS
+    gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
+    G_GNUC_END_IGNORE_DEPRECATIONS
+    cairo_paint(cr);
+    cairo_restore(cr);
+    g_object_unref(pixbuf);
+  }
+  else
+  {
+    cairo_set_source_rgb(cr, 0.5, 0.5, 0.8);
+    cairo_rectangle(cr, x + 2, y + 2, rw - 4, rh - 4);
+    cairo_fill(cr);
+  }
+
+  // Relic/charm overlay icon in bottom-right cell
+  if((item->relic_name && item->relic_name[0]) ||
+     (item->relic_name2 && item->relic_name2[0]))
+    draw_relic_overlay(cr, widgets, x, y, w, h, cell_width);
+
+  // Shard count number in bottom-right corner for incomplete relics/charms
+  if(item_is_relic_or_charm(item->base_name))
+  {
+    int max_shards = item_completed_relic_level(item->base_name);
+    uint32_t shard_count = item->var1 > 0 ? item->var1 : 1;
+
+    if(max_shards > 0 && shard_count < (uint32_t)max_shards)
+    {
+      char num_text[16];
+
+      snprintf(num_text, sizeof(num_text), "%u", shard_count);
+      draw_corner_number(cr, num_text, x, y, rw, rh);
+    }
+  }
+
+  // Stack count in bottom-right corner for stacked items.
+  // For relics/charms, show shard count (var1) only when incomplete.
+  bool is_rc = item_is_relic_or_charm(item->base_name);
+  int display_qty = is_rc ? (int)item->var1 : item->stack_size;
+  bool rc_complete = is_rc && display_qty >= relic_max_shards(item->base_name);
+
+  if(display_qty > 1 && !rc_complete)
+  {
+    char num_text[16];
+
+    snprintf(num_text, sizeof(num_text), "%d", display_qty);
+    draw_corner_number(cr, num_text, x, y, rw, rh);
+  }
+
+  // Search highlight: red outline around matching items
+  if(widgets->search_text[0] && item_matches_search(widgets, item))
+  {
+    cairo_set_source_rgba(cr, 1.0, 0.0, 0.0, 0.9);
+    cairo_set_line_width(cr, 2.0);
+    cairo_rectangle(cr, x + 1, y + 1, rw - 2, rh - 2);
+    cairo_stroke(cr);
+  }
+}
+
+// Shade the cells the held item would land in, or -- when a relic/charm is held
+// over an existing item -- that item's socket verdict.  The held texture itself
+// is drawn on the global overlay, not here.
+static void
+draw_held_item_preview(cairo_t *cr, AppWidgets *widgets, TQVaultSack *sack,
+    int cols, int rows, double cell_width, double cell_height)
+{
+  HeldItem *hi = widgets->held_item;
+  int cx = (int)(widgets->cursor_x / cell_width);
+  int cy = (int)(widgets->cursor_y / cell_height);
+
+  // When holding a relic/charm: check if the cursor is over a socketable
+  // target item.  If so, highlight that item instead of the placement grid.
+  bool held_is_relic = item_is_relic_or_charm(hi->item.base_name);
+  TQVaultItem *relic_target = NULL;
+  int relic_target_iw = 0, relic_target_ih = 0;
+
+  if(held_is_relic && sack)
+  {
+    for(int i = 0; i < sack->num_items; i++)
+    {
+      TQVaultItem *it = &sack->items[i];
+
+      if(!it->base_name)
+        continue;
+
+      int iw, ih;
+
+      get_item_dims(widgets, it, &iw, &ih);
+      if(cx >= it->point_x && cx < it->point_x + iw &&
+         cy >= it->point_y && cy < it->point_y + ih)
+      {
+        relic_target = it;
+        relic_target_iw = iw;
+        relic_target_ih = ih;
+        break;
+      }
+    }
+  }
+
+  // If the relic target is itself a stackable-compatible relic/charm,
+  // fall through to the normal placement path (handles stack highlight).
+  if(relic_target && items_stackable(&hi->item, relic_target))
+    relic_target = NULL;
+
+  if(relic_target)
+  {
+    // Hovering over a target item while holding a relic/charm:
+    // green = has an empty socket, red = no available socket.
+    bool can_socket = item_can_accept_relic_sack(relic_target, hi->item.base_name, widgets->translations) != 0;
+
+    cairo_set_source_rgba(cr,
+        can_socket ? 0.0 : 0.8,
+        can_socket ? 0.8 : 0.0,
+        0.0, 0.35);
+    cairo_rectangle(cr,
+        (double)relic_target->point_x * cell_width,
+        (double)relic_target->point_y * cell_height,
+        (double)relic_target_iw * cell_width,
+        (double)relic_target_ih * cell_height);
+    cairo_fill(cr);
+    return;
+  }
+
+  // Normal placement preview (also used when holding a relic/charm
+  // but not hovering over any existing item).
+  int px = cx - hi->item_w / 2;
+  int py = cy - hi->item_h / 2;
+
+  // Green when the footprint is in-bounds and at most one existing item
+  // overlaps it (0 = empty drop, 1 = swap with that single item); red when
+  // out of bounds or two-plus items block it.  Mirrors place_in_sack().
+  bool in_bounds = (px >= 0 && py >= 0 &&
+                    px + hi->item_w <= cols && py + hi->item_h <= rows);
+  int overlap = 0;
+
+  if(in_bounds && sack)
+  {
+    for(int i = 0; i < sack->num_items; i++)
+    {
+      TQVaultItem *it = &sack->items[i];
+
+      if(!it->base_name)
+        continue;
+
+      int iw, ih;
+
+      get_item_dims(widgets, it, &iw, &ih);
+
+      if(px < it->point_x + iw && it->point_x < px + hi->item_w &&
+         py < it->point_y + ih && it->point_y < py + hi->item_h)
+        overlap++;
+    }
+  }
+
+  bool valid = in_bounds && overlap <= 1;
+
+  for(int dy = 0; dy < hi->item_h; dy++)
+  {
+    for(int dx = 0; dx < hi->item_w; dx++)
+    {
+      int gx = px + dx, gy = py + dy;
+
+      if(gx < 0 || gx >= cols || gy < 0 || gy >= rows)
+        continue;
+
+      if(valid)
+        cairo_set_source_rgba(cr, 0.0, 0.8, 0.0, 0.25);
+      else
+        cairo_set_source_rgba(cr, 0.8, 0.0, 0.0, 0.25);
+      cairo_rectangle(cr, (double)gx * cell_width, (double)gy * cell_height,
+                      cell_width, cell_height);
+      cairo_fill(cr);
+    }
+  }
+}
+
+// cr: cairo context to draw into
+// widgets: application widget tree
+// sack: the sack whose items to draw (NULL draws an empty grid)
+// cols/rows: grid dimensions in cells
 // width: allocated pixel width
 // height: allocated pixel height
 // forced_cell: forced cell size (>0), or <=0 to derive from dimensions
@@ -458,381 +833,22 @@ draw_sack_items(cairo_t *cr, AppWidgets *widgets,
   double cell_width  = cell;
   double cell_height = cell;
 
-  // Background -- only fill the grid area so any extra allocated space
-  // remains transparent (no visible blank bar below the grid).
-  cairo_set_source_rgb(cr, 0.1, 0.1, 0.1);
-  cairo_rectangle(cr, 0, 0, (double)cols * cell_width, (double)rows * cell_height);
-  cairo_fill(cr);
-
-  // Grid lines
-  cairo_set_source_rgb(cr, 0.3, 0.3, 0.3);
-  cairo_set_line_width(cr, 1.0);
-
-  for(int i = 0; i <= rows; i++)
-  {
-    cairo_move_to(cr, 0, (double)i * cell_height);
-    cairo_line_to(cr, (double)cols * cell_width, (double)i * cell_height);
-  }
-
-  for(int j = 0; j <= cols; j++)
-  {
-    cairo_move_to(cr, (double)j * cell_width, 0);
-    cairo_line_to(cr, (double)j * cell_width, (double)rows * cell_height);
-  }
-  cairo_stroke(cr);
+  draw_grid_background(cr, cols, rows, cell_width, cell_height);
 
   if(!sack)
     return;
 
-  // Determine if this draw call should highlight the compare item
-  bool highlight_compare = false;
+  bool highlight_compare = sack_shows_compare_item(widgets, this_widget);
+  EquipCheck eq;
 
-  if(widgets->compare_active && widgets->compare_source != CONTAINER_EQUIP)
-  {
-    if(this_widget == widgets->vault_drawing_area &&
-       widgets->compare_source == CONTAINER_VAULT &&
-       widgets->current_sack == widgets->compare_sack_idx)
-      highlight_compare = true;
-    else if(this_widget == widgets->inv_drawing_area &&
-            widgets->compare_source == CONTAINER_INV)
-      highlight_compare = true;
-    else if(this_widget == widgets->bag_drawing_area &&
-            widgets->compare_source == CONTAINER_BAG &&
-            widgets->current_char_bag == widgets->compare_sack_idx)
-      highlight_compare = true;
-    else if(this_widget == widgets->stash_transfer_da &&
-            widgets->compare_source == CONTAINER_TRANSFER)
-      highlight_compare = true;
-    else if(this_widget == widgets->stash_player_da &&
-            widgets->compare_source == CONTAINER_PLAYER_STASH)
-      highlight_compare = true;
-    else if(this_widget == widgets->stash_relic_da &&
-            widgets->compare_source == CONTAINER_RELIC_VAULT)
-      highlight_compare = true;
-  }
-
-  // Always-on equippability highlight: when a character is loaded and the user
-  // is not carrying an item, shade every gear item green (the character meets its
-  // requirements) or red (it does not) -- no hover required, matching TQVaultAE.
-  // The character-constant work (buffed attributes + reduction profile) is
-  // computed once here and reused per item via item_is_equippable_pre(); without
-  // this hoist a full vault would redo ~23 stat lookups per gear item per redraw.
-  bool show_equip = (!widgets->held_item &&
-                     widgets->current_character != NULL);
-  float equip_str = 0.0f, equip_dex = 0.0f, equip_int = 0.0f;
-  int equip_level = 0;
-  ReqReductionProfile equip_prof;
-
-  if(show_equip)
-  {
-    character_buffed_attributes(widgets->current_character,
-                               &equip_str, &equip_dex, &equip_int);
-    character_req_reduction_profile(widgets->current_character, &equip_prof);
-    equip_level = (int)widgets->current_character->level;
-  }
+  equip_check_prepare(widgets, &eq);
 
   for(int i = 0; i < sack->num_items; i++)
-  {
-    TQVaultItem *item = &sack->items[i];
-    int w, h;
+    draw_sack_item(cr, widgets, &sack->items[i], cell_width, cell_height,
+                   highlight_compare, &eq);
 
-    GdkPixbuf *pixbuf = load_item_texture(widgets, item->base_name, item->var1);
-
-    if(pixbuf)
-    {
-      w = gdk_pixbuf_get_width(pixbuf) / 32;
-      h = gdk_pixbuf_get_height(pixbuf) / 32;
-      if(w < 1)
-        w = 1;
-      if(h < 1)
-        h = 1;
-    }
-    else
-    {
-      w = item->width  > 0 ? item->width  : 1;
-      h = item->height > 0 ? item->height : 1;
-    }
-
-    double x  = (double)item->point_x * cell_width;
-    double y  = (double)item->point_y * cell_height;
-    double rw = (double)w * cell_width;
-    double rh = (double)h * cell_height;
-
-    // Green highlight for compare-marked item
-    if(highlight_compare &&
-       item->point_x == widgets->compare_item.point_x &&
-       item->point_y == widgets->compare_item.point_y)
-    {
-      cairo_set_source_rgba(cr, 0.0, 0.6, 0.0, 0.35);
-      cairo_rectangle(cr, x, y, rw, rh);
-      cairo_fill(cr);
-    }
-
-    // Equippability highlight (green = can equip, red = requirements not met by
-    // the loaded character).  Only items that occupy an equipment slot (armour,
-    // jewellery, weapons, shields) qualify; scrolls, charms, relics, artifacts,
-    // potions and dyes are never slotted into the character and so get no
-    // highlight.  Dimmed ~20% (RGB x0.8) vs the old hover-only tint so the
-    // always-on shading is less distracting.
-    if(show_equip && item_gear_type(item->base_name) != 0)
-    {
-      bool equippable = item_is_equippable_pre(item, equip_str, equip_dex,
-                                              equip_int, equip_level,
-                                              &equip_prof);
-
-      cairo_set_source_rgba(cr,
-          equippable ? 0.0 : 0.64,
-          equippable ? 0.64 : 0.0,
-          0.0, 0.35);
-      cairo_rectangle(cr, x, y, rw, rh);
-      cairo_fill(cr);
-    }
-
-    if(pixbuf)
-    {
-      int pw = gdk_pixbuf_get_width(pixbuf);
-      int ph = gdk_pixbuf_get_height(pixbuf);
-
-      cairo_save(cr);
-      cairo_translate(cr, x + 2, y + 2);
-      cairo_scale(cr, (rw - 4) / pw, (rh - 4) / ph);
-      G_GNUC_BEGIN_IGNORE_DEPRECATIONS
-      gdk_cairo_set_source_pixbuf(cr, pixbuf, 0, 0);
-      G_GNUC_END_IGNORE_DEPRECATIONS
-      cairo_paint(cr);
-      cairo_restore(cr);
-      g_object_unref(pixbuf);
-    }
-    else
-    {
-      cairo_set_source_rgb(cr, 0.5, 0.5, 0.8);
-      cairo_rectangle(cr, x + 2, y + 2, rw - 4, rh - 4);
-      cairo_fill(cr);
-    }
-
-    // Relic/charm overlay icon in bottom-right cell
-    if((item->relic_name && item->relic_name[0]) ||
-       (item->relic_name2 && item->relic_name2[0]))
-      draw_relic_overlay(cr, widgets, x, y, w, h, cell_width);
-
-    // Shard count number in bottom-right corner for incomplete relics/charms
-    if(item_is_relic_or_charm(item->base_name))
-    {
-      int max_shards = item_completed_relic_level(item->base_name);
-      uint32_t shard_count = item->var1 > 0 ? item->var1 : 1;
-
-      if(max_shards > 0 && shard_count < (uint32_t)max_shards)
-      {
-        char num_text[16];
-
-        snprintf(num_text, sizeof(num_text), "%u", shard_count);
-        cairo_save(cr);
-        cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-
-        double font_size = rh * 0.35;
-
-        if(font_size < 10)
-          font_size = 10;
-        cairo_set_font_size(cr, font_size);
-
-        cairo_text_extents_t extents;
-
-        cairo_text_extents(cr, num_text, &extents);
-        double tx = x + rw - extents.width - 4;
-        double ty = y + rh - 4;
-
-        // Shadow outline
-        cairo_set_source_rgba(cr, 0, 0, 0, 0.8);
-        for(int dx = -1; dx <= 1; dx++)
-        {
-          for(int dy = -1; dy <= 1; dy++)
-          {
-            if(dx == 0 && dy == 0)
-              continue;
-            cairo_move_to(cr, tx + dx, ty + dy);
-            cairo_show_text(cr, num_text);
-          }
-        }
-
-        // White number
-        cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
-        cairo_move_to(cr, tx, ty);
-        cairo_show_text(cr, num_text);
-        cairo_restore(cr);
-      }
-    }
-
-    // Stack count in bottom-right corner for stacked items.
-    // For relics/charms, show shard count (var1) only when incomplete.
-    bool is_rc = item_is_relic_or_charm(item->base_name);
-    int display_qty = is_rc ? (int)item->var1 : item->stack_size;
-    bool rc_complete = is_rc && display_qty >= relic_max_shards(item->base_name);
-
-    if(display_qty > 1 && !rc_complete)
-    {
-      char num_text[16];
-
-      snprintf(num_text, sizeof(num_text), "%d", display_qty);
-      cairo_save(cr);
-      cairo_select_font_face(cr, "Sans", CAIRO_FONT_SLANT_NORMAL, CAIRO_FONT_WEIGHT_BOLD);
-
-      double font_size = rh * 0.35;
-
-      if(font_size < 10)
-        font_size = 10;
-      cairo_set_font_size(cr, font_size);
-
-      cairo_text_extents_t extents;
-
-      cairo_text_extents(cr, num_text, &extents);
-      double tx = x + rw - extents.width - 4;
-      double ty = y + rh - 4;
-
-      // Shadow outline
-      cairo_set_source_rgba(cr, 0, 0, 0, 0.8);
-      for(int dx = -1; dx <= 1; dx++)
-      {
-        for(int dy = -1; dy <= 1; dy++)
-        {
-          if(dx == 0 && dy == 0)
-            continue;
-          cairo_move_to(cr, tx + dx, ty + dy);
-          cairo_show_text(cr, num_text);
-        }
-      }
-
-      // White number
-      cairo_set_source_rgb(cr, 1.0, 1.0, 1.0);
-      cairo_move_to(cr, tx, ty);
-      cairo_show_text(cr, num_text);
-      cairo_restore(cr);
-    }
-
-    // Search highlight: red outline around matching items
-    if(widgets->search_text[0] && item_matches_search(widgets, item))
-    {
-      cairo_set_source_rgba(cr, 1.0, 0.0, 0.0, 0.9);
-      cairo_set_line_width(cr, 2.0);
-      cairo_rectangle(cr, x + 1, y + 1, rw - 2, rh - 2);
-      cairo_stroke(cr);
-    }
-  }
-
-  // ── Held-item placement preview + cursor overlay ──────────────────────
   if(widgets->held_item && widgets->cursor_widget == this_widget)
-  {
-    HeldItem *hi = widgets->held_item;
-    int cx = (int)(widgets->cursor_x / cell_width);
-    int cy = (int)(widgets->cursor_y / cell_height);
-
-    // When holding a relic/charm: check if the cursor is over a socketable
-    // target item.  If so, highlight that item instead of the placement grid.
-    bool held_is_relic = item_is_relic_or_charm(hi->item.base_name);
-    TQVaultItem *relic_target = NULL;
-    int relic_target_iw = 0, relic_target_ih = 0;
-
-    if(held_is_relic && sack)
-    {
-      for(int i = 0; i < sack->num_items; i++)
-      {
-        TQVaultItem *it = &sack->items[i];
-
-        if(!it->base_name)
-          continue;
-
-        int iw, ih;
-
-        get_item_dims(widgets, it, &iw, &ih);
-        if(cx >= it->point_x && cx < it->point_x + iw &&
-           cy >= it->point_y && cy < it->point_y + ih)
-        {
-          relic_target = it;
-          relic_target_iw = iw;
-          relic_target_ih = ih;
-          break;
-        }
-      }
-    }
-
-    // If the relic target is itself a stackable-compatible relic/charm,
-    // fall through to the normal placement path (handles stack highlight).
-    if(relic_target && items_stackable(&hi->item, relic_target))
-      relic_target = NULL;
-
-    if(relic_target)
-    {
-      // Hovering over a target item while holding a relic/charm:
-      // green = has an empty socket, red = no available socket.
-      bool can_socket = item_can_accept_relic_sack(relic_target, hi->item.base_name, widgets->translations) != 0;
-
-      cairo_set_source_rgba(cr,
-          can_socket ? 0.0 : 0.8,
-          can_socket ? 0.8 : 0.0,
-          0.0, 0.35);
-      cairo_rectangle(cr,
-          (double)relic_target->point_x * cell_width,
-          (double)relic_target->point_y * cell_height,
-          (double)relic_target_iw * cell_width,
-          (double)relic_target_ih * cell_height);
-      cairo_fill(cr);
-    }
-    else
-    {
-      // Normal placement preview (also used when holding a relic/charm
-      // but not hovering over any existing item).
-      int px = cx - hi->item_w / 2;
-      int py = cy - hi->item_h / 2;
-
-      // Green when the footprint is in-bounds and at most one existing item
-      // overlaps it (0 = empty drop, 1 = swap with that single item); red when
-      // out of bounds or two-plus items block it.  Mirrors place_in_sack().
-      bool in_bounds = (px >= 0 && py >= 0 &&
-                        px + hi->item_w <= cols && py + hi->item_h <= rows);
-      int overlap = 0;
-
-      if(in_bounds && sack)
-      {
-        for(int i = 0; i < sack->num_items; i++)
-        {
-          TQVaultItem *it = &sack->items[i];
-
-          if(!it->base_name)
-            continue;
-
-          int iw, ih;
-
-          get_item_dims(widgets, it, &iw, &ih);
-
-          if(px < it->point_x + iw && it->point_x < px + hi->item_w &&
-             py < it->point_y + ih && it->point_y < py + hi->item_h)
-            overlap++;
-        }
-      }
-
-      bool valid = in_bounds && overlap <= 1;
-
-      for(int dy = 0; dy < hi->item_h; dy++)
-      {
-        for(int dx = 0; dx < hi->item_w; dx++)
-        {
-          int gx = px + dx, gy = py + dy;
-
-          if(gx < 0 || gx >= cols || gy < 0 || gy >= rows)
-            continue;
-
-          if(valid)
-            cairo_set_source_rgba(cr, 0.0, 0.8, 0.0, 0.25);
-          else
-            cairo_set_source_rgba(cr, 0.8, 0.0, 0.0, 0.25);
-          cairo_rectangle(cr, (double)gx * cell_width, (double)gy * cell_height,
-                          cell_width, cell_height);
-          cairo_fill(cr);
-        }
-      }
-    }
-
-    // Held item texture is drawn on the global overlay, not here.
-  }
+    draw_held_item_preview(cr, widgets, sack, cols, rows, cell_width, cell_height);
 }
 
 // Idle that pins each fixed-column grid (equipment, inventory, extra bag, vault)

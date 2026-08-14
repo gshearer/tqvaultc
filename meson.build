@@ -114,6 +114,7 @@ platform_sources = ['src/platform_mmap.c']
 app_sources = [
   'src/main.c',
   'src/ui.c',
+  'src/ui_build.c',
   'src/character.c',
   'src/arz.c',
   'src/vault.c',

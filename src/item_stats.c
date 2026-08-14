@@ -397,16 +397,11 @@ const char *INT_itemLevel, *INT_itemCostName, *INT_Class;
 
 #define INTERN(name) INT_##name = arz_intern(#name)
 
-// Initialize the item stats subsystem: pre-intern attribute names,
-// build skip set and attr_map hash tables.
-void
-item_stats_init(void)
+// Interned names the generic attribute walk must skip: each is emitted by a
+// themed handler instead, so a second generic line would duplicate it.
+static void
+build_skip_set(void)
 {
-  // Pre-intern all attr_maps variable names
-  for(int i = 0; attr_maps[i].variable; i++)
-    attr_maps[i].interned = arz_intern(attr_maps[i].variable);
-
-  // Build skip_set
   static const char *skip_var_names[] = {
     "offensivePhysicalMin", "offensivePhysicalMax", "offensivePhysicalChance",
     "offensiveFireMin", "offensiveFireMax",
@@ -546,13 +541,21 @@ item_stats_init(void)
   g_skip_set = g_hash_table_new(g_direct_hash, g_direct_equal);
   for(const char **sp = skip_var_names; *sp; sp++)
     g_hash_table_insert(g_skip_set, (gpointer)arz_intern(*sp), (gpointer)1);
+}
 
-  // Build attr_map_ht
+// Interned-name -> attr_maps[] entry, for O(1) lookup during the walk.
+static void
+build_attr_map_ht(void)
+{
   g_attr_map_ht = g_hash_table_new(g_direct_hash, g_direct_equal);
   for(int i = 0; attr_maps[i].variable; i++)
     g_hash_table_insert(g_attr_map_ht, (gpointer)attr_maps[i].interned, &attr_maps[i]);
+}
 
-  // Pre-intern all frequently used variable names
+// Offensive damage, leech, slow and crowd-control variable names.
+static void
+intern_offensive_names(void)
+{
   INTERN(offensivePhysicalMin); INTERN(offensivePhysicalMax); INTERN(offensivePhysicalChance);
   INTERN(offensiveFireMin); INTERN(offensiveFireMax); INTERN(offensiveFireChance);
   INTERN(offensiveColdMin); INTERN(offensiveColdMax); INTERN(offensiveColdChance);
@@ -597,6 +600,12 @@ item_stats_init(void)
   INTERN(offensiveConfusionMin); INTERN(offensiveConfusionDurationMin); INTERN(offensiveConfusionChance);
   INTERN(offensiveFearMin); INTERN(offensiveFearMax); INTERN(offensiveFearChance);
   INTERN(offensiveConvertMin);
+}
+
+// Retaliation damage and retaliation-slow variable names.
+static void
+intern_retaliation_names(void)
+{
   INTERN(retaliationPhysicalMin); INTERN(retaliationPhysicalChance);
   INTERN(retaliationFireMin); INTERN(retaliationFireChance);
   INTERN(retaliationColdMin); INTERN(retaliationColdChance);
@@ -614,6 +623,12 @@ item_stats_init(void)
   INTERN(retaliationSlowDefensiveAbilityMin); INTERN(retaliationSlowDefensiveAbilityMax); INTERN(retaliationSlowDefensiveAbilityDurationMin); INTERN(retaliationSlowDefensiveAbilityChance);
   INTERN(retaliationSlowOffensiveAbilityMin); INTERN(retaliationSlowOffensiveAbilityMax); INTERN(retaliationSlowOffensiveAbilityDurationMin); INTERN(retaliationSlowOffensiveAbilityChance);
   INTERN(retaliationSlowOffensiveReductionMin); INTERN(retaliationSlowOffensiveReductionMax); INTERN(retaliationSlowOffensiveReductionDurationMin); INTERN(retaliationSlowOffensiveReductionChance);
+}
+
+// Percent-modifier and defensive-resistance variable names.
+static void
+intern_modifier_and_resist_names(void)
+{
   INTERN(offensivePhysicalModifier); INTERN(offensivePhysicalModifierChance);
   INTERN(offensiveFireModifier); INTERN(offensiveFireModifierChance);
   INTERN(offensiveColdModifier); INTERN(offensiveColdModifierChance);
@@ -644,6 +659,12 @@ item_stats_init(void)
   INTERN(retaliationLifeModifier); INTERN(retaliationLifeModifierChance);
   INTERN(retaliationStunModifier); INTERN(retaliationStunModifierChance);
   INTERN(retaliationElementalModifier); INTERN(retaliationElementalModifierChance);
+}
+
+// Skill parameters, racial bonuses, and the remaining effect variable names.
+static void
+intern_skill_and_effect_names(void)
+{
   INTERN(offensiveTotalDamageReductionPercentMin); INTERN(offensiveTotalDamageReductionPercentChance);
   INTERN(offensiveTotalDamageReductionPercentDurationMin);
   INTERN(racialBonusPercentDamage); INTERN(racialBonusPercentDefense); INTERN(racialBonusRace);
@@ -698,6 +719,12 @@ item_stats_init(void)
   INTERN(defensiveSlowManaLeach); INTERN(defensiveSlowManaLeachChance);
   INTERN(defensivePoisonDuration); INTERN(defensivePoisonDurationChance);
   INTERN(defensiveReflect); INTERN(defensiveReflectChance);
+}
+
+// Item identity, set, requirement and display variable names.
+static void
+intern_item_meta_names(void)
+{
   INTERN(itemNameTag); INTERN(description); INTERN(lootRandomizerName); INTERN(FileDescription);
   INTERN(itemClassification); INTERN(itemText);
   INTERN(characterBaseAttackSpeedTag); INTERN(artifactClassification);
@@ -712,6 +739,26 @@ item_stats_init(void)
   INTERN(dexterityRequirement); INTERN(intelligenceRequirement);
   INTERN(strengthRequirement); INTERN(levelRequirement);
   INTERN(itemLevel); INTERN(itemCostName); INTERN(Class);
+}
+
+// Initialize the item stats subsystem: pre-intern attribute names,
+// build skip set and attr_map hash tables.
+void
+item_stats_init(void)
+{
+  // Pre-intern all attr_maps variable names
+  for(int i = 0; attr_maps[i].variable; i++)
+    attr_maps[i].interned = arz_intern(attr_maps[i].variable);
+
+  build_skip_set();
+  build_attr_map_ht();
+
+  // Pre-intern all frequently used variable names
+  intern_offensive_names();
+  intern_retaliation_names();
+  intern_modifier_and_resist_names();
+  intern_skill_and_effect_names();
+  intern_item_meta_names();
 }
 
 // Free all item stats resources (skip set and attr map hash tables).

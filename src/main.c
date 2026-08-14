@@ -1,6 +1,8 @@
 #include <gtk/gtk.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "version.h"
 #include "build_number.h"
 #include "ui.h"
@@ -535,484 +537,429 @@ thumbs_build_progress(int done, int total, void *user)
     printf("\n");
 }
 
-// Program entry point. Parses command-line flags (--version, --debug),
-// initializes config, creates the GTK application, and runs the main loop.
-// argc: argument count
-// argv: argument vector
-// returns: GTK application exit status
-int
-main(int argc, char **argv)
+// Everything the command line can select, filled in by parse_cli_options.
+// A `*_only` flag names the one mode to run; with none set the GUI starts.
+typedef struct
 {
-#ifdef _WIN32
-  // The Windows GUI subsystem detaches stdout/stderr — redirect them to a
-  // logfile under our cache dir so init traces, GLib warnings, and
-  // config_save errors are captured for support.
-  {
-    char *log_dir = tqvc_cache_dir_new();
-    char *log_path = g_build_filename(log_dir, "tqvaultc.log", NULL);
-    FILE *log = freopen(log_path, "w", stderr);
-    if(log)
-      setvbuf(log, NULL, _IOLBF, 0);
-    freopen(log_path, "w", stdout);
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    fprintf(stderr, "tqvaultc: log opened at %s\n", log_path);
-    g_free(log_path);
-    g_free(log_dir);
-  }
-#endif
+  const char *config_override;
+  bool debug_mode;
 
-  const char *config_override = NULL;
-  bool debug_mode = false;
+  bool tooltip_only;
+  const char *tooltip_path;
+  const char *tooltip_prefix;          // optional --prefix for --tooltip
+  const char *tooltip_suffix;          // optional --suffix for --tooltip
 
-  bool tooltip_only = false;
-  const char *tooltip_path = NULL;
+  bool equip_check_only;
+  const char *equip_chr_path;
+  const char *equip_item_path;
 
-  bool equip_check_only = false;
-  const char *equip_chr_path = NULL;
-  const char *equip_item_path = NULL;
+  bool skill_bonus_only;
+  const char *skill_bonus_chr_path;
 
-  bool skill_bonus_only = false;
-  const char *skill_bonus_chr_path = NULL;
+  bool db_cache_selftest_only;
+  bool db_search_selftest_only;
+  const char *db_search_keywords;
+  bool db_sort_selftest_only;
+  bool affix_items_selftest_only;
+  const char *affix_items_query;
+  bool search_query_selftest_only;
+  const char *sq_pattern;              // NULL = run the built-in case table
+  const char *sq_haystack;
+  bool stack_merge_selftest_only;
+  bool prefetch_selftest_only;
+  const char *prefetch_chr_path;
+  bool thumbs_build_only;
+  bool first_run_build_only;
+  bool version_only;
+} CliOptions;
 
-  bool db_cache_selftest_only = false;
-  bool db_search_selftest_only = false;
-  bool db_sort_selftest_only = false;
-  bool affix_items_selftest_only = false;
-  const char *affix_items_query = NULL;
-  const char *db_search_keywords = NULL;
-  bool search_query_selftest_only = false;
-  const char *sq_pattern = NULL;
-  const char *sq_haystack = NULL;
-  bool thumbs_build_only = false;
-  bool first_run_build_only = false;
-  bool stack_merge_selftest_only = false;
-  bool prefetch_selftest_only = false;
-  const char *prefetch_chr_path = NULL;
-  const char *tooltip_prefix = NULL;   // optional --prefix for --tooltip
-  const char *tooltip_suffix = NULL;   // optional --suffix for --tooltip
+// Parse argv into o.  Any argument that is not a recognised flag or a flag's
+// operand is taken as the config-file override, last one winning.
+static void
+parse_cli_options(int argc, char **argv, CliOptions *o)
+{
+  *o = (CliOptions){ 0 };
 
   for(int i = 1; i < argc; i++)
   {
     if(strcmp(argv[i], "-v") == 0 || strcmp(argv[i], "--version") == 0)
     {
-      printf("TQVaultC v%s (Build #%d)\n", TQVAULTC_VERSION, TQVAULTC_BUILD_NUMBER);
-      return(0);
+      o->version_only = true;
+      return;
     }
     else if(strcmp(argv[i], "--debug") == 0)
     {
-      debug_mode = true;
+      o->debug_mode = true;
     }
     else if(strcmp(argv[i], "--tooltip") == 0 && i + 1 < argc)
     {
-      tooltip_only = true;
-      tooltip_path = argv[++i];
+      o->tooltip_only = true;
+      o->tooltip_path = argv[++i];
     }
     else if(strcmp(argv[i], "--prefix") == 0 && i + 1 < argc)
-      tooltip_prefix = argv[++i];
+      o->tooltip_prefix = argv[++i];
     else if(strcmp(argv[i], "--suffix") == 0 && i + 1 < argc)
-      tooltip_suffix = argv[++i];
+      o->tooltip_suffix = argv[++i];
     else if(strcmp(argv[i], "--equip-check") == 0 && i + 2 < argc)
     {
-      equip_check_only = true;
-      equip_chr_path = argv[++i];
-      equip_item_path = argv[++i];
+      o->equip_check_only = true;
+      o->equip_chr_path = argv[++i];
+      o->equip_item_path = argv[++i];
     }
     else if(strcmp(argv[i], "--skill-bonuses") == 0 && i + 1 < argc)
     {
-      skill_bonus_only = true;
-      skill_bonus_chr_path = argv[++i];
+      o->skill_bonus_only = true;
+      o->skill_bonus_chr_path = argv[++i];
     }
     else if(strcmp(argv[i], "--db-cache-selftest") == 0)
     {
-      db_cache_selftest_only = true;
+      o->db_cache_selftest_only = true;
     }
     else if(strcmp(argv[i], "--db-search-selftest") == 0 && i + 1 < argc)
     {
-      db_search_selftest_only = true;
-      db_search_keywords = argv[++i];
+      o->db_search_selftest_only = true;
+      o->db_search_keywords = argv[++i];
     }
     else if(strcmp(argv[i], "--db-sort-selftest") == 0)
     {
-      db_sort_selftest_only = true;
+      o->db_sort_selftest_only = true;
     }
     else if(strcmp(argv[i], "--affix-items") == 0 && i + 1 < argc)
     {
-      affix_items_selftest_only = true;
-      affix_items_query = argv[++i];
+      o->affix_items_selftest_only = true;
+      o->affix_items_query = argv[++i];
     }
     else if(strcmp(argv[i], "--search-query-selftest") == 0)
     {
       // Two trailing args = the interactive "explain this one query" form.
       // Bare = the built-in case table, which is what `meson test` runs.
-      search_query_selftest_only = true;
+      o->search_query_selftest_only = true;
 
       if(i + 2 < argc)
       {
-        sq_pattern = argv[++i];
-        sq_haystack = argv[++i];
+        o->sq_pattern = argv[++i];
+        o->sq_haystack = argv[++i];
       }
     }
     else if(strcmp(argv[i], "--creature-thumbs-build") == 0)
     {
-      thumbs_build_only = true;
+      o->thumbs_build_only = true;
     }
     else if(strcmp(argv[i], "--first-run-build") == 0)
     {
-      first_run_build_only = true;
+      o->first_run_build_only = true;
     }
     else if(strcmp(argv[i], "--stack-merge-selftest") == 0)
     {
-      stack_merge_selftest_only = true;
+      o->stack_merge_selftest_only = true;
     }
     else if(strcmp(argv[i], "--prefetch-selftest") == 0 && i + 1 < argc)
     {
-      prefetch_selftest_only = true;
-      prefetch_chr_path = argv[++i];
+      o->prefetch_selftest_only = true;
+      o->prefetch_chr_path = argv[++i];
     }
     else
     {
-      config_override = argv[i];
+      o->config_override = argv[i];
     }
   }
+}
 
-  tqvc_debug = debug_mode;
-  config_init(config_override);
-
-  g_saved_argc = argc;
-  g_saved_argv = argv;
-
-  if(tooltip_only)
+// Bring up the asset/DBR subsystems every game-data CLI mode needs.  Prints the
+// standard diagnostic and returns false when no game folder is configured.
+static bool
+game_data_init(const char *flag)
+{
+  if(!global_config.game_folder)
   {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --tooltip: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-    dump_dbr(tooltip_path, tooltip_prefix, tooltip_suffix);
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(0);
+    fprintf(stderr, "tqvaultc %s: game_folder not configured\n", flag);
+    return(false);
   }
 
-  if(equip_check_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --equip-check: game_folder not configured\n");
-      return(1);
-    }
+  asset_manager_init(global_config.game_folder);
+  arz_intern_init();
+  item_stats_init();
+  return(true);
+}
 
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-    equip_check(equip_chr_path, equip_item_path);
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(0);
+// Tear down what game_data_init brought up, plus the affix tables and the
+// config.  Every free here is a no-op when its subsystem was never started.
+static void
+game_data_free(void)
+{
+  item_stats_free();
+  affix_table_free();
+  arz_intern_free();
+  asset_manager_free();
+  config_free();
+}
+
+static int
+run_tooltip(const CliOptions *o)
+{
+  if(!game_data_init("--tooltip"))
+    return(1);
+
+  affix_table_init(NULL);
+  dump_dbr(o->tooltip_path, o->tooltip_prefix, o->tooltip_suffix);
+  game_data_free();
+  return(0);
+}
+
+static int
+run_equip_check(const CliOptions *o)
+{
+  if(!game_data_init("--equip-check"))
+    return(1);
+
+  affix_table_init(NULL);
+  equip_check(o->equip_chr_path, o->equip_item_path);
+  game_data_free();
+  return(0);
+}
+
+static int
+run_skill_bonuses(const CliOptions *o)
+{
+  if(!game_data_init("--skill-bonuses"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  TQCharacter *chr = character_load(o->skill_bonus_chr_path);
+
+  if(chr)
+  {
+    skills_debug_print_gear_bonuses(chr);
+    character_free(chr);
+  }
+  else
+  {
+    fprintf(stderr, "tqvaultc --skill-bonuses: failed to load %s\n", o->skill_bonus_chr_path);
   }
 
-  if(skill_bonus_only)
+  game_data_free();
+  return(0);
+}
+
+static int
+run_db_cache_selftest(void)
+{
+  if(!game_data_init("--db-cache-selftest"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  int rc = db_browser_cache_selftest();
+
+  game_data_free();
+  return(rc);
+}
+
+static int
+run_db_search_selftest(const CliOptions *o)
+{
+  if(!game_data_init("--db-search-selftest"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  int rc = db_browser_search_selftest(o->db_search_keywords);
+
+  game_data_free();
+  return(rc);
+}
+
+static int
+run_db_sort_selftest(void)
+{
+  if(!game_data_init("--db-sort-selftest"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  int rc = db_browser_sort_selftest();
+
+  game_data_free();
+  return(rc);
+}
+
+static int
+run_affix_items(const CliOptions *o)
+{
+  if(!game_data_init("--affix-items"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  int rc = db_browser_affix_items_selftest(o->affix_items_query);
+
+  game_data_free();
+  return(rc);
+}
+
+static int
+run_stack_merge_selftest(void)
+{
+  if(!game_data_init("--stack-merge-selftest"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  int rc = stack_merge_selftest();
+
+  game_data_free();
+  return(rc);
+}
+
+static int
+run_prefetch_selftest(const CliOptions *o)
+{
+  if(!game_data_init("--prefetch-selftest"))
+    return(1);
+
+  int rc = prefetch_selftest(o->prefetch_chr_path);
+
+  prefetch_free();
+  game_data_free();
+  return(rc);
+}
+
+static int
+run_search_query_selftest(const CliOptions *o)
+{
+  if(!o->sq_pattern)
   {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --skill-bonuses: game_folder not configured\n");
-      return(1);
-    }
+    int rc = search_query_selftest();
 
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    TQCharacter *chr = character_load(skill_bonus_chr_path);
-
-    if(chr)
-    {
-      skills_debug_print_gear_bonuses(chr);
-      character_free(chr);
-    }
-    else
-    {
-      fprintf(stderr, "tqvaultc --skill-bonuses: failed to load %s\n", skill_bonus_chr_path);
-    }
-
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(0);
-  }
-
-  if(db_cache_selftest_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --db-cache-selftest: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    int rc = db_browser_cache_selftest();
-
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(rc);
-  }
-
-  if(db_search_selftest_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --db-search-selftest: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    int rc = db_browser_search_selftest(db_search_keywords);
-
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(rc);
-  }
-
-  if(db_sort_selftest_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --db-sort-selftest: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    int rc = db_browser_sort_selftest();
-
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(rc);
-  }
-
-  if(affix_items_selftest_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --affix-items: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    int rc = db_browser_affix_items_selftest(affix_items_query);
-
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(rc);
-  }
-
-  if(stack_merge_selftest_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --stack-merge-selftest: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    int rc = stack_merge_selftest();
-
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
     config_free();
     return(rc);
   }
 
-  if(prefetch_selftest_only)
+  // Pure unit test for the shared matcher: no game files needed.  Lowercase
+  // the haystack the same way the real callers do before matching.
+  SearchQuery *q = search_query_compile(o->sq_pattern);
+  char *hay = g_ascii_strdown(o->sq_haystack, -1);
+  bool match = search_query_match(q, hay);
+
+  printf("pattern : \"%s\"\n", o->sq_pattern);
+  printf("mode    : %s\n", search_query_mode_name(q));
+  printf("haystack: \"%s\"\n", o->sq_haystack);
+  printf("result  : %s\n", match ? "MATCH" : "no match");
+
+  g_free(hay);
+  search_query_free(q);
+  config_free();
+  return(0);
+}
+
+static int
+run_thumbs_build(void)
+{
+  if(!game_data_init("--creature-thumbs-build"))
+    return(1);
+
+  affix_table_init(NULL);
+
+  // Shared database handle if cached, else load our own (mirrors startup).
+  TQArzFile *arz = asset_get_database_arz();
+  TQArzFile *own_arz = NULL;
+
+  if(!arz)
   {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --prefetch-selftest: game_folder not configured\n");
-      return(1);
-    }
+    char arz_path[1024];
 
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-
-    int rc = prefetch_selftest(prefetch_chr_path);
-
-    prefetch_free();
-    item_stats_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(rc);
+    snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
+             global_config.game_folder);
+    arz = own_arz = arz_load(arz_path);
   }
 
-  if(search_query_selftest_only)
+  int rc = 1;
+
+  if(arz)
   {
-    if(!sq_pattern)
-    {
-      int rc = search_query_selftest();
-
-      config_free();
-      return(rc);
-    }
-
-    // Pure unit test for the shared matcher: no game files needed.  Lowercase
-    // the haystack the same way the real callers do before matching.
-    SearchQuery *q = search_query_compile(sq_pattern);
-    char *hay = g_ascii_strdown(sq_haystack, -1);
-    bool match = search_query_match(q, hay);
-
-    printf("pattern : \"%s\"\n", sq_pattern);
-    printf("mode    : %s\n", search_query_mode_name(q));
-    printf("haystack: \"%s\"\n", sq_haystack);
-    printf("result  : %s\n", match ? "MATCH" : "no match");
-
-    g_free(hay);
-    search_query_free(q);
-    config_free();
-    return(0);
-  }
-
-  if(thumbs_build_only)
-  {
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --creature-thumbs-build: game_folder not configured\n");
-      return(1);
-    }
-
-    asset_manager_init(global_config.game_folder);
-    arz_intern_init();
-    item_stats_init();
-    affix_table_init(NULL);
-
-    // Shared database handle if cached, else load our own (mirrors startup).
-    TQArzFile *arz = asset_get_database_arz();
-    TQArzFile *own_arz = NULL;
-
-    if(!arz)
-    {
-      char arz_path[1024];
-
-      snprintf(arz_path, sizeof(arz_path), "%s/Database/database.arz",
-               global_config.game_folder);
-      arz = own_arz = arz_load(arz_path);
-    }
-
-    int rc = 1;
-
-    if(arz)
-    {
-      gint64 t0 = g_get_monotonic_time();
-      DbCreatureIndex *idx = db_creature_index_build(arz);
-
-      if(idx)
-      {
-        printf("Rendering thumbnails for %u creatures…\n", idx->creatures->len);
-        creature_thumbs_build(idx, global_config.game_folder,
-                              thumbs_build_progress, NULL);
-        double secs = (g_get_monotonic_time() - t0) / 1e6;
-
-        printf("Done in %.1fs.\n", secs);
-        db_creature_index_free(idx);
-        rc = 0;
-      }
-    }
-    else
-      fprintf(stderr, "tqvaultc --creature-thumbs-build: no database.arz\n");
-
-    if(own_arz)
-      arz_free(own_arz);
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(rc);
-  }
-
-  if(first_run_build_only)
-  {
-    // Headless mirror of the first-run "Setting up TQVaultC…" build: runs the
-    // exact index/blob/save sequence in one process and reports peak RSS, so we
-    // can measure the first-run memory footprint without launching the GUI (the
-    // low-RAM Windows lock-up this guards against is a memory problem).
-    if(!global_config.game_folder)
-    {
-      fprintf(stderr, "tqvaultc --first-run-build: game_folder not configured\n");
-      return(1);
-    }
-
     gint64 t0 = g_get_monotonic_time();
+    DbCreatureIndex *idx = db_creature_index_build(arz);
 
-    ui_startup_build_headless();   // initialises the asset subsystem and builds
+    if(idx)
+    {
+      printf("Rendering thumbnails for %u creatures…\n", idx->creatures->len);
+      creature_thumbs_build(idx, global_config.game_folder,
+                            thumbs_build_progress, NULL);
+      double secs = (g_get_monotonic_time() - t0) / 1e6;
 
-    double secs = (g_get_monotonic_time() - t0) / 1e6;
-    double ws_mb = -1.0, commit_mb = -1.0;
+      printf("Done in %.1fs.\n", secs);
+      db_creature_index_free(idx);
+      rc = 0;
+    }
+  }
+  else
+    fprintf(stderr, "tqvaultc --creature-thumbs-build: no database.arz\n");
 
-    tq_proc_peak_mem_mb(&ws_mb, &commit_mb);
-    if(commit_mb >= 0.0)
-      printf("first-run build done in %.1fs, peak working set %.1f MB, "
-             "peak commit %.1f MB\n", secs, ws_mb, commit_mb);
-    else
-      printf("first-run build done in %.1fs, peak RSS %.1f MB\n", secs, ws_mb);
+  if(own_arz)
+    arz_free(own_arz);
 
-    item_stats_free();
-    affix_table_free();
-    arz_intern_free();
-    asset_manager_free();
-    config_free();
-    return(0);
+  game_data_free();
+  return(rc);
+}
+
+// Headless mirror of the first-run "Setting up TQVaultC…" build: runs the
+// exact index/blob/save sequence in one process and reports peak RSS, so we
+// can measure the first-run memory footprint without launching the GUI (the
+// low-RAM Windows lock-up this guards against is a memory problem).
+static int
+run_first_run_build(void)
+{
+  if(!global_config.game_folder)
+  {
+    fprintf(stderr, "tqvaultc --first-run-build: game_folder not configured\n");
+    return(1);
   }
 
-  // Strip our custom flags so GTK doesn't see them
+  gint64 t0 = g_get_monotonic_time();
+
+  ui_startup_build_headless();   // initialises the asset subsystem and builds
+
+  double secs = (g_get_monotonic_time() - t0) / 1e6;
+  double ws_mb = -1.0, commit_mb = -1.0;
+
+  tq_proc_peak_mem_mb(&ws_mb, &commit_mb);
+  if(commit_mb >= 0.0)
+    printf("first-run build done in %.1fs, peak working set %.1f MB, "
+           "peak commit %.1f MB\n", secs, ws_mb, commit_mb);
+  else
+    printf("first-run build done in %.1fs, peak RSS %.1f MB\n", secs, ws_mb);
+
+  game_data_free();
+  return(0);
+}
+
+// Run the CLI mode o selects.  Returns the process exit status, or -1 when no
+// mode was requested and the caller should start the GUI instead.
+static int
+run_cli_mode(const CliOptions *o)
+{
+  if(o->tooltip_only)               return(run_tooltip(o));
+  if(o->equip_check_only)           return(run_equip_check(o));
+  if(o->skill_bonus_only)           return(run_skill_bonuses(o));
+  if(o->db_cache_selftest_only)     return(run_db_cache_selftest());
+  if(o->db_search_selftest_only)    return(run_db_search_selftest(o));
+  if(o->db_sort_selftest_only)      return(run_db_sort_selftest());
+  if(o->affix_items_selftest_only)  return(run_affix_items(o));
+  if(o->stack_merge_selftest_only)  return(run_stack_merge_selftest());
+  if(o->prefetch_selftest_only)     return(run_prefetch_selftest(o));
+  if(o->search_query_selftest_only) return(run_search_query_selftest(o));
+  if(o->thumbs_build_only)          return(run_thumbs_build());
+  if(o->first_run_build_only)       return(run_first_run_build());
+
+  return(-1);
+}
+
+// Start the GTK application.  argv is passed through minus our own --debug,
+// which GTK would reject.
+static int
+run_gui(int argc, char **argv)
+{
   int gtk_argc = 0;
   char **gtk_argv = malloc(sizeof(char *) * (argc + 1));
 
@@ -1055,11 +1002,61 @@ main(int argc, char **argv)
     printf("Main: GTK application finished with status %d.\n", status);
 
   prefetch_free();
-  item_stats_free();
-  affix_table_free();
-  arz_intern_free();
-  asset_manager_free();
-  config_free();
+  game_data_free();
   g_object_unref(app);
   return(status);
+}
+
+// Program entry point. Parses command-line flags (--version, --debug),
+// initializes config, then either runs the selected CLI mode or the GUI.
+// argc: argument count
+// argv: argument vector
+// returns: the CLI mode's status, or the GTK application exit status
+int
+main(int argc, char **argv)
+{
+#ifdef _WIN32
+  // The Windows GUI subsystem detaches stdout/stderr — redirect them to a
+  // logfile under our cache dir so init traces, GLib warnings, and
+  // config_save errors are captured for support.
+  {
+    char *log_dir = tqvc_cache_dir_new();
+    char *log_path = g_build_filename(log_dir, "tqvaultc.log", NULL);
+    FILE *log = freopen(log_path, "w", stderr);
+    if(log)
+      setvbuf(log, NULL, _IOLBF, 0);
+    freopen(log_path, "w", stdout);
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    fprintf(stderr, "tqvaultc: log opened at %s\n", log_path);
+    g_free(log_path);
+    g_free(log_dir);
+  }
+#endif
+
+  CliOptions opts;
+
+  parse_cli_options(argc, argv, &opts);
+
+  if(opts.version_only)
+  {
+    printf("TQVaultC v%s (Build #%d)\n", TQVAULTC_VERSION, TQVAULTC_BUILD_NUMBER);
+    return(0);
+  }
+
+  tqvc_debug = opts.debug_mode;
+  config_init(opts.config_override);
+
+  g_saved_argc = argc;
+  g_saved_argv = argv;
+
+  // Item seeds are drawn with rand(); without this every run would generate the
+  // identical sequence of "random" items.
+  srand((unsigned)time(NULL));
+
+  int cli_status = run_cli_mode(&opts);
+
+  if(cli_status >= 0)
+    return(cli_status);
+
+  return(run_gui(argc, argv));
 }

@@ -158,16 +158,15 @@ set_buffed_label(GtkWidget *label, float base, float total)
     gtk_widget_add_css_class(label, "stats-cell-debuffed");
 }
 
-// Update all resistance, damage, speed, health, and ability stat tables
-// from the character's equipped items.
-// @param widgets  application widget tree containing stat table cells
-// @param chr      character whose equipment to read stats from
-void
-update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
-{
-  if(!chr)
-    return;
+// equipment[] indices for each table row, in the order the tables lay the
+// rows out.  Rows 12 and 13 are the Primary/Alternate totals, not slots.
+static const int g_slot_indices[12] = { 7, 8, 9, 10, 5, 6, 1, 0, 2, 3, 4, 11 };
 
+// Resistance table: one row per equipment slot, then the Primary and
+// Alternate weapon-set totals with their low/high threshold colouring.
+static void
+update_resist_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // Populate resistance table
   static const char *resist_attrs[9] = {
     "defensivePhysical", "defensivePierce", "defensivePoison", "defensiveBleeding",
@@ -175,14 +174,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
     "defensiveLightning"
   };
 
-  // equipment[] indices for each table row (same order as row_labels)
-  static const int slot_indices[12] = { 7, 8, 9, 10, 5, 6, 1, 0, 2, 3, 4, 11 };
 
   float slot_vals[12][9];
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 9; c++)
     {
@@ -250,7 +247,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
       gtk_widget_add_css_class(tw, cls);
     }
   }
+}
 
+// Secondary resistances (slow, trap, stun, freeze and friends).
+static void
+update_secresist_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Secondary Resistances --
   static const char *secresist_attrs[8] = {
     "defensiveSlow", "defensiveTrap", "defensiveManaBurnRatio",
@@ -262,7 +264,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 8; c++)
     {
@@ -323,7 +325,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Direct damage contributed by each equipped item.
+static void
+update_direct_damage_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Direct Damage from item components --
   // Poi = instant poison (offensivePoisonMin), not DOT
   // Vit = reduction to enemy health (offensivePercentCurrentLifeMin), always a percentage
@@ -355,7 +362,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 8; c++)
     {
@@ -427,7 +434,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Percentage damage bonuses contributed by each equipped item.
+static void
+update_bonus_damage_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Bonus Damage -- percentage only from item components --
   static const char *bdmg_pct_attrs[11] = {
     "offensivePhysicalModifier", "offensivePierceModifier",
@@ -441,7 +453,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 11; c++)
     {
@@ -498,7 +510,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Damage-over-time contributed by each equipped item.
+static void
+update_dot_damage_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- DOT Damage -- flat min*duration from item components --
   static const struct { const char *min; const char *dur; const char *chance; } dot_attrs[8] = {
     { "offensiveSlowFireMin",          "offensiveSlowFireDurationMin",          "offensiveSlowFireChance" },
@@ -515,7 +532,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 8; c++)
     {
@@ -572,7 +589,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Pet bonuses, read from each item's petBonusName sub-record.
+static void
+update_pet_bonus_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Pet Bonuses -- percentage from petBonusName sub-records --
   // Columns 0-9: damage modifiers, Column 10: pet total speed
   static const char *pet_pct_attrs[11] = {
@@ -587,7 +609,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 11; c++)
       pet_pct[r][c] = 0.0f;
@@ -694,7 +716,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Percentage speed bonuses contributed by each equipped item.
+static void
+update_bonus_speed_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Bonus Speed -- percentage from item components --
   static const char *bspd_attrs[6] = {
     "characterAttackSpeedModifier", "characterSpellCastSpeedModifier",
@@ -706,7 +733,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 6; c++)
     {
@@ -790,7 +817,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Flat and percentage health/energy bonuses.
+static void
+update_health_energy_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Health / Energy Bonuses --
   static const char *hea_attrs[7] = {
     "characterLife", "characterLifeRegen", "characterLifeRegenModifier",
@@ -805,7 +837,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 7; c++)
     {
@@ -874,7 +906,12 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
 
+// Offensive/defensive ability bonuses.
+static void
+update_ability_bonus_table(AppWidgets *widgets, TQCharacter *chr)
+{
   // -- Ability Bonuses --
   static const char *abil_attrs[4] = {
     "characterOffensiveAbility", "characterOffensiveAbilityModifier",
@@ -886,7 +923,7 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
 
   for(int r = 0; r < 12; r++)
   {
-    int idx = slot_indices[r];
+    int idx = g_slot_indices[r];
 
     for(int c = 0; c < 4; c++)
     {
@@ -951,6 +988,27 @@ update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
         gtk_label_set_text(GTK_LABEL(tw), "");
     }
   }
+}
+
+// Update all resistance, damage, speed, health, and ability stat tables
+// from the character's equipped items.
+// @param widgets  application widget tree containing stat table cells
+// @param chr      character whose equipment to read stats from
+void
+update_resist_damage_tables(AppWidgets *widgets, TQCharacter *chr)
+{
+  if(!chr)
+    return;
+
+  update_resist_table(widgets, chr);
+  update_secresist_table(widgets, chr);
+  update_direct_damage_table(widgets, chr);
+  update_bonus_damage_table(widgets, chr);
+  update_dot_damage_table(widgets, chr);
+  update_pet_bonus_table(widgets, chr);
+  update_bonus_speed_table(widgets, chr);
+  update_health_energy_table(widgets, chr);
+  update_ability_bonus_table(widgets, chr);
 }
 
 // Update the equipment-dependent summary stats: the five attributes (with
