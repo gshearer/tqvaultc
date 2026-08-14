@@ -693,13 +693,25 @@ items_stackable(const TQVaultItem *a, const TQVaultItem *b);
 // Quantity dialog's cap (ui_context_menu.c).
 #define STACK_MAX_DEFAULT 100
 
+// Outcome of stack_merge_onto().  Three distinct caller obligations, so this
+// is an enum rather than a two-state result.  ABSORBED is 0 so that a
+// two-state `if(res)` reads as "something is still on the cursor" -- correct
+// as far as it goes, and it never mistakes the free-the-held-item case for
+// the others.  Such a test is still incomplete: it cannot tell PARTIAL from
+// TARGET_FULL, and those differ in whether the target changed, i.e. whether
+// the caller must mark the destination dirty.
+typedef enum {
+  STACK_MERGE_ABSORBED = 0,  // all of `held` poured in -- caller frees `held`
+  STACK_MERGE_PARTIAL,       // target hit its cap; remainder stays on `held`
+  STACK_MERGE_TARGET_FULL,   // target was already full -- nothing changed
+} StackMergeResult;
+
 // Pour as much of `held` as fits onto stackable `target` (must already be
 // items_stackable).  Caps relics/charms at relic_max_shards and potions/scrolls
-// at STACK_MAX_DEFAULT.  Returns 2 if held was fully absorbed (caller frees it),
-// 1 if target filled with a remainder left on held, 0 if target was already full.
+// at STACK_MAX_DEFAULT.
 // target: destination stack (mutated).
 // held: source item (var1/stack_size reduced by the absorbed amount).
-int
+StackMergeResult
 stack_merge_onto(TQVaultItem *target, TQVaultItem *held);
 
 // Convert an equipment item to a vault item.
@@ -925,10 +937,21 @@ build_stat_tables(AppWidgets *widgets, GtkWidget *tables_inner);
 
 // ── Entry points in ui_io.c ────────────────────────────────────────────
 
+// Outcome of the unsaved-changes dialog.  Three distinct caller obligations,
+// so this is an enum rather than a two-state result.  SAVE is 0 as the
+// affirmative case; a two-state test of this value is always wrong and must
+// not be written -- it cannot tell DISCARD from CANCEL, and CANCEL is the one
+// value that obliges the caller to abandon the operation entirely rather than
+// carry on without saving.
+typedef enum {
+  CONFIRM_SAVE = 0,   // write the character out, then proceed
+  CONFIRM_DISCARD,    // proceed, dropping the unsaved changes
+  CONFIRM_CANCEL,     // abort the caller's operation; change nothing
+} ConfirmUnsaved;
+
 // Show a modal Save/Discard/Cancel dialog for unsaved character changes.
 // widgets: the application widget state.
-// Returns: 0=Save, 1=Discard, 2=Cancel.
-int
+ConfirmUnsaved
 confirm_unsaved_character(AppWidgets *widgets);
 
 // Set the image on a bag button from a GdkPixbuf.

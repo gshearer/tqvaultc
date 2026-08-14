@@ -95,13 +95,11 @@ items_stackable(const TQVaultItem *a, const TQVaultItem *b)
 // already vetted with items_stackable).  Relics/charms accumulate shards in
 // var1 up to relic_max_shards (3 for relics, 5 for charms -- a relic completes
 // when shard #3 lands, a charm when #5 does); potions/scrolls accumulate
-// stack_size up to STACK_MAX_DEFAULT.  Returns:
-//   2  held fully absorbed -- caller should free the held item;
-//   1  target filled to its cap, a remainder left on `held` (keep on cursor);
-//   0  target was already full -- nothing changed.
+// stack_size up to STACK_MAX_DEFAULT.  See StackMergeResult in ui.h for what
+// each outcome obliges the caller to do.
 // a, b counts default to 1 so a freshly built item with stack_size 0 still
 // counts as one piece.
-int
+StackMergeResult
 stack_merge_onto(TQVaultItem *target, TQVaultItem *held)
 {
   bool is_rc = item_is_relic_or_charm(target->base_name);
@@ -124,7 +122,7 @@ stack_merge_onto(TQVaultItem *target, TQVaultItem *held)
   int space = max - cur;
 
   if(space <= 0)
-    return(0);                       // target already full -- can't add
+    return(STACK_MERGE_TARGET_FULL);
 
   if(add <= space)                   // it all fits
   {
@@ -135,7 +133,7 @@ stack_merge_onto(TQVaultItem *target, TQVaultItem *held)
     else
       target->stack_size = cur;
 
-    return(2);                       // fully absorbed
+    return(STACK_MERGE_ABSORBED);
   }
 
   // Overflow: fill the target to its cap, leave the remainder on the held item.
@@ -150,7 +148,7 @@ stack_merge_onto(TQVaultItem *target, TQVaultItem *held)
     held->stack_size   = add - space;
   }
 
-  return(1);
+  return(STACK_MERGE_PARTIAL);
 }
 
 // Convert an equipment-panel item (TQItem) into a vault item (TQVaultItem).
@@ -1137,13 +1135,13 @@ place_in_sack(AppWidgets *widgets, TQVaultSack *sack,
     // click a no-op (item kept on cursor) rather than swapping two like stacks.
     if(items_stackable(&hi->item, target))
     {
-      int merged = stack_merge_onto(target, &hi->item);
+      StackMergeResult merged = stack_merge_onto(target, &hi->item);
 
-      if(merged == 0)
-        return;                  // target already full -- nothing changed
+      if(merged == STACK_MERGE_TARGET_FULL)
+        return;                  // nothing changed -- leave the click a no-op
 
-      if(merged == 2)
-        free_held_item(widgets); // fully absorbed (merged == 1 keeps remainder)
+      if(merged == STACK_MERGE_ABSORBED)
+        free_held_item(widgets); // PARTIAL keeps the remainder on the cursor
 
       goto done;
     }
@@ -1286,14 +1284,14 @@ drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
       if(!it->base_name || !items_stackable(&hi->item, it))
         continue;
 
-      int merged = stack_merge_onto(it, &hi->item);
+      StackMergeResult merged = stack_merge_onto(it, &hi->item);
 
-      if(merged == 0)
+      if(merged == STACK_MERGE_TARGET_FULL)
         continue;                  // that stack was full -- try the next
 
       topped_up = true;
 
-      if(merged == 2)              // held fully absorbed
+      if(merged == STACK_MERGE_ABSORBED)
       {
         free_held_item(widgets);
         mark_place_dirty(widgets, ctype, held_source);
@@ -1301,7 +1299,7 @@ drop_held_into_sack(AppWidgets *widgets, TQVaultSack *sack,
         queue_redraw_all(widgets);
         return(true);
       }
-      // merged == 1: that stack filled, remainder still held -- keep scanning.
+      // PARTIAL: that stack filled, remainder still held -- keep scanning.
     }
   }
 

@@ -193,21 +193,21 @@ stack_merge_selftest(void)
     const char *path;
     bool        is_relic;       // count lives in var1 (relic/charm) vs stack_size
     int         tcur, hcur;     // starting target / held counts
-    int         exp_ret;        // expected return code (0 no-op / 1 partial / 2 absorbed)
+    StackMergeResult exp_ret;   // expected outcome
     int         exp_t, exp_h;   // expected target / held counts afterwards
   } cases[] = {
-    { "relic 0+0 (lone shards)",   RELIC,  true,   0, 0, 2,   2,   0 },
-    { "relic 0+0 charm style",     CHARM,  true,   0, 0, 2,   2,   0 },
-    { "relic 2+0 -> complete",     RELIC,  true,   2, 0, 2,   3,   0 },
-    { "relic 2+1 -> complete",     RELIC,  true,   2, 1, 2,   3,   1 },
-    { "relic 1+1 -> partial",      RELIC,  true,   1, 1, 2,   2,   1 },
-    { "relic 2+2 -> overflow",     RELIC,  true,   2, 2, 1,   3,   1 },
-    { "relic 3 full -> no-op",     RELIC,  true,   3, 1, 0,   3,   1 },
-    { "charm 4+1 -> complete",     CHARM,  true,   4, 1, 2,   5,   1 },
-    { "potion 30+20",              POTION, false, 30,20, 2,  50,  20 },
-    { "potion 80+20 -> cap",       POTION, false, 80,20, 2, 100,  20 },
-    { "potion 80+30 -> overflow",  POTION, false, 80,30, 1, 100,  10 },
-    { "potion 100 full -> no-op",  POTION, false,100, 5, 0, 100,   5 },
+    { "relic 0+0 (lone shards)",   RELIC,  true,   0, 0, STACK_MERGE_ABSORBED,      2,   0 },
+    { "relic 0+0 charm style",     CHARM,  true,   0, 0, STACK_MERGE_ABSORBED,      2,   0 },
+    { "relic 2+0 -> complete",     RELIC,  true,   2, 0, STACK_MERGE_ABSORBED,      3,   0 },
+    { "relic 2+1 -> complete",     RELIC,  true,   2, 1, STACK_MERGE_ABSORBED,      3,   1 },
+    { "relic 1+1 -> partial",      RELIC,  true,   1, 1, STACK_MERGE_ABSORBED,      2,   1 },
+    { "relic 2+2 -> overflow",     RELIC,  true,   2, 2, STACK_MERGE_PARTIAL,       3,   1 },
+    { "relic 3 full -> no-op",     RELIC,  true,   3, 1, STACK_MERGE_TARGET_FULL,   3,   1 },
+    { "charm 4+1 -> complete",     CHARM,  true,   4, 1, STACK_MERGE_ABSORBED,      5,   1 },
+    { "potion 30+20",              POTION, false, 30,20, STACK_MERGE_ABSORBED,     50,  20 },
+    { "potion 80+20 -> cap",       POTION, false, 80,20, STACK_MERGE_ABSORBED,    100,  20 },
+    { "potion 80+30 -> overflow",  POTION, false, 80,30, STACK_MERGE_PARTIAL,     100,  10 },
+    { "potion 100 full -> no-op",  POTION, false,100, 5, STACK_MERGE_TARGET_FULL, 100,   5 },
   };
 
   int fails = 0;
@@ -232,7 +232,7 @@ stack_merge_selftest(void)
       h.stack_size = cases[i].hcur;
     }
 
-    int ret = stack_merge_onto(&t, &h);
+    StackMergeResult ret = stack_merge_onto(&t, &h);
     int gt  = cases[i].is_relic ? (int)t.var1 : t.stack_size;
     int gh  = cases[i].is_relic ? (int)h.var1 : h.stack_size;
     bool ok = (ret == cases[i].exp_ret && gt == cases[i].exp_t && gh == cases[i].exp_h);

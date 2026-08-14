@@ -1075,15 +1075,15 @@ on_close_request(GtkWindow *window, gpointer user_data)
   // persist both; on Discard both are dropped.
   if(has_unsaved_changes(widgets))
   {
-    int choice = confirm_unsaved_character(widgets);
+    ConfirmUnsaved choice = confirm_unsaved_character(widgets);
 
-    if(choice == 0)
+    if(choice == CONFIRM_SAVE)
     {
       save_character_if_dirty(widgets);
       save_stashes_if_dirty(widgets);
     }
-    else if(choice == 2)
-      return(TRUE);  // Cancel -- block close
+    else if(choice == CONFIRM_CANCEL)
+      return(TRUE);  // block close
     // Discard: don't save character or stashes, allow close
   }
 

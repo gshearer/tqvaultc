@@ -12,10 +12,9 @@
 #include <glib/gstdio.h>
 
 // ── Unsaved character confirmation dialog ─────────────────────────────
-// Returns: 0=Save, 1=Discard, 2=Cancel
 typedef struct {
   GMainLoop *loop;
-  int result;
+  ConfirmUnsaved result;
 } ConfirmData;
 
 // Callback: Save button clicked in the unsaved-changes dialog.
@@ -27,7 +26,7 @@ on_confirm_save(GtkButton *btn, gpointer user_data)
   (void)btn;
   ConfirmData *cd = user_data;
 
-  cd->result = 0;
+  cd->result = CONFIRM_SAVE;
   g_main_loop_quit(cd->loop);
 }
 
@@ -40,7 +39,7 @@ on_confirm_discard(GtkButton *btn, gpointer user_data)
   (void)btn;
   ConfirmData *cd = user_data;
 
-  cd->result = 1;
+  cd->result = CONFIRM_DISCARD;
   g_main_loop_quit(cd->loop);
 }
 
@@ -53,7 +52,7 @@ on_confirm_cancel(GtkButton *btn, gpointer user_data)
   (void)btn;
   ConfirmData *cd = user_data;
 
-  cd->result = 2;
+  cd->result = CONFIRM_CANCEL;
   g_main_loop_quit(cd->loop);
 }
 
@@ -67,15 +66,14 @@ on_confirm_close(GtkWindow *win, gpointer user_data)
   (void)win;
   ConfirmData *cd = user_data;
 
-  cd->result = 2;  // treat window close as Cancel
+  cd->result = CONFIRM_CANCEL;  // treat window close as Cancel
   g_main_loop_quit(cd->loop);
   return(TRUE);
 }
 
 // Show a modal dialog asking the user to Save, Discard, or Cancel unsaved changes.
 //   widgets - app state (for character name and parent window)
-// Returns 0=Save, 1=Discard, 2=Cancel.
-int
+ConfirmUnsaved
 confirm_unsaved_character(AppWidgets *widgets)
 {
   const char *char_name = widgets->current_character
@@ -122,7 +120,7 @@ confirm_unsaved_character(AppWidgets *widgets)
   gtk_widget_set_halign(btnbox, GTK_ALIGN_END);
   gtk_box_append(GTK_BOX(vbox), btnbox);
 
-  ConfirmData cd = { .loop = g_main_loop_new(NULL, FALSE), .result = 2 };
+  ConfirmData cd = { .loop = g_main_loop_new(NULL, FALSE), .result = CONFIRM_CANCEL };
 
   GtkWidget *save_btn = gtk_button_new_with_label("Save");
 
@@ -1022,11 +1020,11 @@ on_refresh_char_clicked(GtkButton *btn, gpointer user_data)
 
   if(widgets->char_dirty)
   {
-    int choice = confirm_unsaved_character(widgets);
+    ConfirmUnsaved choice = confirm_unsaved_character(widgets);
 
-    if(choice == 0)       // Save
+    if(choice == CONFIRM_SAVE)
       save_character_if_dirty(widgets);
-    else if(choice == 2)  // Cancel
+    else if(choice == CONFIRM_CANCEL)
       return;
     // Discard: fall through to reload
   }
@@ -1058,16 +1056,16 @@ on_character_changed(GObject *obj, GParamSpec *pspec, gpointer user_data)
 
   if(widgets->char_dirty)
   {
-    int choice = confirm_unsaved_character(widgets);
+    ConfirmUnsaved choice = confirm_unsaved_character(widgets);
 
-    if(choice == 0)
+    if(choice == CONFIRM_SAVE)
     {
       save_character_if_dirty(widgets);
       save_stashes_if_dirty(widgets);
     }
-    else if(choice == 2)
+    else if(choice == CONFIRM_CANCEL)
     {
-      // Cancel -- revert combo to current character
+      // revert combo to current character
       g_signal_handler_block(combo, widgets->char_combo_handler);
       // Find and select the current character's folder name
       if(widgets->current_character && widgets->current_character->filepath)
